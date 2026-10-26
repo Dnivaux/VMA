@@ -1,4 +1,5 @@
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 /// Lock-free render-thread statistics (complements [`vma_clock::ClockStats`]).
@@ -11,6 +12,10 @@ pub struct RenderStats {
     max_cpu_ns: AtomicU64,
     avg_cpu_ns: AtomicU64,
     measured_fps_bits: AtomicU64,
+    gpu_errors: AtomicU64,
+    device_lost: AtomicBool,
+    device_lost_ticks: AtomicU64,
+    device_lost_reason: OnceLock<String>,
 }
 
 /// Point-in-time copy of [`RenderStats`].
@@ -27,6 +32,12 @@ pub struct RenderStatsSnapshot {
     pub avg_cpu: Duration,
     /// Frame rate measured over the last second of ticks.
     pub measured_fps: f64,
+    /// Uncaptured wgpu errors (validation, out of memory…), logged and counted, never fatal.
+    pub gpu_errors: u64,
+    /// The GPU device is lost: nothing is rendered any more (see ADR 0001, « Perte du GPU »).
+    pub device_lost: bool,
+    /// Ticks elapsed since the device was lost (no frame rendered for them).
+    pub device_lost_ticks: u64,
 }
 
 impl RenderStats {
@@ -66,6 +77,30 @@ impl RenderStats {
             .store(fps.to_bits(), Ordering::Relaxed);
     }
 
+    pub(crate) fn record_gpu_error(&self) {
+        self.gpu_errors.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Called from the wgpu device-lost callback (any thread). Allocates once, on this
+    /// exceptional path only.
+    pub(crate) fn set_device_lost(&self, reason: String) {
+        let _ = self.device_lost_reason.set(reason);
+        self.device_lost.store(true, Ordering::Release);
+    }
+
+    pub(crate) fn is_device_lost(&self) -> bool {
+        self.device_lost.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn record_device_lost_tick(&self) {
+        self.device_lost_ticks.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Why the device was lost, once it is.
+    pub fn device_lost_reason(&self) -> Option<&str> {
+        self.device_lost_reason.get().map(String::as_str)
+    }
+
     pub fn snapshot(&self) -> RenderStatsSnapshot {
         RenderStatsSnapshot {
             frames_rendered: self.frames_rendered.load(Ordering::Relaxed),
@@ -75,6 +110,9 @@ impl RenderStats {
             max_cpu: Duration::from_nanos(self.max_cpu_ns.load(Ordering::Relaxed)),
             avg_cpu: Duration::from_nanos(self.avg_cpu_ns.load(Ordering::Relaxed)),
             measured_fps: f64::from_bits(self.measured_fps_bits.load(Ordering::Relaxed)),
+            gpu_errors: self.gpu_errors.load(Ordering::Relaxed),
+            device_lost: self.device_lost.load(Ordering::Acquire),
+            device_lost_ticks: self.device_lost_ticks.load(Ordering::Relaxed),
         }
     }
 }

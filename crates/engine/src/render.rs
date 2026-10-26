@@ -3,8 +3,8 @@ use crate::triple::{Consumer, Producer, TripleIndices, triple};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread::JoinHandle;
-use std::time::Instant;
-use vma_clock::{ClockStats, FrameClock};
+use std::time::{Duration, Instant};
+use vma_clock::{ClockStats, FrameClock, SystemTime};
 use vma_compositor::{RenderTarget, TestPattern};
 use vma_core::{FrameRate, Resolution};
 
@@ -24,6 +24,8 @@ pub enum EngineError {
 pub struct EngineConfig {
     pub rate: FrameRate,
     pub resolution: Resolution,
+    /// Busy-wait margin of the master clock before each deadline (see `vma_clock::SystemTime`).
+    pub spin_margin: Duration,
 }
 
 impl Default for EngineConfig {
@@ -31,6 +33,7 @@ impl Default for EngineConfig {
         Self {
             rate: FrameRate::DEFAULT,
             resolution: Resolution::HD_1080,
+            spin_margin: SystemTime::DEFAULT_SPIN_MARGIN,
         }
     }
 }
@@ -63,6 +66,12 @@ pub struct ProgramReader {
 
 impl RenderEngine {
     /// Starts the render thread on an existing device (shared with the UI, or headless).
+    ///
+    /// Takes ownership of the device's uncaptured-error handler and device-lost callback:
+    /// GPU errors are logged and counted (never a panic), and a lost device stops rendering
+    /// without stopping the clock (see [`RenderStatsSnapshot::device_lost`]).
+    ///
+    /// [`RenderStatsSnapshot::device_lost`]: crate::RenderStatsSnapshot::device_lost
     pub fn spawn(
         device: wgpu::Device,
         queue: wgpu::Queue,
@@ -76,9 +85,10 @@ impl RenderEngine {
             indices,
         });
         let pattern = TestPattern::new(&device);
-        let clock = FrameClock::new(config.rate);
+        let clock = FrameClock::with_spin_margin(config.rate, config.spin_margin);
         let clock_stats = clock.stats();
         let render_stats = Arc::new(RenderStats::default());
+        install_gpu_handlers(&device, &render_stats);
         let stop = Arc::new(AtomicBool::new(false));
 
         let worker = RenderWorker {
@@ -138,8 +148,12 @@ impl Drop for RenderEngine {
 }
 
 impl ProgramReader {
-    /// Switches to the most recent published frame, if any. Call once per UI frame, *before*
-    /// recording any GPU work that samples [`Self::current_slot`].
+    /// Switches to the most recent published frame, if any.
+    ///
+    /// **Invariant** (see `triple.rs`): call it once per consumer frame, *before* recording
+    /// any GPU work that samples [`Self::current_slot`], and only once all the work of the
+    /// previous frame that sampled the previous slot has been submitted to the shared queue.
+    /// The engine may start overwriting the previous slot as soon as this returns.
     pub fn update(&mut self) -> bool {
         self.consumer.update(&self.frames.indices)
     }
@@ -161,6 +175,20 @@ impl ProgramReader {
     pub fn targets(&self) -> &[RenderTarget; 3] {
         &self.frames.targets
     }
+}
+
+fn install_gpu_handlers(device: &wgpu::Device, stats: &Arc<RenderStats>) {
+    // The default wgpu handler panics: replace it (rule 2.4).
+    let on_error = Arc::clone(stats);
+    device.on_uncaptured_error(Arc::new(move |error| {
+        on_error.record_gpu_error();
+        tracing::error!(%error, "uncaptured GPU error");
+    }));
+    let on_lost = Arc::clone(stats);
+    device.set_device_lost_callback(move |reason, message| {
+        tracing::error!(?reason, %message, "GPU device lost: rendering stopped");
+        on_lost.set_device_lost(format!("{reason:?}: {message}"));
+    });
 }
 
 struct RenderWorker {
@@ -189,6 +217,13 @@ impl RenderWorker {
         while !self.stop.load(Ordering::Acquire) {
             let tick = self.clock.wait_next();
             let started = Instant::now();
+
+            // A lost device accepts no more work: keep the clock (and the stats) running,
+            // render nothing. Recovery is the application's job (ADR 0001, « Perte du GPU »).
+            if self.stats.is_device_lost() {
+                self.stats.record_device_lost_tick();
+                continue;
+            }
 
             window_ticks += 1 + tick.missed_before;
             if window_ticks >= fps_window {
