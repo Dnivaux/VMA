@@ -1,0 +1,73 @@
+[workspace]
+resolver = "3"
+members = [
+    "app",
+    "crates/core",
+    "crates/clock",
+    "crates/engine",
+    "crates/compositor",
+    "crates/io-gst",
+    "crates/io-ndi",
+    "crates/io-html",
+    "crates/audio",
+    "crates/replay",
+    "crates/api",
+    "crates/ui",
+]
+default-members = ["app"]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2024"
+rust-version = "1.95"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/OWNER/aiguillage"
+publish = false
+
+[workspace.dependencies]
+# Internal crates
+aiguillage-core = { path = "crates/core" }
+aiguillage-clock = { path = "crates/clock" }
+aiguillage-engine = { path = "crates/engine" }
+aiguillage-compositor = { path = "crates/compositor" }
+aiguillage-ui = { path = "crates/ui" }
+
+# External crates — licence noted for each (rule 2.6). Enforced by deny.toml.
+wgpu = "30.0"                                                # MIT OR Apache-2.0
+egui = "0.37"                                                # MIT OR Apache-2.0
+eframe = { version = "0.37", default-features = false }      # MIT OR Apache-2.0
+egui-wgpu = "0.37"                                           # MIT OR Apache-2.0
+crossbeam-channel = "0.5"                                    # MIT OR Apache-2.0
+arc-swap = "1.9"                                             # MIT OR Apache-2.0
+thiserror = "2.0"                                            # MIT OR Apache-2.0
+anyhow = "1"                                                 # MIT OR Apache-2.0
+tracing = "0.1"                                              # MIT
+tracing-subscriber = { version = "0.3", features = ["env-filter"] } # MIT
+tracing-appender = "0.2"                                     # MIT
+bytemuck = { version = "1.25", features = ["derive"] }       # MIT OR Apache-2.0 OR Zlib
+pollster = "1.0"                                             # MIT OR Apache-2.0
+image = { version = "0.25", default-features = false, features = ["png"] } # MIT OR Apache-2.0
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+missing_debug_implementations = "warn"
+unused_must_use = "deny"
+
+[workspace.lints.clippy]
+# Rule 2.4: no unwrap / expect / panic in live paths. Tests are allowed via clippy.toml.
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+indexing_slicing = "warn"
+undocumented_unsafe_blocks = "deny"
+dbg_macro = "deny"
+print_stdout = "warn"
+
+[profile.release]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+# Dependencies (wgpu, naga, egui) are painfully slow unoptimised.
+opt-level = 2

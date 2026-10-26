@@ -1,0 +1,11 @@
+[package]
+name = "aiguillage-audio"
+description = "Real-time audio mixer: buses, meters, per-input delay. Phase 3."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true

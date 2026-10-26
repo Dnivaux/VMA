@@ -1,0 +1,4 @@
+[toolchain]
+# Dev toolchain. The MSRV (1.95) is declared in Cargo.toml and checked in CI.
+channel = "stable"
+components = ["rustfmt", "clippy"]
