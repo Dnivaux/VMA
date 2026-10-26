@@ -1,12 +1,13 @@
 # Spec — `io-gst` : inputs (Phase 1)
 
-- **Statut** : proposé, à valider avec [`phase-1.md`](phase-1.md) et l'ADR 0004
+- **Statut** : validé (2026-10-26) ; lecture vidéo ajoutée par l'alignement sur la référence
+  ([`phase-1.md`](phase-1.md) §7, à valider)
 
 ## Types d'input
 | Input | Pipeline / source | Notes |
 |---|---|---|
 | Capture (webcam, carte) | élément créé par `gst::DeviceMonitor` (classe `Video/Source`) → `decodebin` si compressé (MJPEG) → caps → appsink | Linux : V4L2 (les doublons PipeWire sont masqués) ; Windows : Media Foundation (`mfvideosrc`) |
-| Fichier vidéo | `uridecodebin` → vidéo → caps → appsink ; audio vers `fakesink` (Phase 3) | **boucle sans trou** : seek de segment au démarrage, puis seek non-flush à 0 sur `SEGMENT_DONE` |
+| Fichier vidéo | `uridecodebin` → vidéo → caps → appsink ; audio vers `fakesink` (Phase 3) | lecture / pause, redémarrage, position ; **Loop** (désactivé par défaut) : boucle sans trou par seek de segment, puis seek non-flush à 0 sur `SEGMENT_DONE` ; sans Loop, la dernière image reste affichée à la fin |
 | Image fixe | décodée une fois par `image` (PNG, JPEG) sur `vma-io`, uploadée une fois | pas de pipeline |
 | Couleur unie | aucune ressource : couleur passée au shader | — |
 | Source de test | `videotestsrc is-live=true pattern=…` à la cadence / résolution demandées | CI, soaks, tests de cadence |
@@ -32,6 +33,13 @@ choisi est affiché dans l'UI.
   réelle), `sync=false` pour une capture ou une source live (latence minimale).
 - **Changement de caps** en cours de route (résolution, format) : nouvelles textures demandées
   à `vma-control` ; en attendant, l'input garde sa dernière image.
+
+## Lecture des fichiers vidéo
+Commandes `Play`, `Pause`, `Restart`, `SetPosition`, `SetLoop` (spec `commands`) exécutées sur
+`vma-io` : pause = pipeline en `PAUSED` (l'image courante reste affichée), lecture = `PLAYING`,
+redémarrage et position = seek précis. Position et durée lues 4 fois par seconde sur `vma-io`
+et publiées dans l'état. À l'ouverture, une vidéo est en pause sur sa première image (elle
+démarre avec une transition si l'auto-lecture est active, ou par `Play`).
 
 ## Rééchantillonnage sur l'horloge maître
 À chaque tick, le rendu prend **la dernière image publiée** de chaque input (BRIEF §5) : une
@@ -70,6 +78,7 @@ le compositeur.
 | `videotestsrc` 1080p50 → images publiées dans l'ordre, au bon rythme (± 2 %) | intégration | CI |
 | Chaque format accepté arrive sans `videoconvert` ; un format non listé passe par lui | intégration (caps forcées) | CI |
 | Fichier en boucle : ≥ 3 boucles, n° d'image continu modulo la durée, 0 image noire (A9) | fichier MKV généré par le test | CI |
+| Lecture / pause / redémarrage / position ; fin sans Loop = dernière image tenue (A20) | idem | CI |
 | Erreur forcée du pipeline → `SignalLost`, puis reconnexion → `Live` (A8) | élément factice qui échoue | CI |
 | Débrancher / rebrancher la webcam pendant le Program | checklist `docs/manual-tests/phase1-inputs.md` | manuel |
 | GStreamer absent → l'application démarre, inputs capture / fichier désactivés avec message | test avec initialisation simulée en échec | CI |

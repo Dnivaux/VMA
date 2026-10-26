@@ -1,6 +1,6 @@
 # ADR 0005 — Chaîne couleur (Phase 1)
 
-- **Statut** : proposé (à valider)
+- **Statut** : accepté (mainteneur, 2026-10-26)
 - **Date** : 2026-10-26
 - **Contexte** : BRIEF §5 (couleur), ADR 0001 amendement 1 (gamma par défaut pour les
   transitions, linéaire pour l'échelle et le filtrage, `Rgba16Float` en interne)

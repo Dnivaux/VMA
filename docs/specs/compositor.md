@@ -32,8 +32,9 @@ Mesuré en local : bit-exact sur RTX 5090 (Vulkan), 73 dB sur Intel ARL (Vulkan,
 Voir [`phase-1.md`](phase-1.md) et l'ADR 0005 (chaîne couleur).
 
 ### Chaîne de rendu par tick
-Seuls les inputs **visibles** (Program, Preview, source et destination d'un Fade : au plus 2
-en Phase 1) sont traités.
+Les inputs **à l'antenne ou en Preview** (au plus 2 en Phase 1, transition comprise) sont
+traités à chaque tick à pleine résolution. Les **vignettes** de la barre d'inputs sont rendues à
+part (voir plus bas).
 
 1. **Passe d'entrée** (par input visible) : échantillonne les plans (NV12, I420, YUY2, UYVY,
    RGBA, BGRA), applique plage et matrice (601 / 709) → R'G'B'. Si la taille diffère de celle du
@@ -50,6 +51,11 @@ en Phase 1) sont traités.
 4. **Passe de sortie** : `Rgba16Float` → `Rgba8Unorm` (arrondi au plus proche) dans les triple
    buffers Program et Preview lus par l'UI (invariant ADR 0001), et plus tard vers les sorties.
 
+5. **Vignettes** : pour chaque input, une vignette `Rgba8Unorm` 320 × 180 (passes 1 et 2 à
+   petite taille, fit) rendue **un tick sur deux**, inputs répartis sur les ticks pour lisser
+   la charge ; publiées vers l'UI par un triple buffer de l'ensemble des vignettes (même
+   invariant). Un input sans image ou en signal perdu donne une vignette noire.
+
 Toutes les ressources (textures intermédiaires, pipelines, bind groups) sont créées hors du
 thread de rendu (`vma-control`) ; le rendu ne fait qu'encoder. Downscale fort (4K → 1080p) en
 simple bilinéaire en Phase 1 (crénelage possible) ; mipmaps ou filtre plus large plus tard.
@@ -60,6 +66,8 @@ simple bilinéaire en Phase 1 (crénelage possible) ; mipmaps ou filtre plus lar
 | **Fade 50 % entre deux couleurs** = moyenne des valeurs encodées, ±1 (A2) | golden analytique, domaine gamma | CI |
 | Fade 50 % en domaine linéaire = `encode((decode(a)+decode(b))/2)`, ±1 | golden analytique | CI |
 | Fade 0 % / 100 % = source / destination exactes (A4) | golden | CI |
+| T-Bar à 128 = mix à 128/255 (A18) | golden analytique | CI |
+| Vignette d'une mire = mire réduite (PSNR ≥ 35 dB contre une réduction de référence) ; vignette noire en signal perdu | golden | CI |
 | Fade 50 % mire ↔ couleur : PSNR ≥ 45 dB contre l'image de référence | golden PNG `tests/golden/fade50.png` | CI |
 | YUV → RGB : barres 75 % synthétiques en NV12, I420, YUY2, UYVY, 601 / 709, limitée / pleine → R'G'B' attendu ±1 (A7) | golden analytique, 24 combinaisons | CI |
 | Sans changement de taille, passe d'entrée sans perte : RGBA → RGBA bit-exact | golden | CI |

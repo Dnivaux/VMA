@@ -1,6 +1,7 @@
 # Phase 1 — Mélange de base : spec d'ensemble et plan
 
-- **Statut** : proposé, **à valider** (BRIEF §10 : pas de code avant validation)
+- **Statut** : **validé** par le mainteneur le 2026-10-26 (« oui pour tout »), avec la consigne
+  de **se rapprocher le plus possible du comportement de la référence** → §7, ajouts à valider
 - **Date** : 2026-10-26
 - **Références** : BRIEF §4 (Phase 1), §5, §8 ; ADR 0001 (amendé), ADR 0002 ; ADR proposés
   0003 (état, commandes, threads), 0004 (entrées GStreamer), 0005 (chaîne couleur)
@@ -10,23 +11,24 @@
 ## 1. Périmètre
 
 ### Dans la Phase 1
-- **Inputs** : caméra / carte de capture (GStreamer), fichier vidéo en boucle (GStreamer), image
-  fixe, couleur unie. Ajout / retrait à chaud.
+- **Inputs** : caméra / carte de capture (GStreamer), fichier vidéo (GStreamer ; lecture / pause,
+  Loop), image fixe, couleur unie. Ajout / retrait à chaud.
 - **Couche de commandes** : `Command` (enum) → canal borné → état unique versionné → snapshots.
   Toute action de l'UI passe par là. Journal des commandes (JSON Lines).
-- **Compositeur** : Preview + Program, transitions **Cut** et **Fade** (durée réglable), cibles
+- **Compositeur** : Preview + Program, transitions **Cut** et **Fade** (4 boutons de transition, Quick Play, T-Bar — §7), cibles
   internes `Rgba16Float`, conversion YUV → RGB en shader, mise à l'échelle en lumière linéaire,
   mixage en domaine gamma par défaut (linéaire en option).
 - **Multi-cadence** (ADR 0002) : cadence maître 25 / 29,97 / 30 / 50 / 59,94 / 60p, choisie au
   démarrage ; inputs de cadence quelconque rééchantillonnés sur l'horloge maître.
-- **UI** : liste des inputs (avec état), vues Preview et Program avec tally, boutons Cut / Fade,
-  durée du Fade, raccourcis clavier, panneau Statistiques étendu (par input).
+- **UI** : barre d'inputs avec vignettes live et boutons par input, vues Preview et Program avec
+  tally, Cut, Quick Play, 4 boutons de transition, T-Bar, raccourcis clavier, panneau
+  Statistiques étendu (par input).
 - **Signal perdu** : une entrée qui tombe passe en « signal perdu » et se reconnecte seule ; le
   programme ne tombe jamais.
 
 ### Hors Phase 1 (rappel)
 Audio (Phase 3 : les pistes audio des fichiers et captures sont ignorées), sorties (Phase 2),
-overlays, Wipe / Stinger (Phase 4), multiview et vignettes des inputs (Phase 5), sauvegarde de
+overlays, Wipe / Stinger (Phase 4), multiview (Phase 5), FTB (Phase 2, avec les sorties), sauvegarde de
 projet (Phase 5), changement de cadence **à chaud** (Phase 5, avec les réglages projet),
 zero-copy GPU (plus tard), NDI / SRT (Phase 3).
 
@@ -91,11 +93,13 @@ GStreamer.
 
 1. **ADR 0003–0005 validés**, `core` : nouveaux types + tests.
 2. `engine` : `Command`, `State` versionné, thread `vma-control`, journal JSONL, `RenderPlan` vers
-   le rendu. Inputs « couleur » seulement. Tests A3, A11 (partiel).
+   le rendu. Inputs « couleur » seulement. `Cut`, `CutDirect`, `QuickPlay`, 4 transitions,
+   `SetFader`. Tests A3, A11 (partiel), A15–A18.
 3. `compositor` : cibles `Rgba16Float`, passe de sortie `Rgba8Unorm`, couleur unie, Cut / Fade
    (gamma par défaut, linéaire en option). Golden A2, A4.
-4. `engine` + `ui` : Preview + Program dans l'UI, tally, boutons Cut / Fade, raccourcis.
-   *Premier jalon visible : deux couleurs, Cut / Fade à la main.*
+4. `engine` + `ui` : Preview + Program dans l'UI, tally, barre d'inputs (vignettes), Cut,
+   Quick Play, 4 boutons de transition, T-Bar, raccourcis.
+   *Premier jalon visible : des couleurs, Cut / Fade / T-Bar à la main.*
 5. `compositor` : upload d'images CPU (NV12, I420, YUY2, UYVY, RGBA, BGRA), YUV → RGB, mise à
    l'échelle linéaire, letterbox. Golden A7. Input « image fixe » (crate `image`).
 6. `engine` : triple buffer de textures par input, sélection de l'image par tick
@@ -104,8 +108,8 @@ GStreamer.
 7. `io-gst` : pipelines `videotestsrc` → appsink → upload ; état et reconnexion ; CI avec
    GStreamer (Ubuntu + Windows). Tests A8, A9 (fichier généré).
 8. `io-gst` : capture (DeviceMonitor : V4L2 / Media Foundation), fichier en boucle
-   (`uridecodebin`, seek de segment), UI d'ajout d'input (liste des périphériques, sélecteur de
-   fichier).
+   (`uridecodebin`, seek de segment), lecture / pause / redémarrage / Loop et options
+   d'auto-lecture (A20), UI d'ajout d'input (liste des périphériques, sélecteur de fichier).
 9. Multi-cadence de bout en bout : `--rate`, `--resolution`, sources synthétiques à toutes les
    cadences, soaks courts A6.
 10. Soak d'acceptation A1 (Linux, puis Windows avec A13), rapport, `ROADMAP.md`, arrêt pour revue.
@@ -113,25 +117,66 @@ GStreamer.
 Parallélisation possible après l'étape 1 (types de `core` figés) : `compositor` (3, 5) et
 `io-gst` (7) en worktrees séparés.
 
-## 6. Questions au mainteneur (avec ma proposition par défaut)
+## 6. Décisions (questions validées le 2026-10-26)
+Les dix propositions ont été acceptées ; §7 en corrige trois pour coller à la référence
+(double-clic, vignettes, fichiers vidéo).
 
-1. **Après une transition, Preview et Program s'échangent-ils** (l'ancien Program revient en
-   Preview, comportement « flip-flop » de la plupart des mélangeurs) ? *Proposition : oui.*
-2. **Fade demandé pendant un Fade** : ignoré ? **Cut pendant un Fade** : termine le Fade
-   immédiatement (Program = destination) ? *Proposition : Fade ignoré, Cut termine.*
-3. **Image « signal perdu »** dans le Program : noir (sûr à l'antenne) ou mire ? Une mire avec
-   texte demande un rendu de texte, absent en Phase 1. *Proposition : noir dans le Program,
-   état bien visible dans l'UI.*
-4. **Raccourcis** : `1`–`9` = input en Preview, `Espace` = Cut, `Entrée` = Fade (durée
-   courante) ? *Proposition : oui, non configurables en Phase 1.*
-5. **Cadence et résolution** choisies **au démarrage** (`--rate`, `--resolution`, et plus tard le
-   projet) en Phase 1, changement à chaud en Phase 5 ? *Proposition : oui.*
-6. **Sélecteur de fichier natif** via `rfd` (MIT, portail XDG sous Linux) plutôt qu'un champ
-   texte ? *Proposition : oui (ADR 0004).*
-7. **Vignettes live des inputs** dans la liste : hors Phase 1 (elles relèvent du multiview,
-   Phase 5) ? *Proposition : oui, liste textuelle avec état et tally en Phase 1.*
-8. **Courbe du Fade** : linéaire ? *Proposition : linéaire (une option de courbe plus tard).*
-9. **Ajustement des sources de format différent** : « fit » avec bandes noires, sans
-   recadrage ? *Proposition : oui, fit uniquement en Phase 1.*
-10. **Linéarisation** pour la mise à l'échelle : EOTF BT.1886 (γ 2,4) et son inverse
-    (ADR 0005) ? *Proposition : oui.*
+| # | Décision |
+|---|---|
+| 1 | Après Cut / Fade / transition : Preview et Program **s'échangent** (confirmé par la doc de la référence) |
+| 2 | Fade pendant un Fade : ignoré ; Cut pendant un Fade : le termine (à confirmer par observation, §7.3) |
+| 3 | Input en signal perdu à l'antenne : noir, état visible dans l'UI |
+| 4 | Raccourcis `1`–`9` Preview, `Espace` Cut, `Entrée` transition 1 (la référence n'a pas de raccourcis imposés : ils sont définis par l'utilisateur, ce qu'on fera en Phase 5) |
+| 5 | Cadence et résolution choisies au démarrage ; changement à chaud en Phase 5 |
+| 6 | Sélecteur de fichier natif `rfd` |
+| 7 | ~~Pas de vignettes~~ → **vignettes live en Phase 1** (§7.1) |
+| 8 | Fade linéaire |
+| 9 | Fit avec bandes noires |
+| 10 | Linéarisation BT.1886 (γ 2,4) |
+
+## 7. Alignement sur la référence (consigne du mainteneur)
+Règles inchangées (BRIEF §2) : on reproduit des **comportements** décrits dans la documentation
+publique ou observés, jamais l'apparence (pas de copie de l'interface, des couleurs du thème, des
+icônes ni des textes) et jamais le nom. Source : guide utilisateur public de la référence
+(version 28, sections *Getting Started*, *Transitions*, *Inputs*, *Settings – Options*,
+*Shortcut Function Reference*), consulté le 2026-10-26.
+
+### 7.1 Ajouts et corrections à la Phase 1 (à valider)
+| Comportement documenté | Avant | Désormais |
+|---|---|---|
+| Barre d'inputs avec une **petite vue live** de chaque input | liste textuelle | **vignettes live** (rendues à cadence réduite, voir `compositor.md`) |
+| Clic sur un input = Preview ; **double-clic = réglages de l'input** | double-clic = Program | double-clic = fenêtre de réglages (nom, couleur, boucle) |
+| Boutons sous chaque input : **Fermer, Quick Play, Cut, Loop** (+ overlays 1–4) | ✕ seulement | Fermer, Quick Play, Cut, Loop ; overlays en Phase 4 |
+| **Quick Play** : bascule Preview → Program avec une transition dédiée, **500 ms de Fade par défaut** (réglable) ; aussi par input | absent | commande `QuickPlay`, durée réglable (défaut 500 ms) |
+| **Cut d'un input** : envoie directement au Program **sans changer la Preview** | `SetProgram` | renommé `CutDirect`, même comportement |
+| **Quatre boutons de transition** configurables (effet + durée), en plus de Cut | un bouton Fade + durée | 4 boutons ; effets disponibles en Phase 1 : Fade, Cut (Wipe, Stinger… en Phase 4) |
+| **T-Bar** : transition manuelle avec l'effet du bouton 1 ; valeur 0–255, 255 = bascule terminée | absent | T-Bar dans l'UI + commande `SetFader` |
+| Vidéo : **lecture / pause, redémarrage, position**, bouton **Loop** ; options « démarrer la vidéo quand elle passe à l'antenne », « la redémarrer », « mettre en pause l'input qui quitte l'antenne » | fichier toujours en lecture, en boucle | contrôles de lecture + Loop par input + les 3 options globales |
+| **Cadence maître** : tous les inputs sont convertis à cette cadence | — | déjà prévu (ADR 0002) |
+| Disposition Preview à gauche, Program à droite | idem | inchangé (convention des mélangeurs ; notre propre style visuel) |
+
+Reporté : **FTB** (fondu au noir) agit sur les sorties (enregistrement, sortie externe, plein
+écran) et pas sur la vue Program de l'UI → Phase 2, avec les sorties. Overlays 1–4 → Phase 4.
+Catégories d'inputs, glisser-déposer pour réordonner → Phase 5 (projet).
+
+### 7.2 Critères d'acceptation ajoutés
+| # | Critère | Test | Où |
+|---|---|---|---|
+| A15 | Quick Play global et par input : Fade de la durée Quick Play, puis échange | `engine`, temps simulé | CI |
+| A16 | `CutDirect` : Program changé au tick suivant, Preview inchangée | `engine` | CI |
+| A17 | 4 boutons de transition : effet et durée propres, `Entrée` = bouton 1 | `engine` + `ui` | CI |
+| A18 | T-Bar : progression = valeur / 255, 255 termine la transition (échange), retour à 0 sans effet ensuite | `engine` + golden à 128 | CI |
+| A19 | Vignettes : 4 inputs 1080p50 + vignettes, 0 image perdue (dans le soak A1) | soak | manuel |
+| A20 | Vidéo : lecture / pause / redémarrage / Loop ; options d'auto-lecture appliquées aux transitions | `io-gst` (fichier généré) + `engine` | CI |
+
+### 7.3 À vérifier par observation sur la référence
+Valeurs par défaut et cas limites **non décrits** dans la documentation, à observer dans le
+logiciel (checklist [`docs/manual-tests/observation-reference-phase1.md`](../manual-tests/observation-reference-phase1.md)).
+En attendant, la valeur entre parenthèses est utilisée.
+- Effets et durées par défaut des 4 boutons de transition (Fade 500 ms, Fade 1000 ms, Fade
+  1500 ms, Cut).
+- Quick Play échange-t-il aussi Preview et Program ? (oui)
+- Transition demandée pendant une transition (ignorée) ; Cut pendant une transition (la termine).
+- Loop activé par défaut sur un nouvel input vidéo ? (non) Et les trois options d'auto-lecture
+  (démarrer : oui, redémarrer : non, pause en sortie : oui) ?
+- T-Bar relâchée à mi-course : l'image reste mixée (oui).

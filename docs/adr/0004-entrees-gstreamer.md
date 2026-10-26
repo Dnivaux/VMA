@@ -1,6 +1,6 @@
 # ADR 0004 — Entrées GStreamer et dépendances de la Phase 1
 
-- **Statut** : proposé (à valider)
+- **Statut** : accepté (mainteneur, 2026-10-26)
 - **Date** : 2026-10-26
 - **Contexte** : BRIEF §5 (upload GPU), §6 (stack), §2.6 (licences) ; spec
   [`docs/specs/io-gst.md`](../specs/io-gst.md)

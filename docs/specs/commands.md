@@ -1,6 +1,7 @@
 # Spec — couche de commandes et état (`engine`, Phase 1)
 
-- **Statut** : proposé, à valider avec [`phase-1.md`](phase-1.md) et l'ADR 0003
+- **Statut** : validé (2026-10-26), complété par l'alignement sur la référence
+  ([`phase-1.md`](phase-1.md) §7, à valider)
 
 ## Interface publique (esquisse)
 ```rust
@@ -8,14 +9,29 @@ pub enum Command {
     AddInput { spec: InputSpec, name: Option<String> },
     RemoveInput { input: InputId },
     SetPreview { input: InputId },
-    /// Envoie directement un input au Program (sans transition).
-    SetProgram { input: InputId },
+    PreviewNext, PreviewPrevious,
+    /// Preview ↔ Program, sans transition.
     Cut,
-    /// `None` = durée courante du Fade.
-    Fade { duration_ms: Option<u32> },
-    SetFadeDuration { duration_ms: u32 },
+    /// Envoie directement un input au Program sans changer la Preview.
+    CutDirect { input: InputId },
+    /// Transition du bouton n (1–4) : Preview → Program avec l'effet et la durée du bouton.
+    Transition { button: u8 },
+    /// Transition Quick Play (Fade 500 ms par défaut). Avec `input` : cet input part au
+    /// Program directement (sans passer par la Preview).
+    QuickPlay { input: Option<InputId> },
+    /// T-Bar : 0 = Program seul, 255 = transition terminée (effet du bouton 1).
+    SetFader { value: u8 },
+    SetTransition { button: u8, effect: Effect, duration_ms: u32 },   // Effect: Fade | Cut
+    SetQuickPlay { effect: Effect, duration_ms: u32 },
     SetMixDomain { domain: MixDomain },      // Gamma (défaut) | Linear
+    // Réglages d'un input
+    RenameInput { input: InputId, name: String },
     SetColor { input: InputId, color: Rgb8 }, // inputs « couleur »
+    // Lecture (inputs vidéo)
+    Play { input: InputId }, Pause { input: InputId }, Restart { input: InputId },
+    SetLoop { input: InputId, enabled: bool },
+    SetPosition { input: InputId, ms: u64 },
+    SetAutoPlay(AutoPlay),                    // { play_on_transition, restart_on_transition, pause_after_transition }
 }
 
 pub enum InputSpec {
@@ -45,11 +61,13 @@ API native).
 | `format` | cadence maître, résolution (fixées au démarrage en Phase 1) |
 | `inputs` | liste ordonnée : `id` (jamais réutilisé), `number` (1…n, ordre d'affichage), `name`, `spec`, `status` |
 | `preview`, `program` | `Option<InputId>` |
-| `transition` | `None` ou `Fade { from, to, frames, started_at: Option<u64> }` |
-| `fade_duration_ms` | défaut 1000 |
+| `transition` | `None`, `Timed { from, to, effect, frames, started_at: Option<u64> }` ou `Fader { from, to, value }` (T-Bar) |
+| `buttons` | 4 × `(effect, duration_ms)` ; défaut (à confirmer, `phase-1.md` §7.3) : Fade 500, Fade 1000, Fade 1500, Cut |
+| `quick_play` | `(effect, duration_ms)`, défaut Fade 500 ms (documenté) |
+| `auto_play` | démarrer à l'antenne : oui ; redémarrer : non ; pause en sortie d'antenne : oui (à confirmer) |
 | `mix_domain` | `Gamma` (défaut) / `Linear` |
 
-`status` d'un input : `Starting` → `Live { resolution, rate, format }` → `SignalLost { since,
+Par input vidéo : `playing`, `looping` (défaut : non), position. `status` d'un input : `Starting` → `Live { resolution, rate, format }` → `SignalLost { since,
 attempts }` → (reconnexion) `Starting`…
 
 ## Comportement
@@ -60,13 +78,24 @@ attempts }` → (reconnexion) `Starting`…
   ou de Program, il les occupe dans cet ordre : Program d'abord, puis Preview.
 - `RemoveInput` d'un input à l'antenne : le Program passe au noir (`program = None`) ; d'un
   input en Preview : `preview = None`. Un Fade qui l'implique est terminé (Cut).
-- `Cut` : `program ↔ preview` (*question 1* de `phase-1.md`) ; effectif au tick suivant.
-- `Fade` : `frames = round(duration_ms × cadence / 1000)`, au moins 1 ; `duration_ms` ∈
-  [0, 10 000] (0 = Cut). Progression au tick *k* depuis le début : `(k + 1) / frames`, linéaire.
-  À la fin : même échange que `Cut`.
-- `Fade` pendant un Fade : ignoré (`Rejected`) ; `Cut` pendant un Fade : le termine
-  immédiatement (*question 2*).
-- `SetPreview` / `SetProgram` pendant un Fade : refusés (le Fade doit finir ou être coupé).
+- `Cut` : `program ↔ preview` ; effectif au tick suivant. Sans Preview : refusé.
+- `CutDirect { input }` : `program = input`, Preview inchangée ; effectif au tick suivant.
+- `Transition { button }` / `QuickPlay { input: None }` : transition Preview → Program avec
+  l'effet du bouton (`Cut` = comme `Cut`). Fade : `frames = round(duration_ms × cadence /
+  1000)`, au moins 1 ; `duration_ms` ∈ [0, 10 000] (0 = Cut). Progression au tick *k* depuis le
+  début : `(k + 1) / frames`, linéaire. À la fin : échange Preview ↔ Program.
+- `QuickPlay { input: Some(i) }` : transition de `program` vers `i` ; à la fin, `program = i`
+  et la Preview est inchangée (comme `CutDirect`, mais en fondu).
+- `SetFader { value }` : démarre (si besoin) une transition manuelle avec l'effet du bouton 1 ;
+  progression = `value / 255`. `255` termine : échange, et la T-Bar repart de 0 sans effet
+  visible. Pendant une transition minutée, `SetFader` est refusé.
+- Transition demandée pendant une transition : refusée ; `Cut` pendant une transition : la
+  termine immédiatement (à confirmer par observation).
+- `SetPreview` / `CutDirect` pendant une transition : refusés.
+- **Auto-lecture** (inputs vidéo) : au début d'une transition, l'input entrant démarre si
+  `play_on_transition` (depuis le début si `restart_on_transition`) ; à la fin, l'input sortant
+  est mis en pause si `pause_after_transition`.
+- Un input vidéo arrivé à la fin sans Loop reste sur sa dernière image (pas de noir).
 - Input en `SignalLost` à l'antenne : il reste sélectionné et le rendu affiche du noir à sa
   place (*question 3*) ; il revient seul dès que le signal revient.
 
@@ -74,7 +103,7 @@ attempts }` → (reconnexion) `Starting`…
 Fichier `logs/commands-AAAA-MM-JJ.jsonl` (répertoire configurable `--journal-dir`), une ligne
 par commande :
 ```json
-{"utc":"2026-10-27T14:03:12.481Z","frame":5321,"source":"ui","id":17,"command":{"Fade":{"duration_ms":null}},"result":"Ok","version":42}
+{"utc":"2026-10-27T14:03:12.481Z","frame":5321,"source":"ui","id":17,"command":{"Transition":{"button":1}},"result":"Ok","version":42}
 ```
 Écrit par un thread dédié via un canal borné ; si le canal déborde, la ligne est perdue et un
 compteur `journal_dropped` augmente (le temps réel prime).
@@ -84,6 +113,8 @@ compteur `journal_dropped` augmente (le temps réel prime).
 |---|---|
 | Cut effectif au tick suivant (A3) | horloge simulée : commande entre les ticks *n* et *n+1* → Program changé au tick *n+1* |
 | Fade : nombre d'images exact à chaque cadence maître, progression linéaire, swap final sans image intermédiaire (A4) | temps simulé, 6 cadences × durées 0, 1, 40, 500, 1000 ms |
+| Quick Play (global, par input), `CutDirect`, 4 boutons, T-Bar (A15–A18) | temps simulé, un test par règle ci-dessus |
+| Auto-lecture appliquée aux transitions (A20) | source vidéo factice |
 | Commandes invalides refusées sans effet | un test par cas ci-dessus |
 | Ordre et déterminisme : rejouer un journal redonne le même état final | test de rejeu |
 | Ajout / retrait à chaud sans image manquée (A12) | GPU logiciel, 20 cycles pendant le rendu |

@@ -1,6 +1,6 @@
 # ADR 0003 — État, commandes et threads (Phase 1)
 
-- **Statut** : proposé (à valider)
+- **Statut** : accepté (mainteneur, 2026-10-26)
 - **Date** : 2026-10-26
 - **Contexte** : BRIEF §5 (couche de commandes, state store), §2.3 (temps réel) ; spec
   [`docs/specs/commands.md`](../specs/commands.md)
@@ -41,6 +41,8 @@ commande alloue (nouvel input, textures, pipeline, journal, snapshot pour l'UI).
   `start` au premier tick où il voit cet `id`, mixe pendant `frames` ticks, puis affiche `to`
   seul et le signale. Tant que `vma-control` n'a pas publié l'état final (swap), le rendu
   continue d'afficher `to` : pas de saut d'une image à la fin du Fade.
+- **T-Bar** : le plan porte la valeur du fader (0–255), appliquée au tick qui suit sa
+  publication ; à 255, `vma-control` publie l'échange.
 
 ### Journal
 Chaque commande (acceptée ou refusée) est écrite en JSON Lines par `vma-control`, via un
