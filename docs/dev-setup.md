@@ -27,8 +27,11 @@ gst-inspect-1.0 srtsink     # SRT (Phase 2) — absent sur la machine de dev au 
 ```
 NDI (`ndisrc`/`ndisink`, gst-plugins-rs) : procédure à documenter en Phase 3.
 
-État constaté sur la machine de dev (2026-10-26) : GStreamer 1.28.6, `nvh264enc` et
-`rtmp2sink` présents ; `srtsink`, `ndisrc` absents.
+État constaté sur la machine de dev (2026-10-26, après installation) : GStreamer 1.28.8
+(`gstreamer`, `gst-plugins-base`, `gst-plugins-good`, `gst-plugins-bad-libs`, `gst-libav`) ;
+`v4l2src`, `appsink`, `nvh264enc`, `nvh264dec`, `rtmp2sink`, `matroskamux` présents — suffisant
+pour la Phase 1. `srtsink` / `srtsrc` absents : le paquet `gst-plugins-bad` (et pas seulement
+`-libs`) sera nécessaire pour SRT (Phase 2–3). `ndisrc` absent (Phase 3).
 
 ## Windows
 1. Rust via `rustup-init.exe` (toolchain MSVC) + Visual Studio Build Tools (C++).

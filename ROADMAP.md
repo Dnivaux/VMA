@@ -7,42 +7,53 @@ Légende : ✅ fait (tests verts) · 🟡 implémenté, validation incomplète �
 
 ---
 
-## Phase 0 — Fondations · *en revue*
+## Phase 0 — Fondations · *en revue (soak hostile à passer)*
+
+ADR 0001 **accepté avec amendements** ; décisions produit dans l'ADR 0002 (nom VMA, egui,
+titres HTML + natifs, multi-cadence dès la Phase 1, macOS plus tard).
 
 | Élément | État | Preuve |
 |---|---|---|
-| Workspace Cargo (12 crates, édition 2024, MSRV 1.95) | ✅ | `cargo +1.95 check --workspace --all-targets` local |
-| Lints : clippy `-D warnings`, `unwrap`/`expect`/`panic` interdits hors tests | ✅ | `cargo clippy --workspace --all-targets -- -D warnings` local |
-| Format (`rustfmt`) | ✅ | `cargo fmt --check` local |
-| Politique de licences (`cargo deny`) | ✅ | `cargo deny check` local : ok (3 advisories « unmaintained » et les polices d'egui en exception justifiée dans `deny.toml`) |
-| CI GitHub Actions (Ubuntu + Windows, fmt, clippy, tests, deny, MSRV) | 🟡 | Workflow écrit, **jamais exécuté** : le dépôt n'a pas encore de remote GitHub |
-| `core` : `FrameRate` rationnel, `Resolution`, `InputId` | ✅ | 7 tests unitaires (local) |
-| `clock` : horloge à cadence fixe, images manquées, stats lock-free, `tracing` | ✅ | 6 tests (local) |
-| `compositor` : mire WGSL, cibles de rendu, readback | ✅ | 4 tests golden / analytiques (local, RTX 5090 et Intel ARL) |
-| `engine` : thread de rendu, triple buffer lock-free, contre-pression GPU | ✅ | 3 tests unitaires + `runs_one_second` (local) |
-| Fenêtre eframe : Program + panneau Statistiques | ✅ | Lancement manuel : 50,00 fps, 0 manquée |
+| Workspace Cargo (12 crates `vma-*`, édition 2024, MSRV 1.95) | ✅ | CI `msrv` |
+| Lints : clippy `-D warnings`, `unwrap`/`expect`/`panic` interdits hors tests | ✅ | CI `test` (Ubuntu, Windows) |
+| Format (`rustfmt`) | ✅ | CI `fmt` |
+| Politique de licences (`cargo deny`) | ✅ | CI `deny` (3 advisories « unmaintained » et les polices d'egui en exception justifiée dans `deny.toml`) |
+| CI GitHub Actions (Ubuntu + Windows, fmt, clippy, tests, deny, MSRV) | ✅ | Run [40373180391](https://github.com/Dnivaux/VMA/actions/runs/40373180391) vert sur les 2 OS (commit `46a4162`) |
+| `core` : `FrameRate` rationnel, `Resolution`, `InputId` | ✅ | 7 tests unitaires (CI) |
+| `clock` : horloge à cadence fixe, images manquées, stats lock-free, `tracing` | ✅ | 6 tests (CI) |
+| `clock` : histogramme du retard au réveil (p50 / p99 / p99,9 / max), marge d'attente configurable — *amendement 4* | 🟡 | 3 tests locaux ; CI à relancer après push |
+| `compositor` : mire WGSL, cibles de rendu, readback | ✅ | 4 tests golden / analytiques (CI : lavapipe, WARP) |
+| `engine` : thread de rendu, triple buffer lock-free, contre-pression GPU | ✅ | 3 tests unitaires + `runs_one_second` (CI) |
+| `engine` : invariant du triple buffer documenté + tests de stress CPU et GPU — *amendement 2* | 🟡 | `producer_never_writes_the_held_slot`, `triple_buffer_gpu_stress` locaux ; CI à relancer |
+| `engine` : perte du GPU (rendu arrêté, horloge maintenue, sortie en erreur), erreurs GPU comptées — *amendement 3* | 🟡 | `device_lost_stops_rendering_not_the_clock` local ; CI à relancer |
+| Fenêtre eframe : Program + panneau Statistiques (dont retard au réveil, erreurs GPU) | ✅ | Lancement manuel : 50,00 fps, 0 manquée |
+| Mode soak dans l'app (`--soak`, `--hostile`, rapport Markdown, code de sortie) | 🟡 | Essai de 16 s hostile sous Hyprland : 0 manquée, 0 répétée |
 | **Acceptation : 10 min à 50 fps sans image manquée** | ✅ (manuel) | 600 s, 30 002 images, 0 manquée, 0 répétée — [`tests/soak/reports/2026-10-26-phase0-render-loop.md`](tests/soak/reports/2026-10-26-phase0-render-loop.md) |
-| **Acceptation : CI verte sur les 2 OS** | ⬜ | En attente du dépôt GitHub |
-| Doc : `CLAUDE.md`, ADR 0001, specs `clock` / `compositor` / `engine`, `docs/dev-setup.md` | ✅ | — |
+| **Acceptation : soak hostile 10 min, 0 image manquée** (amendement 3) | ⬜ | À passer par le mainteneur, Linux et Windows : [`docs/manual-tests/phase0-soak-hostile.md`](docs/manual-tests/phase0-soak-hostile.md) |
+| **Acceptation : CI verte sur les 2 OS** | ✅ | Run 40373180391 ; à reconfirmer sur les commits des amendements |
+| Doc : `CLAUDE.md`, ADR 0001 et 0002, specs `clock` / `compositor` / `engine`, `docs/dev-setup.md`, checklist soak hostile | ✅ | — |
 
-« Local » = Arch Linux, RTX 5090, Rust 1.99.1. Tant que la CI n'a pas tourné, les ✅ ci-dessus
-ne sont pas encore « faits » au sens strict du BRIEF.
+« Local » = Arch Linux, RTX 5090, Rust 1.99.1.
 
 ### Tests ignorés / manuels
 | Test | Raison |
 |---|---|
 | `vma-engine::render_loop::soak_render_loop` | 10 min, lancé manuellement sur la machine de dev ; rapport dans `tests/soak/reports/` |
+| Soak hostile (`vma --soak 600 --hostile`) | Fenêtre réelle et actions à la souris : impossible sur les runners CI ; checklist `docs/manual-tests/phase0-soak-hostile.md` |
 
 ### Dette connue (voir ADR 0001)
 - Allocations et verrous **internes à wgpu** dans la boucle de rendu (pas d'allocation applicative).
 - Thread de rendu en priorité OS normale.
 - Temps GPU et utilisation GPU non mesurés (seul le temps CPU de rendu l'est).
-- Couleur : R'G'B' encodé en `Rgba8Unorm`, pas encore de compositing linéaire.
+- Couleur : R'G'B' encodé en `Rgba8Unorm`, pas encore de cibles `Rgba16Float`.
+- Perte du GPU : pas de recréation à chaud (Phase 2).
+- Soak hostile sous Wayland : déplacement et dé-minimisation automatiques sans effet (faits à la main).
 
 ## Phase 1 — Mélange de base · ⬜
 Inputs GStreamer (webcam / capture, fichier en boucle, image, couleur), Preview + Program,
-Cut / Fade, couche `Command`, compositing linéaire + YUV → RGB.
-Décisions à prendre avant : cadences du MVP (50p seul ou multi-cadences), UI (BRIEF §12).
+Cut / Fade (mixage gamma par défaut, linéaire en option), couche `Command`, cibles internes
+`Rgba16Float` + YUV → RGB, **cadence maître réglable (25 / 29,97 / 30 / 50 / 59,94 / 60p) avec
+rééchantillonnage des inputs** (ADR 0002). Spec à rédiger et faire valider avant de coder.
 
 ## Phase 2 — Sorties · ⬜
 ## Phase 3 — Réseau et audio · ⬜

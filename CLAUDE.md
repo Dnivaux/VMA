@@ -34,6 +34,10 @@ cargo +1.95 check --workspace --all-targets # MSRV
 cargo test --release -p vma-engine --test render_loop -- --ignored --nocapture
 VMA_SOAK_SECS=60 cargo test --release -p vma-engine --test render_loop -- --ignored --nocapture
 
+# Soak dans l'application réelle (rapport Markdown, code 2 si images manquées/répétées) :
+cargo run --release -- --soak 600 --report tests/soak/reports/$(date +%F)-x.md
+cargo run --release -- --soak 600 --hostile --report …   # + agressions fenêtre (checklist docs/manual-tests/)
+
 # Regénérer les golden frames après un changement visuel VOULU (puis relire le PNG) :
 VMA_UPDATE_GOLDEN=1 cargo test -p vma-compositor --test golden_test_pattern
 ```
@@ -49,7 +53,7 @@ Variables wgpu utiles : `WGPU_BACKEND=vulkan|dx12` ; `WGPU_ADAPTER_NAME=Intel` (
 | `crates/ui` | egui : vue Program, panneau Statistiques. |
 | `app/` | Binaire : assemble fenêtre eframe, moteur, UI. |
 | `crates/{io-gst,io-ndi,io-html,audio,replay,api}` | Squelettes vides pour les phases suivantes. |
-| `docs/adr/` | Décisions d'architecture (une par fichier, à faire valider). |
+| `docs/adr/` | Décisions d'architecture (une par fichier, à faire valider). 0001 archi (acceptée avec amendements), 0002 décisions produit. |
 | `docs/specs/` | Une spec par module, avec critères d'acceptation. |
 | `docs/manual-tests/` | Checklists de tests sur matériel réel. |
 | `tests/golden/` | Images de référence. `tests/soak/reports/` : rapports de soak. |
@@ -61,6 +65,12 @@ Variables wgpu utiles : `WGPU_BACKEND=vulkan|dx12` ; `WGPU_ADAPTER_NAME=Intel` (
   l'autoriser localement avec un commentaire `// SAFETY:` justifié.
 - Les tests d'intégration autorisent explicitement `unwrap`/`panic` en tête de fichier.
 - Couleur Phase 0 : textures Program `Rgba8Unorm`, valeurs R'G'B' Rec.709 encodées, pleine plage.
+  Phase 1 : cibles internes `Rgba16Float` ; transitions en domaine gamma par défaut (configurable),
+  linéaire pour scaling / filtrage.
+- PTS des sorties = f(index d'image *n*), jamais l'heure murale.
+- Triple buffer Program : l'UI n'appelle `ProgramReader::update()` qu'en début de frame, après
+  avoir soumis la frame précédente ; une seule `Queue` partagée (invariant, ADR 0001).
+- Cadences : tout le code reste rationnel (`FrameRate`) ; multi-cadence maître dès la Phase 1.
 
 ## Méthode (BRIEF §10)
 - Avant une phase : spec dans `docs/specs/` + plan, **attendre la validation**.
