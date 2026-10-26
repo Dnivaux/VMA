@@ -11,29 +11,29 @@ Le **glisser à la souris** ne s'automatise pas : c'est l'opérateur qui le fait
 À faire sur **chaque OS** (Linux puis Windows), sur la machine de dev, en build release.
 
 ## Préparation
-- [ ] Profil d'alimentation « performances » (Windows) / gouverneur CPU par défaut (Linux).
-- [ ] Fermer les applications lourdes (jeux, encodages, navigateur chargé).
-- [ ] `git pull`, puis `cargo build --release`.
+- [x] Profil d'alimentation « performances » (Windows) / gouverneur CPU par défaut (Linux).
+- [x] Fermer les applications lourdes (jeux, encodages, navigateur chargé).
+- [x] `git pull`, puis `cargo build --release`.
 
 ## Linux (Hyprland / Wayland)
 Sous Wayland, un client ne peut ni se positionner ni se dé-minimiser : ces deux agressions
 automatiques sont sans effet (un avertissement winit s'affiche), d'où les actions manuelles.
 Une fenêtre en mosaïque ignore aussi les demandes de taille.
 
-1. [ ] Lancer :
+1. [x] Lancer :
    ```sh
    cargo run --release -- --soak 600 --hostile \
      --report tests/soak/reports/$(date +%F)-phase0-hostile-linux.md
    ```
-2. [ ] Passer la fenêtre VMA en flottant (`hyprctl dispatch togglefloating`, ou votre raccourci)
+2. [x] Passer la fenêtre VMA en flottant (`hyprctl dispatch togglefloating`, ou votre raccourci)
    pour que les redimensionnements automatiques s'appliquent.
-3. [ ] Pendant les 10 minutes, en continu, par périodes d'environ 30 s :
-   - [ ] déplacer la fenêtre à la souris (SUPER + clic gauche glissé) sans relâcher ;
-   - [ ] redimensionner à la souris (SUPER + clic droit glissé) ;
-   - [ ] changer d'espace de travail et revenir ;
-   - [ ] repasser en mosaïque puis en flottant ;
-   - [ ] mettre une autre fenêtre plein écran par-dessus quelques secondes.
-4. [ ] Ne pas fermer la fenêtre : elle se ferme seule à la fin. Code de sortie attendu : `0`
+3. [x] Pendant les 10 minutes, en continu, par périodes d'environ 30 s :
+   - [x] déplacer la fenêtre à la souris (SUPER + clic gauche glissé) sans relâcher ;
+   - [x] redimensionner à la souris (SUPER + clic droit glissé) ;
+   - [x] changer d'espace de travail et revenir ;
+   - [x] repasser en mosaïque puis en flottant ;
+   - [x] mettre une autre fenêtre plein écran par-dessus quelques secondes.
+1. [x] Ne pas fermer la fenêtre : elle se ferme seule à la fin. Code de sortie attendu : `0`
    (`echo $?`). `2` = images manquées ou répétées.
 
 ## Windows
@@ -54,11 +54,11 @@ fait tourner sa propre boucle modale et le thread UI est gelé.
 3. [ ] Code de sortie attendu : `0` (`$LASTEXITCODE`).
 
 ## Après chaque passage
-- [ ] Ouvrir le rapport généré ; vérifier : **Images manquées = 0**, **Images répétées = 0**,
+- [x] Ouvrir le rapport généré ; vérifier : **Images manquées = 0**, **Images répétées = 0**,
   GPU perdu = non, Ticks ≈ attendu (± 2).
-- [ ] Compléter la section « Actions manuelles » du rapport (ce qui a été fait, combien de
+- [x] Compléter la section « Actions manuelles » du rapport (ce qui a été fait, combien de
   temps, observations : saccades visibles, avertissements dans le terminal).
-- [ ] Noter le « Plus long blocage UI » : il montre que l'UI a bien été gelée, sans effet sur
+- [x] Noter le « Plus long blocage UI » : il montre que l'UI a bien été gelée, sans effet sur
   le Program.
 - [ ] Commiter le rapport (`docs(soak): add Phase 0 hostile soak report (<os>)`).
 
