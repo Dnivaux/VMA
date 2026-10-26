@@ -139,98 +139,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "aiguillage"
-version = "0.0.1"
-dependencies = [
- "aiguillage-core",
- "aiguillage-engine",
- "aiguillage-ui",
- "anyhow",
- "eframe",
- "egui",
- "egui-wgpu",
- "tracing",
- "tracing-appender",
- "tracing-subscriber",
- "wgpu",
-]
-
-[[package]]
-name = "aiguillage-api"
-version = "0.0.1"
-
-[[package]]
-name = "aiguillage-audio"
-version = "0.0.1"
-
-[[package]]
-name = "aiguillage-clock"
-version = "0.0.1"
-dependencies = [
- "aiguillage-core",
- "tracing",
-]
-
-[[package]]
-name = "aiguillage-compositor"
-version = "0.0.1"
-dependencies = [
- "aiguillage-core",
- "bytemuck",
- "image",
- "pollster",
- "thiserror 2.0.21",
- "tracing",
- "wgpu",
-]
-
-[[package]]
-name = "aiguillage-core"
-version = "0.0.1"
-dependencies = [
- "thiserror 2.0.21",
-]
-
-[[package]]
-name = "aiguillage-engine"
-version = "0.0.1"
-dependencies = [
- "aiguillage-clock",
- "aiguillage-compositor",
- "aiguillage-core",
- "pollster",
- "thiserror 2.0.21",
- "tracing",
- "wgpu",
-]
-
-[[package]]
-name = "aiguillage-io-gst"
-version = "0.0.1"
-
-[[package]]
-name = "aiguillage-io-html"
-version = "0.0.1"
-
-[[package]]
-name = "aiguillage-io-ndi"
-version = "0.0.1"
-
-[[package]]
-name = "aiguillage-replay"
-version = "0.0.1"
-
-[[package]]
-name = "aiguillage-ui"
-version = "0.0.1"
-dependencies = [
- "aiguillage-clock",
- "aiguillage-core",
- "aiguillage-engine",
- "egui",
-]
-
-[[package]]
 name = "allocator-api2"
 version = "0.2.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3228,6 +3136,98 @@ name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
+
+[[package]]
+name = "vma"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "eframe",
+ "egui",
+ "egui-wgpu",
+ "tracing",
+ "tracing-appender",
+ "tracing-subscriber",
+ "vma-core",
+ "vma-engine",
+ "vma-ui",
+ "wgpu",
+]
+
+[[package]]
+name = "vma-api"
+version = "0.0.1"
+
+[[package]]
+name = "vma-audio"
+version = "0.0.1"
+
+[[package]]
+name = "vma-clock"
+version = "0.0.1"
+dependencies = [
+ "tracing",
+ "vma-core",
+]
+
+[[package]]
+name = "vma-compositor"
+version = "0.0.1"
+dependencies = [
+ "bytemuck",
+ "image",
+ "pollster",
+ "thiserror 2.0.21",
+ "tracing",
+ "vma-core",
+ "wgpu",
+]
+
+[[package]]
+name = "vma-core"
+version = "0.0.1"
+dependencies = [
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "vma-engine"
+version = "0.0.1"
+dependencies = [
+ "pollster",
+ "thiserror 2.0.21",
+ "tracing",
+ "vma-clock",
+ "vma-compositor",
+ "vma-core",
+ "wgpu",
+]
+
+[[package]]
+name = "vma-io-gst"
+version = "0.0.1"
+
+[[package]]
+name = "vma-io-html"
+version = "0.0.1"
+
+[[package]]
+name = "vma-io-ndi"
+version = "0.0.1"
+
+[[package]]
+name = "vma-replay"
+version = "0.0.1"
+
+[[package]]
+name = "vma-ui"
+version = "0.0.1"
+dependencies = [
+ "egui",
+ "vma-clock",
+ "vma-core",
+ "vma-engine",
+]
 
 [[package]]
 name = "walkdir"

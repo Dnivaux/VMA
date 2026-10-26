@@ -1,7 +1,7 @@
 //! Golden-frame tests of the test pattern.
 //!
 //! Reference images live in `<workspace>/tests/golden/`. To (re)generate them after an
-//! intentional visual change: `AIGUILLAGE_UPDATE_GOLDEN=1 cargo nextest run -p aiguillage-compositor`
+//! intentional visual change: `VMA_UPDATE_GOLDEN=1 cargo nextest run -p vma-compositor`
 //! then review the PNG diff before committing.
 //!
 //! Needs a GPU adapter; a software one (lavapipe / WARP) is enough. Fails — does not skip —
@@ -16,9 +16,9 @@
     clippy::print_stdout
 )]
 
-use aiguillage_compositor::{RenderTarget, TestPattern, headless, readback};
-use aiguillage_core::Resolution;
 use std::path::PathBuf;
+use vma_compositor::{RenderTarget, TestPattern, headless, readback};
+use vma_core::Resolution;
 
 const W: u32 = 320;
 const H: u32 = 180;
@@ -66,7 +66,7 @@ fn psnr(a: &[u8], b: &[u8]) -> f64 {
 
 fn check_golden(name: &str, img: &[u8]) {
     let path = golden_dir().join(name);
-    if std::env::var_os("AIGUILLAGE_UPDATE_GOLDEN").is_some() {
+    if std::env::var_os("VMA_UPDATE_GOLDEN").is_some() {
         image::save_buffer(&path, img, W, H, image::ColorType::Rgba8).unwrap();
         eprintln!("golden updated: {}", path.display());
         return;

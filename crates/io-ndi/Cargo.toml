@@ -1,5 +1,5 @@
 [package]
-name = "aiguillage-io-ndi"
+name = "vma-io-ndi"
 description = "NDI input/output, SDK loaded dynamically at runtime. Optional, Phase 3."
 version.workspace = true
 edition.workspace = true

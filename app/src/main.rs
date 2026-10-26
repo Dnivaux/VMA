@@ -1,8 +1,8 @@
-//! Aiguillage — main binary: wires the window, the engine and the UI together.
+//! VMA — main binary: wires the window, the engine and the UI together.
 
-use aiguillage_engine::{EngineConfig, RenderEngine};
-use aiguillage_ui::MainUi;
 use anyhow::Context as _;
+use vma_engine::{EngineConfig, RenderEngine};
+use vma_ui::MainUi;
 
 fn main() -> anyhow::Result<()> {
     // Logs go through a background writer thread: the render thread never does I/O itself.
@@ -18,14 +18,14 @@ fn main() -> anyhow::Result<()> {
     let options = eframe::NativeOptions {
         renderer: eframe::Renderer::Wgpu,
         viewport: egui::ViewportBuilder::default()
-            .with_title("Aiguillage")
+            .with_title("VMA")
             .with_inner_size([1400.0, 820.0])
             .with_min_inner_size([800.0, 480.0]),
         ..Default::default()
     };
 
     eframe::run_native(
-        "Aiguillage",
+        "VMA",
         options,
         Box::new(|cc| {
             let app = App::new(cc)?;

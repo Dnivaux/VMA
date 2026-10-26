@@ -1,5 +1,5 @@
 use crate::PROGRAM_FORMAT;
-use aiguillage_core::Resolution;
+use vma_core::Resolution;
 
 /// An off-screen texture the compositor renders into (Program, Preview, …).
 #[derive(Debug)]

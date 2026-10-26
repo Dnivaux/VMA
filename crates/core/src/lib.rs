@@ -1,4 +1,4 @@
-//! Common types shared by every Aiguillage crate.
+//! Common types shared by every VMA crate.
 //!
 //! **Stability warning:** every other crate depends on these types. Changing them is a
 //! cross-crate change and must be announced (see `CLAUDE.md`).

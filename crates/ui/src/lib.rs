@@ -5,8 +5,8 @@
 
 mod stats_panel;
 
-use aiguillage_engine::{ProgramReader, RenderEngine};
 use egui::{Color32, Stroke, TextureId};
+use vma_engine::{ProgramReader, RenderEngine};
 
 /// Tally red, used for the Program border.
 pub const TALLY_PROGRAM: Color32 = Color32::from_rgb(220, 30, 30);

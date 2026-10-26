@@ -1,6 +1,6 @@
 [package]
-name = "aiguillage-core"
-description = "Common types shared by every Aiguillage crate: frame rates, resolutions, ids, errors."
+name = "vma-core"
+description = "Common types shared by every VMA crate: frame rates, resolutions, ids, errors."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

@@ -17,9 +17,9 @@ mod time;
 pub use stats::{ClockStats, ClockStatsSnapshot};
 pub use time::{ManualTime, SystemTime, TimeSource};
 
-use aiguillage_core::FrameRate;
 use std::sync::Arc;
 use std::time::Duration;
+use vma_core::FrameRate;
 
 /// One frame slot delivered by the clock.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

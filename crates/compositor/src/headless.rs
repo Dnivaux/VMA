@@ -20,7 +20,7 @@ pub async fn request_gpu() -> Result<HeadlessGpu, CompositorError> {
     let adapter_info = adapter.get_info();
     let (device, queue) = adapter
         .request_device(&wgpu::DeviceDescriptor {
-            label: Some("aiguillage.headless"),
+            label: Some("vma.headless"),
             ..Default::default()
         })
         .await?;

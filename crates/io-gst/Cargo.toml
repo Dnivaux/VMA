@@ -1,5 +1,5 @@
 [package]
-name = "aiguillage-io-gst"
+name = "vma-io-gst"
 description = "GStreamer inputs and outputs (capture, files, RTMP, SRT, recording). Phase 1-2."
 version.workspace = true
 edition.workspace = true

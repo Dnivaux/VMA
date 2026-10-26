@@ -21,16 +21,16 @@ version = "0.0.1"
 edition = "2024"
 rust-version = "1.95"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/OWNER/aiguillage"
+repository = "https://github.com/Dnivaux/VMA"
 publish = false
 
 [workspace.dependencies]
 # Internal crates
-aiguillage-core = { path = "crates/core" }
-aiguillage-clock = { path = "crates/clock" }
-aiguillage-engine = { path = "crates/engine" }
-aiguillage-compositor = { path = "crates/compositor" }
-aiguillage-ui = { path = "crates/ui" }
+vma-core = { path = "crates/core" }
+vma-clock = { path = "crates/clock" }
+vma-engine = { path = "crates/engine" }
+vma-compositor = { path = "crates/compositor" }
+vma-ui = { path = "crates/ui" }
 
 # External crates — licence noted for each (rule 2.6). Enforced by deny.toml.
 wgpu = "30.0"                                                # MIT OR Apache-2.0

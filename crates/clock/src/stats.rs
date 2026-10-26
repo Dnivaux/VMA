@@ -1,7 +1,7 @@
 use crate::Tick;
-use aiguillage_core::FrameRate;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
+use vma_core::FrameRate;
 
 /// Lock-free clock statistics, written by the render thread, read by anyone.
 #[derive(Debug)]

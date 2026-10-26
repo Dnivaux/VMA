@@ -3,8 +3,8 @@
 //! - `runs_one_second`: CI smoke test.
 //! - `soak_render_loop`: the Phase 0 acceptance test (10 min at 50 fps, zero missed frame).
 //!   Ignored by default, run manually on the dev machine:
-//!   `cargo nextest run -p aiguillage-engine --run-ignored only --no-capture`
-//!   Duration override: `AIGUILLAGE_SOAK_SECS=60`.
+//!   `cargo nextest run -p vma-engine --run-ignored only --no-capture`
+//!   Duration override: `VMA_SOAK_SECS=60`.
 
 // Test code: panicking on failure is the intended behaviour.
 #![allow(
@@ -15,12 +15,12 @@
     clippy::print_stdout
 )]
 
-use aiguillage_compositor::headless;
-use aiguillage_core::{FrameRate, Resolution};
-use aiguillage_engine::{EngineConfig, RenderEngine};
 use std::time::{Duration, Instant};
+use vma_compositor::headless;
+use vma_core::{FrameRate, Resolution};
+use vma_engine::{EngineConfig, RenderEngine};
 
-fn spawn(resolution: Resolution) -> (RenderEngine, aiguillage_engine::ProgramReader, String) {
+fn spawn(resolution: Resolution) -> (RenderEngine, vma_engine::ProgramReader, String) {
     let gpu = pollster::block_on(headless::request_gpu()).expect("GPU adapter required");
     let adapter = format!(
         "{} ({:?}, {:?})",
@@ -64,7 +64,7 @@ fn runs_one_second() {
 #[test]
 #[ignore = "10-minute soak test (Phase 0 acceptance); run manually on the dev machine"]
 fn soak_render_loop() {
-    let secs: u64 = std::env::var("AIGUILLAGE_SOAK_SECS")
+    let secs: u64 = std::env::var("VMA_SOAK_SECS")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(600);

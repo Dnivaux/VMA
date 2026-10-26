@@ -1,7 +1,7 @@
 # Spec — `engine` (Phase 0 : thread de rendu)
 
 ## Comportement
-- `RenderEngine::spawn(device, queue, config)` démarre le thread `aiguillage-render` et
+- `RenderEngine::spawn(device, queue, config)` démarre le thread `vma-render` et
   renvoie le `ProgramReader` (consommateur unique des images Program).
 - À chaque tick : `device.poll(Poll)` non bloquant, puis rendu de la mire dans la texture
   « back » du triple buffer, `submit`, publication.

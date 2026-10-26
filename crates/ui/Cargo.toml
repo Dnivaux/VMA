@@ -1,5 +1,5 @@
 [package]
-name = "aiguillage-ui"
+name = "vma-ui"
 description = "egui user interface: Program view and statistics panel."
 version.workspace = true
 edition.workspace = true
@@ -8,9 +8,9 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
-aiguillage-core.workspace = true
-aiguillage-clock.workspace = true
-aiguillage-engine.workspace = true
+vma-core.workspace = true
+vma-clock.workspace = true
+vma-engine.workspace = true
 egui.workspace = true
 
 [lints]

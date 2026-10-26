@@ -1,5 +1,5 @@
 [package]
-name = "aiguillage-io-html"
+name = "vma-io-html"
 description = "Off-screen HTML input (CEF) with alpha. Optional, Phase 4."
 version.workspace = true
 edition.workspace = true

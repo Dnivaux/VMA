@@ -1,10 +1,10 @@
-# CLAUDE.md — conventions du projet Aiguillage
+# CLAUDE.md — conventions du projet VMA
 
 Résumé opérationnel de `BRIEF.md` (qui reste la référence). À lire au début de chaque session.
 
 ## Le projet en une phrase
 Mélangeur vidéo live open source en Rust (switcher, streaming, enregistrement), multiplateforme
-(Linux + Windows, macOS plus tard). Nom de code provisoire : **Aiguillage**.
+(Linux + Windows, macOS plus tard). Nom provisoire : **VMA** (ancien nom de code « Aiguillage », encore utilisé dans `BRIEF.md`).
 
 ## Règles non négociables (BRIEF §2)
 1. **Clean room** : uniquement docs publiques, standards ouverts, comportement observé. Jamais de
@@ -31,11 +31,11 @@ cargo deny check                            # licences, advisories, sources
 cargo +1.95 check --workspace --all-targets # MSRV
 
 # Tests longs / matériel (#[ignore]) — sur la machine de dev :
-cargo test --release -p aiguillage-engine --test render_loop -- --ignored --nocapture
-AIGUILLAGE_SOAK_SECS=60 cargo test --release -p aiguillage-engine --test render_loop -- --ignored --nocapture
+cargo test --release -p vma-engine --test render_loop -- --ignored --nocapture
+VMA_SOAK_SECS=60 cargo test --release -p vma-engine --test render_loop -- --ignored --nocapture
 
 # Regénérer les golden frames après un changement visuel VOULU (puis relire le PNG) :
-AIGUILLAGE_UPDATE_GOLDEN=1 cargo test -p aiguillage-compositor --test golden_test_pattern
+VMA_UPDATE_GOLDEN=1 cargo test -p vma-compositor --test golden_test_pattern
 ```
 Variables wgpu utiles : `WGPU_BACKEND=vulkan|dx12` ; `WGPU_ADAPTER_NAME=Intel` (tests headless) ; `WGPU_POWER_PREF=low` (app).
 

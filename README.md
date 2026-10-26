@@ -1,7 +1,7 @@
-# Aiguillage
+# VMA
 
 Mélangeur vidéo live open source en Rust : switcher, streaming, enregistrement.
-Linux et Windows en priorité, macOS ensuite. Nom de code provisoire.
+Linux et Windows en priorité, macOS ensuite. Nom provisoire (BRIEF §12 : « VMA » remplace le nom de code « Aiguillage »).
 
 > **État** : Phase 0 (fondations). L'application ouvre une fenêtre qui affiche une mire
 > générée sur le GPU à 50 images/s, avec un panneau de statistiques. Aucune entrée vidéo,

@@ -1,5 +1,5 @@
 [package]
-name = "aiguillage-replay"
+name = "vma-replay"
 description = "Instant replay: per-camera ring buffers, slow motion. Phase 6."
 version.workspace = true
 edition.workspace = true

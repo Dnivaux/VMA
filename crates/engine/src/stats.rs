@@ -1,7 +1,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-/// Lock-free render-thread statistics (complements [`aiguillage_clock::ClockStats`]).
+/// Lock-free render-thread statistics (complements [`vma_clock::ClockStats`]).
 #[derive(Debug, Default)]
 pub struct RenderStats {
     frames_rendered: AtomicU64,

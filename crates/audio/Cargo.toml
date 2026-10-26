@@ -1,5 +1,5 @@
 [package]
-name = "aiguillage-audio"
+name = "vma-audio"
 description = "Real-time audio mixer: buses, meters, per-input delay. Phase 3."
 version.workspace = true
 edition.workspace = true

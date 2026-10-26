@@ -1,12 +1,12 @@
 use crate::stats::RenderStats;
 use crate::triple::{Consumer, Producer, TripleIndices, triple};
-use aiguillage_clock::{ClockStats, FrameClock};
-use aiguillage_compositor::{RenderTarget, TestPattern};
-use aiguillage_core::{FrameRate, Resolution};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread::JoinHandle;
 use std::time::Instant;
+use vma_clock::{ClockStats, FrameClock};
+use vma_compositor::{RenderTarget, TestPattern};
+use vma_core::{FrameRate, Resolution};
 
 /// Maximum number of Program frames queued on the GPU. Beyond that the tick is skipped
 /// (previous frame repeated, `gpu_dropped` incremented) instead of blocking the clock.
@@ -92,7 +92,7 @@ impl RenderEngine {
             stop: Arc::clone(&stop),
         };
         let thread = std::thread::Builder::new()
-            .name("aiguillage-render".into())
+            .name("vma-render".into())
             .spawn(move || worker.run())?;
 
         tracing::info!(rate = %config.rate, resolution = %config.resolution, "render thread started");

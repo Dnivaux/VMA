@@ -31,7 +31,7 @@ ne sont pas encore « faits » au sens strict du BRIEF.
 ### Tests ignorés / manuels
 | Test | Raison |
 |---|---|
-| `aiguillage-engine::render_loop::soak_render_loop` | 10 min, lancé manuellement sur la machine de dev ; rapport dans `tests/soak/reports/` |
+| `vma-engine::render_loop::soak_render_loop` | 10 min, lancé manuellement sur la machine de dev ; rapport dans `tests/soak/reports/` |
 
 ### Dette connue (voir ADR 0001)
 - Allocations et verrous **internes à wgpu** dans la boucle de rendu (pas d'allocation applicative).
