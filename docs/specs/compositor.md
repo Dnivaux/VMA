@@ -28,7 +28,7 @@ Mesuré en local : bit-exact sur RTX 5090 (Vulkan), 73 dB sur Intel ARL (Vulkan,
 
 ---
 
-## Phase 1 — Preview, Program, transitions, YUV (proposé, à valider)
+## Phase 1 — Preview, Program, transitions, YUV (validé le 2026-10-26)
 Voir [`phase-1.md`](phase-1.md) et l'ADR 0005 (chaîne couleur).
 
 ### Chaîne de rendu par tick

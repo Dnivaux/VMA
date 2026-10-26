@@ -1,7 +1,7 @@
 # Spec — `ui` (Phase 1)
 
 - **Statut** : validé (2026-10-26), complété par l'alignement sur la référence
-  ([`phase-1.md`](phase-1.md) §7, à valider)
+  ([`phase-1.md`](phase-1.md) §7, validé le 2026-10-26)
 
 ## Règle
 L'UI **ne modifie jamais l'état** : chaque action envoie une `Command` (`CommandSender`) et

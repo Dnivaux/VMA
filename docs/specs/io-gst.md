@@ -1,7 +1,7 @@
 # Spec — `io-gst` : inputs (Phase 1)
 
 - **Statut** : validé (2026-10-26) ; lecture vidéo ajoutée par l'alignement sur la référence
-  ([`phase-1.md`](phase-1.md) §7, à valider)
+  ([`phase-1.md`](phase-1.md) §7, validé le 2026-10-26)
 
 ## Types d'input
 | Input | Pipeline / source | Notes |
