@@ -3,11 +3,11 @@
 Règles (BRIEF §2.5) : pas de pourcentage. Une fonctionnalité est **faite** uniquement si ses
 tests d'acceptation passent en CI. Les tests désactivés ou manuels sont listés explicitement.
 
-Légende : ✅ fait (tests verts) · 🟡 implémenté, validation incomplète · ⬜ pas commencé
+Légende : ✅ fait (tests verts) · 🟡 implémenté, validation incomplète · ⏸ reporté (décision du mainteneur, raison notée) · ⬜ pas commencé
 
 ---
 
-## Phase 0 — Fondations · *en revue (soak hostile Windows à passer)*
+## Phase 0 — Fondations · *terminée, avec un test reporté (soak hostile Windows)*
 
 ADR 0001 **accepté avec amendements** ; décisions produit dans l'ADR 0002 (nom VMA, egui,
 titres HTML + natifs, multi-cadence dès la Phase 1, macOS plus tard).
@@ -30,7 +30,7 @@ titres HTML + natifs, multi-cadence dès la Phase 1, macOS plus tard).
 | Mode soak dans l'app (`--soak`, `--hostile`, rapport Markdown, code de sortie) | ✅ (manuel) | Soak hostile Linux de 10 min ci-dessous |
 | **Acceptation : 10 min à 50 fps sans image manquée** | ✅ (manuel) | 600 s, 30 002 images, 0 manquée, 0 répétée — [`tests/soak/reports/2026-10-26-phase0-render-loop.md`](tests/soak/reports/2026-10-26-phase0-render-loop.md) |
 | **Acceptation : soak hostile 10 min, 0 image manquée — Linux** (amendement 3) | ✅ (manuel) | 600 s, 30 001 images, 0 manquée, 0 répétée, réveil p99 3 µs / max 1,4 ms, UI gelée jusqu'à 26,9 s sans effet sur le Program — [`tests/soak/reports/2026-10-26-phase0-hostile-linux.md`](tests/soak/reports/2026-10-26-phase0-hostile-linux.md) |
-| **Acceptation : soak hostile 10 min, 0 image manquée — Windows** | ⬜ | À passer par le mainteneur : [`docs/manual-tests/phase0-soak-hostile.md`](docs/manual-tests/phase0-soak-hostile.md) |
+| **Acceptation : soak hostile 10 min, 0 image manquée — Windows** | ⏸ | **Reporté** (2026-10-26, décision du mainteneur) : exige de redémarrer la machine de dev sous Windows. À passer au prochain démarrage sous Windows, **au plus tard avec le soak d'acceptation de la Phase 1 sous Windows**. Couvert entre-temps : build, clippy et 32 tests sur Windows en CI (WARP). Checklist : [`docs/manual-tests/phase0-soak-hostile.md`](docs/manual-tests/phase0-soak-hostile.md) |
 | **Acceptation : CI verte sur les 2 OS** | ✅ | Runs 40373180391 et [40378932947](https://github.com/Dnivaux/VMA/actions/runs/40378932947) (32 tests, Ubuntu + Windows) |
 | Doc : `CLAUDE.md`, ADR 0001 et 0002, specs `clock` / `compositor` / `engine`, `docs/dev-setup.md`, checklist soak hostile | ✅ | — |
 
@@ -40,7 +40,7 @@ titres HTML + natifs, multi-cadence dès la Phase 1, macOS plus tard).
 | Test | Raison |
 |---|---|
 | `vma-engine::render_loop::soak_render_loop` | 10 min, lancé manuellement sur la machine de dev ; rapport dans `tests/soak/reports/` |
-| Soak hostile (`vma --soak 600 --hostile`) | Fenêtre réelle et actions à la souris : impossible sur les runners CI ; checklist `docs/manual-tests/phase0-soak-hostile.md` |
+| Soak hostile (`vma --soak 600 --hostile`) | Fenêtre réelle et actions à la souris : impossible sur les runners CI ; checklist `docs/manual-tests/phase0-soak-hostile.md`. Linux : passé. **Windows : reporté** (voir ci-dessus) |
 
 ### Dette connue (voir ADR 0001)
 - Allocations et verrous **internes à wgpu** dans la boucle de rendu (pas d'allocation applicative).
@@ -49,6 +49,9 @@ titres HTML + natifs, multi-cadence dès la Phase 1, macOS plus tard).
 - Couleur : R'G'B' encodé en `Rgba8Unorm`, pas encore de cibles `Rgba16Float`.
 - Perte du GPU : pas de recréation à chaud (Phase 2).
 - Soak hostile sous Wayland : déplacement et dé-minimisation automatiques sans effet (faits à la main).
+- **Soak hostile Windows non passé** : le risque principal non vérifié est le gel du thread UI
+  pendant la boucle modale de déplacement / redimensionnement de Windows, combiné à la `Queue`
+  partagée (contention possible sur les verrous internes de wgpu au moment du `present`).
 
 ## Phase 1 — Mélange de base · ⬜
 Inputs GStreamer (webcam / capture, fichier en boucle, image, couleur), Preview + Program,
