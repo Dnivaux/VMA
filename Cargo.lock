@@ -3148,6 +3148,7 @@ dependencies = [
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
+ "vma-clock",
  "vma-core",
  "vma-engine",
  "vma-ui",

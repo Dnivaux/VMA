@@ -9,6 +9,7 @@ publish.workspace = true
 
 [dependencies]
 vma-core.workspace = true
+vma-clock.workspace = true
 vma-engine.workspace = true
 vma-ui.workspace = true
 eframe = { workspace = true, features = ["wgpu", "default_fonts", "wayland", "x11", "accesskit"] }

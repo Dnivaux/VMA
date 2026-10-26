@@ -31,6 +31,7 @@ pub(crate) fn show(
             );
             counter(ui, "Images manquées (horloge)", clock.missed);
             counter(ui, "Images répétées (GPU saturé)", render.gpu_dropped);
+            counter(ui, "Erreurs GPU", render.gpu_errors);
             row(ui, "Images rendues", render.frames_rendered.to_string());
             row(
                 ui,
@@ -40,7 +41,17 @@ pub(crate) fn show(
             row(ui, "Rendu CPU (dernier)", ms(render.last_cpu));
             row(ui, "Rendu CPU (moyen)", ms(render.avg_cpu));
             row(ui, "Rendu CPU (max)", ms(render.max_cpu));
+            row(
+                ui,
+                "Retard réveil p50 / p99",
+                format!("{} / {}", ms(clock.wake.p50), ms(clock.wake.p99)),
+            );
             row(ui, "Retard réveil (max)", ms(clock.max_lateness));
+            row(
+                ui,
+                "Marge d'attente active",
+                ms(engine.config().spin_margin),
+            );
             row(ui, "Images GPU en vol", render.gpu_in_flight.to_string());
             row(
                 ui,
