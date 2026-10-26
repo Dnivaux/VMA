@@ -6,7 +6,7 @@ mod soak;
 use anyhow::Context as _;
 use std::process::ExitCode;
 use std::sync::{Arc, OnceLock};
-use vma_engine::{EngineConfig, RenderEngine, RenderStats};
+use vma_engine::{EngineConfig, Journal, RenderEngine, RenderStats};
 use vma_ui::MainUi;
 
 /// Exit code of a soak run that completed with missed or repeated frames.
@@ -103,6 +103,8 @@ impl<'a> App<'a> {
             render_state.device.clone(),
             render_state.queue.clone(),
             config,
+            // Commands come from the UI from step 4 of the Phase 1 plan (journal enabled then).
+            Journal::Disabled,
         )?;
 
         let program_textures = {

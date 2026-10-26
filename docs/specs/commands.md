@@ -39,7 +39,7 @@ pub enum InputSpec {
     File { path: PathBuf },                   // lu en boucle
     Image { path: PathBuf },
     Color { color: Rgb8 },
-    TestSource { pattern: TestPattern, rate: FrameRate, resolution: Resolution }, // tests, soaks
+    TestSource { rate: FrameRate, resolution: Resolution }, // tests, soaks (motif : ajouté si io-gst en a besoin)
 }
 
 pub struct CommandSender { /* clonable */ }
@@ -107,6 +107,37 @@ par commande :
 ```
 Écrit par un thread dédié via un canal borné ; si le canal déborde, la ligne est perdue et un
 compteur `journal_dropped` augmente (le temps réel prime).
+
+## Mise en œuvre (étape 2 du plan, 2026-10-26)
+Modules de `crates/engine` : `command` (vocabulaire), `state` (règles pures, `State::apply` /
+`apply_event`), `plan` (`RenderPlan` + seqlock), `sequencer` (côté rendu : plan + index d'image
+→ `Composition`, retour `RenderFeedback`), `control` (thread `vma-control`), `journal`.
+Précisions apportées en codant (à relire) :
+- **Événements** : le rendu signale « transition commencée » (avec l'index de sa première image)
+  et « transition terminée » ; `vma-control` en fait des `Event` appliqués à l'état et
+  journalisés (`"source":"render"`, champ `event` au lieu de `command` / `result`). C'est ce qui
+  rend le **rejeu** exact : `replay(état initial, journal)` réapplique commandes et événements
+  et vérifie, ligne par ligne, le même résultat et la même version.
+- `Restart` et `SetPosition` ne changent pas l'état (pas de nouvelle version) : ce sont des
+  demandes pour `io-gst` (`IoRequest::Seek`). Toute commande acceptée renvoie ses `IoRequest`
+  (ouvrir, fermer, lecture, pause, seek, boucle) ; `vma-control` les journalise en `debug`
+  jusqu'à l'arrivée d'`io-gst` (étape 7).
+- `AddInput` pendant une transition : l'input n'occupe ni Program ni Preview.
+- `RemoveInput` d'un input impliqué dans une transition : la transition saute à sa fin, puis
+  l'input est retiré.
+- T-Bar : revenir à 0 pendant une transition manuelle l'**abandonne** (Program seul, Preview
+  inchangée). Avec un effet Cut sur le bouton 1, la bascule se fait à mi-course (128).
+- `QuickPlay { input }` sur l'input déjà au Program : refusé. `CutDirect` sur cet input :
+  accepté sans effet.
+- `PreviewNext` / `PreviewPrevious` : ordre d'affichage, en boucle ; sans Preview, premier /
+  dernier input. Refusés pendant une transition, comme `SetPreview`.
+- Numéro d'input calculé (position + 1), pas stocké ; `State::fader()` donne la position de la
+  T-Bar (0 hors transition manuelle).
+- Les raisons de refus sont en anglais (journal, comme les autres messages d'erreur du code) ;
+  l'UI les traduira si elle les affiche.
+- `RenderFeedback::on_air()` : noir, un input, ou mélange : ce que le dernier tick a montré.
+- Ordre de publication : plan d'abord, snapshot ensuite (le rendu n'est jamais en retard sur
+  l'UI).
 
 ## Critères d'acceptation
 | Critère | Test |

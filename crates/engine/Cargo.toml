@@ -1,6 +1,6 @@
 [package]
 name = "vma-engine"
-description = "Engine: render loop on the master clock; state store and commands from Phase 1."
+description = "Engine: mixer state, command layer and journal, render loop on the master clock."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -14,6 +14,10 @@ vma-compositor.workspace = true
 wgpu.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+crossbeam-channel.workspace = true
+arc-swap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 
 [dev-dependencies]
 pollster.workspace = true

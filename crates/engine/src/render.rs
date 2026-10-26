@@ -1,3 +1,8 @@
+use crate::control::{self, CommandSender, ControlStats, Controller, StateReader, command_channel};
+use crate::journal::{self, Journal, JournalStats};
+use crate::plan::plan_channel;
+use crate::sequencer::{RenderFeedback, Sequencer};
+use crate::state::{Format, State};
 use crate::stats::RenderStats;
 use crate::triple::{Consumer, Producer, TripleIndices, triple};
 use std::sync::Arc;
@@ -15,7 +20,7 @@ const MAX_GPU_IN_FLIGHT: u64 = 2;
 /// Errors of the engine crate.
 #[derive(Debug, thiserror::Error)]
 pub enum EngineError {
-    #[error("could not spawn the render thread: {0}")]
+    #[error("could not spawn an engine thread: {0}")]
     Spawn(#[from] std::io::Error),
 }
 
@@ -47,14 +52,21 @@ struct ProgramFrames {
     indices: TripleIndices,
 }
 
-/// Handle on the running render thread. Dropping it stops and joins the thread.
+/// Handle on the running engine: the `vma-render` and `vma-control` threads (and
+/// `vma-journal` if enabled). Dropping it stops and joins them.
 #[derive(Debug)]
 pub struct RenderEngine {
     config: EngineConfig,
     stop: Arc<AtomicBool>,
-    thread: Option<JoinHandle<()>>,
+    /// Render first, then control, then journal (it ends when control drops its sender).
+    threads: Vec<JoinHandle<()>>,
     clock_stats: Arc<ClockStats>,
     render_stats: Arc<RenderStats>,
+    control_stats: Arc<ControlStats>,
+    journal_stats: Arc<JournalStats>,
+    feedback: Arc<RenderFeedback>,
+    commands: CommandSender,
+    state: StateReader,
 }
 
 /// The single consumer of Program frames (typically the UI).
@@ -65,7 +77,8 @@ pub struct ProgramReader {
 }
 
 impl RenderEngine {
-    /// Starts the render thread on an existing device (shared with the UI, or headless).
+    /// Starts the engine on an existing device (shared with the UI, or headless): the
+    /// render thread, the control thread that owns the state, and the journal writer.
     ///
     /// Takes ownership of the device's uncaptured-error handler and device-lost callback:
     /// GPU errors are logged and counted (never a panic), and a lost device stops rendering
@@ -76,6 +89,7 @@ impl RenderEngine {
         device: wgpu::Device,
         queue: wgpu::Queue,
         config: EngineConfig,
+        journal: Journal,
     ) -> Result<(Self, ProgramReader), EngineError> {
         let (indices, producer, consumer) = triple();
         let frames = Arc::new(ProgramFrames {
@@ -90,6 +104,32 @@ impl RenderEngine {
         let render_stats = Arc::new(RenderStats::default());
         install_gpu_handlers(&device, &render_stats);
         let stop = Arc::new(AtomicBool::new(false));
+        let feedback = Arc::new(RenderFeedback::default());
+        let control_stats = Arc::new(ControlStats::default());
+        let journal_stats = Arc::new(JournalStats::default());
+
+        let mut journal_thread = None;
+        let journal_sender = match journal {
+            Journal::Disabled => None,
+            Journal::Directory(dir) => {
+                let (sender, thread) = journal::spawn_writer(dir, Arc::clone(&journal_stats))?;
+                journal_thread = Some(thread);
+                Some(sender)
+            }
+        };
+        let (plan_writer, plan_reader) = plan_channel();
+        let (controller, state) = Controller::new(
+            State::new(Format {
+                rate: config.rate,
+                resolution: config.resolution,
+            }),
+            plan_writer,
+            Arc::clone(&feedback),
+            journal_sender,
+            Arc::clone(&control_stats),
+        );
+        let (commands, command_rx) = command_channel();
+        let control_thread = control::spawn(controller, command_rx, Arc::clone(&stop))?;
 
         let worker = RenderWorker {
             device,
@@ -98,24 +138,67 @@ impl RenderEngine {
             pattern,
             frames: Arc::clone(&frames),
             producer,
+            sequencer: Sequencer::new(plan_reader),
+            feedback: Arc::clone(&feedback),
             stats: Arc::clone(&render_stats),
             stop: Arc::clone(&stop),
         };
-        let thread = std::thread::Builder::new()
+        let render_thread = match std::thread::Builder::new()
             .name("vma-render".into())
-            .spawn(move || worker.run())?;
+            .spawn(move || worker.run())
+        {
+            Ok(thread) => thread,
+            Err(error) => {
+                stop.store(true, Ordering::Release);
+                for thread in [Some(control_thread), journal_thread].into_iter().flatten() {
+                    let _ = thread.join();
+                }
+                return Err(error.into());
+            }
+        };
 
-        tracing::info!(rate = %config.rate, resolution = %config.resolution, "render thread started");
+        tracing::info!(rate = %config.rate, resolution = %config.resolution, "engine started");
         Ok((
             Self {
                 config,
                 stop,
-                thread: Some(thread),
+                threads: [Some(render_thread), Some(control_thread), journal_thread]
+                    .into_iter()
+                    .flatten()
+                    .collect(),
                 clock_stats,
                 render_stats,
+                control_stats,
+                journal_stats,
+                feedback,
+                commands,
+                state,
             },
             ProgramReader { frames, consumer },
         ))
+    }
+
+    /// Sends commands to the engine (clonable).
+    pub fn commands(&self) -> CommandSender {
+        self.commands.clone()
+    }
+
+    /// Reads the latest state snapshot (clonable).
+    pub fn state(&self) -> StateReader {
+        self.state.clone()
+    }
+
+    pub fn control_stats(&self) -> Arc<ControlStats> {
+        Arc::clone(&self.control_stats)
+    }
+
+    pub fn journal_stats(&self) -> Arc<JournalStats> {
+        Arc::clone(&self.journal_stats)
+    }
+
+    /// What the render thread did last (tick, plan version, what is on air).
+    pub fn feedback(&self) -> Arc<RenderFeedback> {
+        Arc::clone(&self.feedback)
     }
 
     pub fn config(&self) -> EngineConfig {
@@ -130,13 +213,14 @@ impl RenderEngine {
         Arc::clone(&self.render_stats)
     }
 
-    /// Stops the render thread and waits for it. Also done on drop.
+    /// Stops the engine threads and waits for them. Also done on drop.
     pub fn stop(&mut self) {
         self.stop.store(true, Ordering::Release);
-        if let Some(thread) = self.thread.take()
-            && thread.join().is_err()
-        {
-            tracing::error!("render thread panicked");
+        for thread in self.threads.drain(..) {
+            let name = thread.thread().name().unwrap_or("engine").to_owned();
+            if thread.join().is_err() {
+                tracing::error!(thread = %name, "engine thread panicked");
+            }
         }
     }
 }
@@ -198,6 +282,8 @@ struct RenderWorker {
     pattern: TestPattern,
     frames: Arc<ProgramFrames>,
     producer: Producer,
+    sequencer: Sequencer,
+    feedback: Arc<RenderFeedback>,
     stats: Arc<RenderStats>,
     stop: Arc<AtomicBool>,
 }
@@ -217,6 +303,10 @@ impl RenderWorker {
         while !self.stop.load(Ordering::Acquire) {
             let tick = self.clock.wait_next();
             let started = Instant::now();
+            // Resolved on every tick, even one that renders nothing, so transitions keep
+            // their timing. The compositor draws it from step 3 of the Phase 1 plan; until
+            // then the test pattern stays on screen.
+            let _composition = self.sequencer.tick(tick.index, &self.feedback);
 
             // A lost device accepts no more work: keep the clock (and the stats) running,
             // render nothing. Recovery is the application's job (ADR 0001, « Perte du GPU »).

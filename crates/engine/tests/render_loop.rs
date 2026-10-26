@@ -3,6 +3,8 @@
 //! - `runs_one_second`: CI smoke test.
 //! - `triple_buffer_gpu_stress`: the UI-side triple-buffer invariant holds on the GPU.
 //! - `device_lost_stops_rendering_not_the_clock`: behaviour on GPU device loss.
+//! - `commands_reach_the_render_thread_and_the_journal`: command → control → plan → render
+//!   with the real threads, journal written and replayable.
 //! - `soak_render_loop`: the Phase 0 acceptance test (10 min at 50 fps, zero missed frame).
 //!   Ignored by default, run manually on the dev machine:
 //!   `cargo test --release -p vma-engine --test render_loop -- --ignored --nocapture`
@@ -19,8 +21,12 @@
 
 use std::time::{Duration, Instant};
 use vma_compositor::{TEST_PATTERN_PERIOD_FRAMES, headless};
+use vma_core::Rgb8;
 use vma_core::{FrameRate, Resolution};
-use vma_engine::{EngineConfig, ProgramReader, RenderEngine};
+use vma_engine::{
+    Command, EngineConfig, Format, InputSpec, Journal, OnAir, ProgramReader, RenderEngine, Source,
+    State,
+};
 
 struct Spawned {
     engine: RenderEngine,
@@ -31,6 +37,10 @@ struct Spawned {
 }
 
 fn spawn(rate: FrameRate, resolution: Resolution) -> Spawned {
+    spawn_with_journal(rate, resolution, Journal::Disabled)
+}
+
+fn spawn_with_journal(rate: FrameRate, resolution: Resolution, journal: Journal) -> Spawned {
     let gpu = pollster::block_on(headless::request_gpu()).expect("GPU adapter required");
     let adapter = format!(
         "{} ({:?}, {:?})",
@@ -42,7 +52,7 @@ fn spawn(rate: FrameRate, resolution: Resolution) -> Spawned {
         ..EngineConfig::default()
     };
     let (engine, reader) =
-        RenderEngine::spawn(gpu.device.clone(), gpu.queue.clone(), config).unwrap();
+        RenderEngine::spawn(gpu.device.clone(), gpu.queue.clone(), config, journal).unwrap();
     Spawned {
         engine,
         reader,
@@ -309,4 +319,107 @@ fn soak_render_loop() {
         (c.ticks as f64 - expected_ticks).abs() <= 2.0,
         "tick count off"
     );
+}
+
+/// Polls `cond` every millisecond for up to `timeout`.
+fn wait_for(timeout: Duration, mut cond: impl FnMut() -> bool) -> bool {
+    let end = Instant::now() + timeout;
+    while Instant::now() < end {
+        if cond() {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    cond()
+}
+
+#[test]
+fn commands_reach_the_render_thread_and_the_journal() {
+    let dir = std::env::temp_dir().join(format!("vma-engine-journal-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let Spawned { mut engine, .. } = spawn_with_journal(
+        FrameRate::FPS_50,
+        Resolution::new(320, 180).unwrap(),
+        Journal::Directory(dir.clone()),
+    );
+    let commands = engine.commands();
+    let state = engine.state();
+    let feedback = engine.feedback();
+    let color = |r| Command::AddInput {
+        spec: InputSpec::Color {
+            color: Rgb8::new(r, 0, 0),
+        },
+        name: None,
+    };
+    commands.send(Source::Ui, color(255)).unwrap();
+    commands.send(Source::Ui, color(128)).unwrap();
+    assert!(wait_for(Duration::from_secs(2), || state
+        .load()
+        .inputs
+        .len()
+        == 2));
+    let (a, b) = {
+        let s = state.load();
+        (s.inputs[0].id, s.inputs[1].id)
+    };
+    assert!(wait_for(Duration::from_secs(2), || feedback.on_air()
+        == OnAir::Input(a)));
+
+    // Cut: on air within a couple of ticks (real threads, no strict timing on CI).
+    commands.send(Source::Ui, Command::Cut).unwrap();
+    assert!(wait_for(Duration::from_secs(2), || feedback.on_air()
+        == OnAir::Input(b)));
+
+    // A 200 ms Fade runs on the render clock and swaps by itself.
+    commands
+        .send(
+            Source::Ui,
+            Command::SetTransition {
+                button: 1,
+                effect: vma_engine::Effect::Fade,
+                duration_ms: 200,
+            },
+        )
+        .unwrap();
+    commands
+        .send(Source::Ui, Command::Transition { button: 1 })
+        .unwrap();
+    assert!(wait_for(Duration::from_secs(1), || feedback.on_air()
+        == OnAir::Mixing));
+    assert!(wait_for(Duration::from_secs(3), || {
+        let s = state.load();
+        s.transition.is_none() && s.program == Some(a)
+    }));
+    assert_eq!(state.load().preview, Some(b));
+    assert!(wait_for(Duration::from_secs(1), || feedback.on_air()
+        == OnAir::Input(a)));
+
+    commands
+        .send(
+            Source::Api,
+            Command::SetPreview {
+                input: vma_core::InputId(42),
+            },
+        )
+        .unwrap();
+    assert!(wait_for(Duration::from_secs(2), || engine
+        .control_stats()
+        .rejected()
+        == 1));
+
+    let final_state = (*state.load()).clone();
+    engine.stop();
+    assert_eq!(engine.journal_stats().dropped(), 0);
+
+    let mut text = String::new();
+    for entry in std::fs::read_dir(&dir).unwrap() {
+        text += &std::fs::read_to_string(entry.unwrap().path()).unwrap();
+    }
+    assert!(text.lines().count() >= 7, "journal:\n{text}");
+    let fresh = State::new(Format {
+        rate: FrameRate::FPS_50,
+        resolution: Resolution::new(320, 180).unwrap(),
+    });
+    assert_eq!(vma_engine::replay(fresh, &text).unwrap(), final_state);
+    std::fs::remove_dir_all(&dir).unwrap();
 }

@@ -69,8 +69,9 @@ attendant) : [`docs/manual-tests/observation-reference-phase1.md`](docs/manual-t
 
 | Étape (plan §5) | État | Preuve |
 |---|---|---|
-| 1. `core` : `PixelFormat`, `ColorInfo`, `Rgb8`, `InputKind`, 29,97p, `serde` | ✅ (local) | 21 tests `vma-core` ; clippy, `cargo deny`, MSRV 1.95 OK. CI à confirmer après push |
-| 2. `engine` : `Command`, `State`, `vma-control`, journal, `RenderPlan` | ⬜ | — |
+| 1. `core` : `PixelFormat`, `ColorInfo`, `Rgb8`, `InputKind`, 29,97p, `serde` | ✅ | 21 tests `vma-core` ; CI verte Ubuntu + Windows ([run 40394934963](https://github.com/Dnivaux/VMA/actions/runs/40394934963)) |
+| 2. `engine` : `Command`, `State`, `vma-control`, journal, `RenderPlan` | ✅ (local) | 40 nouveaux tests unitaires `vma-engine` (temps simulé) : A3 (Cut au tick suivant), A4 côté moteur (6 cadences × 1 / 40 / 500 / 1000 ms), A15–A18, refus sans effet, rejeu du journal ; test de bout en bout avec les vrais threads (10/10 en local). CI à confirmer après push. A11 partiel : journal fait, l'UI n'envoie pas encore de commandes (étape 4) |
+| 3. `compositor` : `Rgba16Float`, sortie `Rgba8Unorm`, couleur unie, Cut / Fade | ⬜ | — |
 
 ## Phase 2 — Sorties · ⬜
 ## Phase 3 — Réseau et audio · ⬜

@@ -1,4 +1,20 @@
-# Spec — `engine` (Phase 0 : thread de rendu)
+# Spec — `engine`
+
+La couche de commandes et l'état (Phase 1) sont décrits dans [`commands.md`](commands.md) ;
+ce fichier couvre le thread de rendu.
+
+## Phase 1 — ce qui change dans la boucle de rendu (étape 2)
+- `RenderEngine::spawn(device, queue, config, journal)` démarre aussi `vma-control` (et
+  `vma-journal` si `Journal::Directory`). `commands()`, `state()`, `feedback()`,
+  `control_stats()`, `journal_stats()`.
+- À chaque tick, **avant** tout travail GPU (et même si le device est perdu ou si le tick est
+  sauté pour contre-pression) : `Sequencer::tick(n)` lit le plan (seqlock, sans attente) et
+  produit la `Composition` du tick. La progression d'une transition dépend de l'index d'image,
+  pas du nombre de ticks traités : des ticks manqués ne la ralentissent pas.
+- Jusqu'à l'étape 3, la mire reste affichée ; la `Composition` n'est visible que par
+  `feedback().on_air()`.
+
+## Phase 0 — thread de rendu
 
 ## Comportement
 - `RenderEngine::spawn(device, queue, config)` démarre le thread `vma-render` et
@@ -31,4 +47,6 @@
 | Perte du device : pas de panique, rendu arrêté, horloge qui continue, raison exposée, arrêt propre | `render_loop::device_lost_stops_rendering_not_the_clock` | CI |
 | 1 s réelle : ≥ 40 ticks, images publiées dans l'ordre | `render_loop::runs_one_second` | CI |
 | **10 min à 50 fps 1080p : 0 manquée, 0 répétée** (acceptation Phase 0) | `render_loop::soak_render_loop` | `#[ignore]`, manuel — voir `tests/soak/reports/` |
+| Commande → contrôle → plan → rendu avec les vrais threads ; Fade minuté qui bascule seul ; journal écrit, sans perte, et rejouable | `render_loop::commands_reach_the_render_thread_and_the_journal` | CI |
+| Seqlock du plan : jamais de plan déchiré ni de version qui recule (3 lecteurs, 200 000 écritures) | `plan::tests::concurrent_reads_are_never_torn` | CI |
 | **Soak hostile : 10 min, fenêtre malmenée, 0 manquée, 0 répétée** (amendement 3) | `vma --soak 600 --hostile` + [`docs/manual-tests/phase0-soak-hostile.md`](../manual-tests/phase0-soak-hostile.md) | manuel, Linux et Windows |
