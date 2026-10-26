@@ -106,6 +106,17 @@ impl<'a> App<'a> {
             // Commands come from the UI from step 4 of the Phase 1 plan (journal enabled then).
             Journal::Disabled,
         )?;
+        // Until the UI can add inputs (step 4), start with the test pattern on air.
+        engine.commands().send(
+            vma_engine::Source::Script,
+            vma_engine::Command::AddInput {
+                spec: vma_engine::InputSpec::TestSource {
+                    rate: config.rate,
+                    resolution: config.resolution,
+                },
+                name: None,
+            },
+        )?;
 
         let program_textures = {
             let mut renderer = render_state.renderer.write();

@@ -60,15 +60,34 @@ Toutes les ressources (textures intermédiaires, pipelines, bind groups) sont cr
 thread de rendu (`vma-control`) ; le rendu ne fait qu'encoder. Downscale fort (4K → 1080p) en
 simple bilinéaire en Phase 1 (crénelage possible) ; mipmaps ou filtre plus large plus tard.
 
+### Mise en œuvre (étape 3 du plan, 2026-10-26)
+- `Mixer` (un par sortie : Program maintenant, Preview à l'étape 4) : deux calques
+  `Rgba16Float`, la cible `program16` (`Rgba16Float`, que liront les sorties de la Phase 2), et
+  les pipelines ; tout est créé dans `Mixer::new`, `encode` ne fait qu'enregistrer 4 passes
+  et écrire un uniform de 16 octets.
+- Sources de la Phase 1 : `Black`, `Color(Rgb8)` (calque rempli par l'opération de *clear*),
+  `TestPattern { frame }` (la mire, rendue directement dans le calque). Le second calque n'est
+  rempli que si son poids est non nul.
+- Passe de sortie : arrondi **explicite** dans le shader (`round(v × 255) / 255`), pour ne pas
+  dépendre de la conversion flottant → unorm propre à chaque GPU.
+- Mesures : chaîne flottante sans perte pour les 256 codes ; mire via le `Mixer` à 74 dB du
+  golden Phase 0 (écart d'un code sur quelques points de la rampe) ; Fade 50 % mire ↔ couleur
+  à 62 dB ; RTX 5090 et Intel ARL (Vulkan). Soak de 60 s en 1080p50 : 0 image manquée, CPU de
+  rendu 86 µs en moyenne.
+- Le golden « Fade 50 % mire ↔ couleur » est **analytique** (moyenne du golden de la mire et de
+  la couleur), plutôt qu'un nouveau PNG `fade50.png`.
+
 ### Critères d'acceptation (Phase 1)
 | Critère | Test | Où |
 |---|---|---|
-| **Fade 50 % entre deux couleurs** = moyenne des valeurs encodées, ±1 (A2) | golden analytique, domaine gamma | CI |
-| Fade 50 % en domaine linéaire = `encode((decode(a)+decode(b))/2)`, ±1 | golden analytique | CI |
-| Fade 0 % / 100 % = source / destination exactes (A4) | golden | CI |
-| T-Bar à 128 = mix à 128/255 (A18) | golden analytique | CI |
+| **Fade 50 % entre deux couleurs** = moyenne des valeurs encodées, ±1 (A2) | `golden_mix::fade_50_percent_gamma_is_the_mean_of_the_codes` (±0,5) | CI |
+| Fade 50 % en domaine linéaire = `encode((decode(a)+decode(b))/2)`, ±1 | `golden_mix::fade_50_percent_linear_mixes_display_light` | CI |
+| Fade 0 % / 100 % = source / destination exactes (A4) | `golden_mix::fade_at_0_and_100_percent_is_exact` | CI |
+| T-Bar à 128 = mix à 128/255 (A18) | `golden_mix::t_bar_at_128_mixes_128_of_255` | CI |
+| Chaîne `Rgba16Float` → `Rgba8Unorm` sans perte pour les 256 codes | `golden_mix::every_code_value_survives_the_float_chain` | CI |
+| Mire via le `Mixer` = golden Phase 0, PSNR ≥ 45 dB | `golden_mix::test_pattern_through_the_float_chain_matches_the_phase_0_golden` | CI |
 | Vignette d'une mire = mire réduite (PSNR ≥ 35 dB contre une réduction de référence) ; vignette noire en signal perdu | golden | CI |
-| Fade 50 % mire ↔ couleur : PSNR ≥ 45 dB contre l'image de référence | golden PNG `tests/golden/fade50.png` | CI |
+| Fade 50 % mire ↔ couleur : PSNR ≥ 45 dB contre l'image de référence | `golden_mix::fade_50_percent_pattern_to_color` (référence analytique) | CI |
 | YUV → RGB : barres 75 % synthétiques en NV12, I420, YUY2, UYVY, 601 / 709, limitée / pleine → R'G'B' attendu ±1 (A7) | golden analytique, 24 combinaisons | CI |
 | Sans changement de taille, passe d'entrée sans perte : RGBA → RGBA bit-exact | golden | CI |
 | Fit : source 4:3 dans un Program 16:9 → bandes noires de la bonne largeur, ±1 px | golden | CI |

@@ -1,7 +1,9 @@
+use crate::command::MixDomain;
 use crate::control::{self, CommandSender, ControlStats, Controller, StateReader, command_channel};
 use crate::journal::{self, Journal, JournalStats};
 use crate::plan::plan_channel;
-use crate::sequencer::{RenderFeedback, Sequencer};
+use crate::sequencer::{Composition, RenderFeedback, Sequencer};
+use crate::sources::{RenderSource, SOURCE_CAPACITY, SourceTable};
 use crate::state::{Format, State};
 use crate::stats::RenderStats;
 use crate::triple::{Consumer, Producer, TripleIndices, triple};
@@ -10,8 +12,8 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 use vma_clock::{ClockStats, FrameClock, SystemTime};
-use vma_compositor::{RenderTarget, TestPattern};
-use vma_core::{FrameRate, Resolution};
+use vma_compositor::{Mix, MixSpace, Mixer, RenderTarget, Source};
+use vma_core::{FrameRate, InputId, Resolution};
 
 /// Maximum number of Program frames queued on the GPU. Beyond that the tick is skipped
 /// (previous frame repeated, `gpu_dropped` incremented) instead of blocking the clock.
@@ -98,7 +100,7 @@ impl RenderEngine {
             frame_index: Default::default(),
             indices,
         });
-        let pattern = TestPattern::new(&device);
+        let mixer = Mixer::new(&device, config.resolution);
         let clock = FrameClock::with_spin_margin(config.rate, config.spin_margin);
         let clock_stats = clock.stats();
         let render_stats = Arc::new(RenderStats::default());
@@ -118,6 +120,7 @@ impl RenderEngine {
             }
         };
         let (plan_writer, plan_reader) = plan_channel();
+        let (sources_tx, sources_rx) = crossbeam_channel::bounded(SOURCE_CAPACITY);
         let (controller, state) = Controller::new(
             State::new(Format {
                 rate: config.rate,
@@ -127,6 +130,7 @@ impl RenderEngine {
             Arc::clone(&feedback),
             journal_sender,
             Arc::clone(&control_stats),
+            sources_tx,
         );
         let (commands, command_rx) = command_channel();
         let control_thread = control::spawn(controller, command_rx, Arc::clone(&stop))?;
@@ -135,10 +139,11 @@ impl RenderEngine {
             device,
             queue,
             clock,
-            pattern,
+            mixer,
             frames: Arc::clone(&frames),
             producer,
             sequencer: Sequencer::new(plan_reader),
+            sources: SourceTable::new(sources_rx),
             feedback: Arc::clone(&feedback),
             stats: Arc::clone(&render_stats),
             stop: Arc::clone(&stop),
@@ -279,10 +284,11 @@ struct RenderWorker {
     device: wgpu::Device,
     queue: wgpu::Queue,
     clock: FrameClock,
-    pattern: TestPattern,
+    mixer: Mixer,
     frames: Arc<ProgramFrames>,
     producer: Producer,
     sequencer: Sequencer,
+    sources: SourceTable,
     feedback: Arc<RenderFeedback>,
     stats: Arc<RenderStats>,
     stop: Arc<AtomicBool>,
@@ -304,9 +310,9 @@ impl RenderWorker {
             let tick = self.clock.wait_next();
             let started = Instant::now();
             // Resolved on every tick, even one that renders nothing, so transitions keep
-            // their timing. The compositor draws it from step 3 of the Phase 1 plan; until
-            // then the test pattern stays on screen.
-            let _composition = self.sequencer.tick(tick.index, &self.feedback);
+            // their timing. Plan first, then the sources it may reference (see `sources.rs`).
+            let composition = self.sequencer.tick(tick.index, &self.feedback);
+            self.sources.drain();
 
             // A lost device accepts no more work: keep the clock (and the stats) running,
             // render nothing. Recovery is the application's job (ADR 0001, « Perte du GPU »).
@@ -335,13 +341,32 @@ impl RenderWorker {
                 continue;
             }
 
-            self.render(tick.index);
+            self.render(&composition);
             self.stats.record_frame(started.elapsed());
         }
         tracing::info!("render thread stopped");
     }
 
-    fn render(&mut self, frame_index: u64) {
+    fn source(&self, input: Option<InputId>, frame: u64) -> Source {
+        match input.and_then(|id| self.sources.get(id)) {
+            Some(RenderSource::Color(c)) => Source::Color(c),
+            Some(RenderSource::TestPattern) => Source::TestPattern { frame },
+            // No input, or one without pictures yet: black.
+            None => Source::Black,
+        }
+    }
+
+    fn render(&mut self, composition: &Composition) {
+        let frame_index = composition.frame;
+        let mix = Mix {
+            from: self.source(composition.from, frame_index),
+            to: self.source(composition.to, frame_index),
+            mix: composition.mix,
+            space: match composition.domain {
+                MixDomain::Gamma => MixSpace::Gamma,
+                MixDomain::Linear => MixSpace::Linear,
+            },
+        };
         let slot = self.producer.back();
         let (Some(target), Some(slot_index)) = (
             self.frames.targets.get(slot),
@@ -354,8 +379,8 @@ impl RenderWorker {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("program"),
             });
-        self.pattern
-            .encode(&self.queue, &mut encoder, target.view(), frame_index);
+        self.mixer
+            .encode(&self.queue, &mut encoder, &mix, target.view());
 
         self.stats.gpu_submitted();
         self.queue.submit([encoder.finish()]);

@@ -1,21 +1,26 @@
 //! GPU compositor (wgpu / WGSL).
 //!
-//! Phase 0 scope: a test pattern rendered by a shader into an off-screen Program texture,
-//! plus helpers to create a headless device and read a texture back (tests only).
+//! - [`Mixer`]: Program composition — sources (solid colour, test pattern) rendered into
+//!   [`INTERNAL_FORMAT`] layers, Cut / Fade in the gamma or linear domain, output pass to
+//!   [`PROGRAM_FORMAT`].
+//! - [`TestPattern`], plus helpers to create a headless device and read a texture back
+//!   (tests only).
 //!
-//! # Colour convention (Phase 0)
-//! Program textures are [`PROGRAM_FORMAT`] (`Rgba8Unorm`) and hold **Rec.709 gamma-encoded
-//! R'G'B'** values, full range. The test pattern is defined directly in that encoded domain
-//! (75 % bars = code value 191). Linear-light compositing arrives with the YUV upload path in
-//! Phase 1 (see `docs/specs/compositor.md`).
+//! # Colour convention (ADR 0005)
+//! Every texture holds **Rec.709 gamma-encoded R'G'B'** values, full range: `Rgba16Float`
+//! inside the compositor, `Rgba8Unorm` (rounded to nearest) for the UI. The test pattern is
+//! defined directly in that encoded domain (75 % bars = code value 191). Linear light is only
+//! used for the optional linear mix (and, later, for scaling).
 
 mod error;
 pub mod headless;
+mod mixer;
 pub mod readback;
 mod target;
 mod test_pattern;
 
 pub use error::CompositorError;
+pub use mixer::{INTERNAL_FORMAT, Mix, MixSpace, Mixer, Source};
 pub use target::RenderTarget;
 pub use test_pattern::{TEST_PATTERN_PERIOD_FRAMES, TestPattern};
 

@@ -23,7 +23,13 @@ pub struct TestPattern {
 }
 
 impl TestPattern {
+    /// A pattern rendering into [`PROGRAM_FORMAT`] targets.
     pub fn new(device: &wgpu::Device) -> Self {
+        Self::with_format(device, PROGRAM_FORMAT)
+    }
+
+    /// A pattern rendering into `format` targets (e.g. the internal `Rgba16Float` layers).
+    pub fn with_format(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("test_pattern"),
             source: wgpu::ShaderSource::Wgsl(include_str!("shaders/test_pattern.wgsl").into()),
@@ -77,7 +83,7 @@ impl TestPattern {
                 entry_point: Some("fs_main"),
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
                 targets: &[Some(wgpu::ColorTargetState {
-                    format: PROGRAM_FORMAT,
+                    format,
                     blend: None,
                     write_mask: wgpu::ColorWrites::ALL,
                 })],

@@ -106,7 +106,9 @@ pub enum InputSpec {
     Color {
         color: Rgb8,
     },
-    /// Synthetic source (tests, soaks).
+    /// Synthetic source (tests, soaks): the compositor's test pattern, animated by the master
+    /// frame index. `rate` and `resolution` are kept for the resampling tests of step 6; the
+    /// pattern itself is drawn at the Program size and rate.
     TestSource {
         rate: FrameRate,
         resolution: Resolution,
@@ -122,6 +124,11 @@ impl InputSpec {
             Self::Color { .. } => InputKind::Color,
             Self::TestSource { .. } => InputKind::TestSource,
         }
+    }
+
+    /// True for inputs the engine draws itself (no `io-gst` pipeline): colour, test pattern.
+    pub fn is_generated(&self) -> bool {
+        matches!(self, Self::Color { .. } | Self::TestSource { .. })
     }
 
     /// Name given to a new input when the command does not provide one.

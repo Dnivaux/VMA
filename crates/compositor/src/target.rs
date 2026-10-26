@@ -10,7 +10,17 @@ pub struct RenderTarget {
 }
 
 impl RenderTarget {
+    /// A [`PROGRAM_FORMAT`] target (read by the UI and by readback).
     pub fn new(device: &wgpu::Device, resolution: Resolution, label: &str) -> Self {
+        Self::with_format(device, resolution, PROGRAM_FORMAT, label)
+    }
+
+    pub fn with_format(
+        device: &wgpu::Device,
+        resolution: Resolution,
+        format: wgpu::TextureFormat,
+        label: &str,
+    ) -> Self {
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some(label),
             size: wgpu::Extent3d {
@@ -21,7 +31,7 @@ impl RenderTarget {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: PROGRAM_FORMAT,
+            format,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT
                 | wgpu::TextureUsages::TEXTURE_BINDING
                 | wgpu::TextureUsages::COPY_SRC,

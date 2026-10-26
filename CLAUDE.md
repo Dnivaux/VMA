@@ -48,8 +48,8 @@ Variables wgpu utiles : `WGPU_BACKEND=vulkan|dx12` ; `WGPU_ADAPTER_NAME=Intel` (
 |---|---|
 | `crates/core` | Types communs, sérialisables (`FrameRate` rationnel, `Resolution`, `InputId`, `PixelFormat`, `ColorInfo`, `Rgb8`, `InputKind`). **Ne pas modifier sans le signaler** : tout en dépend. |
 | `crates/clock` | Horloge maître à cadence fixe, compteur d'images manquées. |
-| `crates/compositor` | wgpu/WGSL : mire, cibles de rendu, readback (tests). |
-| `crates/engine` | Thread de rendu cadencé par l'horloge, triple buffer vers l'UI, stats. (State store + `Command` en Phase 1.) |
+| `crates/compositor` | wgpu/WGSL : `Mixer` (calques `Rgba16Float`, Cut / Fade gamma ou linéaire, sortie `Rgba8Unorm`), mire, readback (tests). |
+| `crates/engine` | `State` + `Command` (thread `vma-control`, journal JSONL), thread de rendu cadencé par l'horloge (plan seqlock, `Sequencer`), triple buffer vers l'UI, stats. |
 | `crates/ui` | egui : vue Program, panneau Statistiques. |
 | `app/` | Binaire : assemble fenêtre eframe, moteur, UI. |
 | `crates/{io-gst,io-ndi,io-html,audio,replay,api}` | Squelettes vides pour les phases suivantes. |
@@ -64,9 +64,10 @@ Variables wgpu utiles : `WGPU_BACKEND=vulkan|dx12` ; `WGPU_ADAPTER_NAME=Intel` (
 - `unsafe` interdit par défaut (`unsafe_code = "deny"`) ; s'il devient nécessaire (NDI, interop),
   l'autoriser localement avec un commentaire `// SAFETY:` justifié.
 - Les tests d'intégration autorisent explicitement `unwrap`/`panic` en tête de fichier.
-- Couleur Phase 0 : textures Program `Rgba8Unorm`, valeurs R'G'B' Rec.709 encodées, pleine plage.
-  Phase 1 : cibles internes `Rgba16Float` ; transitions en domaine gamma par défaut (configurable),
-  linéaire pour scaling / filtrage.
+- Couleur (ADR 0005) : valeurs R'G'B' Rec.709 encodées, pleine plage, partout ; calques et
+  Program internes `Rgba16Float` (`vma_compositor::Mixer`), sortie UI `Rgba8Unorm` arrondie dans
+  le shader. Transitions en domaine gamma par défaut (linéaire en option), linéaire pour le
+  scaling / filtrage.
 - PTS des sorties = f(index d'image *n*), jamais l'heure murale.
 - Triple buffer Program : l'UI n'appelle `ProgramReader::update()` qu'en début de frame, après
   avoir soumis la frame précédente ; une seule `Queue` partagée (invariant, ADR 0001).

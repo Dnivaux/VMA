@@ -11,6 +11,7 @@ mod journal;
 mod plan;
 mod render;
 mod sequencer;
+mod sources;
 mod state;
 mod stats;
 mod triple;

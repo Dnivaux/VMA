@@ -11,8 +11,14 @@ ce fichier couvre le thread de rendu.
   sauté pour contre-pression) : `Sequencer::tick(n)` lit le plan (seqlock, sans attente) et
   produit la `Composition` du tick. La progression d'une transition dépend de l'index d'image,
   pas du nombre de ticks traités : des ticks manqués ne la ralentissent pas.
-- Jusqu'à l'étape 3, la mire reste affichée ; la `Composition` n'est visible que par
-  `feedback().on_air()`.
+- **Étape 3** : la `Composition` est dessinée par le `Mixer` du compositeur. Chaque input est
+  connu du rendu par une table fixe (`sources.rs`, 64 entrées `Copy`) que `vma-control` tient à
+  jour par différence avec l'état, via un canal borné, **avant** de publier le plan ; le rendu
+  lit le plan **puis** vide le canal, si bien qu'un input est connu dès le premier tick où le
+  plan le montre. Couleur → calque uni ; `TestSource` → mire ; autres inputs → noir jusqu'aux
+  étapes 5–7. Sans input au Program : noir.
+- L'application met une mire à l'antenne au démarrage tant que l'UI ne sait pas ajouter
+  d'inputs (étape 4). Les tests GPU du moteur font de même (`spawn`).
 
 ## Phase 0 — thread de rendu
 
@@ -47,6 +53,7 @@ ce fichier couvre le thread de rendu.
 | Perte du device : pas de panique, rendu arrêté, horloge qui continue, raison exposée, arrêt propre | `render_loop::device_lost_stops_rendering_not_the_clock` | CI |
 | 1 s réelle : ≥ 40 ticks, images publiées dans l'ordre | `render_loop::runs_one_second` | CI |
 | **10 min à 50 fps 1080p : 0 manquée, 0 répétée** (acceptation Phase 0) | `render_loop::soak_render_loop` | `#[ignore]`, manuel — voir `tests/soak/reports/` |
+| Pixels du Program : couleur à l'antenne, Cut, Fade à mi-course (somme des codes = 255 en gamma), retour à la couleur | `render_loop::program_pixels_follow_cut_and_fade` | CI |
 | Commande → contrôle → plan → rendu avec les vrais threads ; Fade minuté qui bascule seul ; journal écrit, sans perte, et rejouable | `render_loop::commands_reach_the_render_thread_and_the_journal` | CI |
 | Seqlock du plan : jamais de plan déchiré ni de version qui recule (3 lecteurs, 200 000 écritures) | `plan::tests::concurrent_reads_are_never_torn` | CI |
 | **Soak hostile : 10 min, fenêtre malmenée, 0 manquée, 0 répétée** (amendement 3) | `vma --soak 600 --hostile` + [`docs/manual-tests/phase0-soak-hostile.md`](../manual-tests/phase0-soak-hostile.md) | manuel, Linux et Windows |

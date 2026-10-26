@@ -39,7 +39,7 @@ pub enum InputSpec {
     File { path: PathBuf },                   // lu en boucle
     Image { path: PathBuf },
     Color { color: Rgb8 },
-    TestSource { rate: FrameRate, resolution: Resolution }, // tests, soaks (motif : ajouté si io-gst en a besoin)
+    TestSource { rate: FrameRate, resolution: Resolution }, // tests, soaks : la mire du compositeur (générée, pas de pipeline)
 }
 
 pub struct CommandSender { /* clonable */ }

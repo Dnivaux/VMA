@@ -5,6 +5,10 @@
 //! - `device_lost_stops_rendering_not_the_clock`: behaviour on GPU device loss.
 //! - `commands_reach_the_render_thread_and_the_journal`: command → control → plan → render
 //!   with the real threads, journal written and replayable.
+//! - `program_pixels_follow_cut_and_fade`: solid colours on air, Cut, Fade, read back from the
+//!   Program frames the UI would show.
+//!
+//! The other tests put a test-pattern input on air first (`spawn`).
 //! - `soak_render_loop`: the Phase 0 acceptance test (10 min at 50 fps, zero missed frame).
 //!   Ignored by default, run manually on the dev machine:
 //!   `cargo test --release -p vma-engine --test render_loop -- --ignored --nocapture`
@@ -34,10 +38,34 @@ struct Spawned {
     device: wgpu::Device,
     queue: wgpu::Queue,
     adapter: String,
+    /// First frame index showing the test pattern (earlier frames are black).
+    pattern_from: u64,
 }
 
+/// Spawns the engine with a test-pattern input on air.
 fn spawn(rate: FrameRate, resolution: Resolution) -> Spawned {
-    spawn_with_journal(rate, resolution, Journal::Disabled)
+    let mut spawned = spawn_with_journal(rate, resolution, Journal::Disabled);
+    let engine = &spawned.engine;
+    engine
+        .commands()
+        .send(
+            Source::Script,
+            Command::AddInput {
+                spec: InputSpec::TestSource { rate, resolution },
+                name: None,
+            },
+        )
+        .unwrap();
+    let feedback = engine.feedback();
+    assert!(
+        wait_for(Duration::from_secs(5), || matches!(
+            feedback.on_air(),
+            OnAir::Input(_)
+        )),
+        "test pattern never went on air"
+    );
+    spawned.pattern_from = feedback.last_frame() + 1;
+    spawned
 }
 
 fn spawn_with_journal(rate: FrameRate, resolution: Resolution, journal: Journal) -> Spawned {
@@ -59,6 +87,7 @@ fn spawn_with_journal(rate: FrameRate, resolution: Resolution, journal: Journal)
         device: gpu.device,
         queue: gpu.queue,
         adapter,
+        pattern_from: 0,
     }
 }
 
@@ -117,6 +146,7 @@ fn triple_buffer_gpu_stress() {
         device,
         queue,
         adapter,
+        pattern_from,
     } = spawn(
         FrameRate::new(240, 1).unwrap(),
         Resolution::new(W, H).unwrap(),
@@ -136,7 +166,7 @@ fn triple_buffer_gpu_stress() {
     let end = Instant::now() + Duration::from_secs(4);
     while expected.len() < MAX_COPIES as usize && Instant::now() < end {
         started |= reader.update();
-        if !started {
+        if !started || reader.current_frame_index() < pattern_from {
             std::thread::sleep(Duration::from_millis(1));
             continue;
         }
@@ -264,6 +294,8 @@ fn soak_render_loop() {
     let clock_stats = engine.clock_stats();
     let render_stats = engine.render_stats();
 
+    // `spawn` already ran a few ticks to put the pattern on air: count from here.
+    let ticks_at_start = clock_stats.snapshot().ticks;
     // Simulate a 60 Hz UI consuming frames, like the real app.
     let start = Instant::now();
     let end = start + Duration::from_secs(secs);
@@ -315,9 +347,10 @@ fn soak_render_loop() {
 
     assert_eq!(c.missed, 0, "missed frames on the clock");
     assert_eq!(r.gpu_dropped, 0, "frames dropped by GPU backpressure");
+    let ticks = c.ticks - ticks_at_start;
     assert!(
-        (c.ticks as f64 - expected_ticks).abs() <= 2.0,
-        "tick count off"
+        (ticks as f64 - expected_ticks).abs() <= 2.0,
+        "tick count off: {ticks} during the run, expected ≈ {expected_ticks:.0}"
     );
 }
 
@@ -422,4 +455,88 @@ fn commands_reach_the_render_thread_and_the_journal() {
     });
     assert_eq!(vma_engine::replay(fresh, &text).unwrap(), final_state);
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// Reads the centre pixel of the newest Program frame at or after `min_frame`.
+fn center_pixel(spawned: &mut Spawned, min_frame: u64) -> [u8; 4] {
+    let end = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < end {
+        spawned.reader.update();
+        if spawned.reader.current_frame_index() >= min_frame {
+            // The reader holds this slot until its next `update`: safe to read back.
+            let target = &spawned.reader.targets()[spawned.reader.current_slot()];
+            let img = vma_compositor::readback::read_rgba8(&spawned.device, &spawned.queue, target)
+                .unwrap();
+            let r = target.resolution();
+            let i = ((r.height() / 2 * r.width() + r.width() / 2) * 4) as usize;
+            return img[i..i + 4].try_into().unwrap();
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    panic!("no Program frame at or after {min_frame}");
+}
+
+#[test]
+fn program_pixels_follow_cut_and_fade() {
+    let mut spawned = spawn_with_journal(
+        FrameRate::FPS_50,
+        Resolution::new(320, 180).unwrap(),
+        Journal::Disabled,
+    );
+    let commands = spawned.engine.commands();
+    let feedback = spawned.engine.feedback();
+    let state = spawned.engine.state();
+    let red = Rgb8::new(255, 0, 0);
+    let blue = Rgb8::new(0, 0, 255);
+    for color in [red, blue] {
+        commands
+            .send(
+                Source::Ui,
+                Command::AddInput {
+                    spec: InputSpec::Color { color },
+                    name: None,
+                },
+            )
+            .unwrap();
+    }
+    assert!(wait_for(Duration::from_secs(2), || state
+        .load()
+        .inputs
+        .len()
+        == 2));
+    let (a, b) = {
+        let s = state.load();
+        (s.inputs[0].id, s.inputs[1].id)
+    };
+
+    assert!(wait_for(Duration::from_secs(2), || feedback.on_air()
+        == OnAir::Input(a)));
+    let from = feedback.last_frame() + 1;
+    assert_eq!(center_pixel(&mut spawned, from), [255, 0, 0, 255]);
+
+    commands.send(Source::Ui, Command::Cut).unwrap();
+    assert!(wait_for(Duration::from_secs(2), || feedback.on_air()
+        == OnAir::Input(b)));
+    let from = feedback.last_frame() + 1;
+    assert_eq!(center_pixel(&mut spawned, from), [0, 0, 255, 255]);
+
+    // Button 3: 1500 ms Fade back to red. Mid-way, both colours are visible.
+    commands
+        .send(Source::Ui, Command::Transition { button: 3 })
+        .unwrap();
+    assert!(wait_for(Duration::from_secs(2), || feedback.on_air()
+        == OnAir::Mixing));
+    let from = feedback.last_frame() + 10;
+    let [r, g, b_, _] = center_pixel(&mut spawned, from);
+    assert!(
+        r > 0 && r < 255 && b_ > 0 && b_ < 255 && g == 0,
+        "mid-fade: {r} {g} {b_}"
+    );
+    assert_eq!(u16::from(r) + u16::from(b_), 255, "gamma mix: codes add up");
+
+    assert!(wait_for(Duration::from_secs(4), || feedback.on_air()
+        == OnAir::Input(a)));
+    let from = feedback.last_frame() + 1;
+    assert_eq!(center_pixel(&mut spawned, from), [255, 0, 0, 255]);
+    spawned.engine.stop();
 }

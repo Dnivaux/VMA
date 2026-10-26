@@ -1,6 +1,6 @@
 [package]
 name = "vma-compositor"
-description = "GPU compositor (wgpu/WGSL): test pattern now; transitions, overlays, multiview later."
+description = "GPU compositor (wgpu/WGSL): Program mix (colour, test pattern, Cut / Fade), overlays and multiview later."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

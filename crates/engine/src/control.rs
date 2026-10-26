@@ -17,6 +17,7 @@ use crate::command::{Command, CommandId, Source};
 use crate::journal::{JournalLine, JournalSender, Origin, Outcome, utc_rfc3339};
 use crate::plan::PlanWriter;
 use crate::sequencer::RenderFeedback;
+use crate::sources::{SourceSync, SourceUpdate};
 use crate::state::{Event, IoRequest, State};
 
 /// Commands waiting to be applied before `send` reports the channel full.
@@ -112,6 +113,7 @@ pub(crate) struct Controller {
     feedback: Arc<RenderFeedback>,
     journal: Option<JournalSender>,
     stats: Arc<ControlStats>,
+    sources: SourceSync,
     seen_started: u64,
     seen_done: u64,
 }
@@ -123,7 +125,10 @@ impl Controller {
         feedback: Arc<RenderFeedback>,
         journal: Option<JournalSender>,
         stats: Arc<ControlStats>,
+        sources: crossbeam_channel::Sender<SourceUpdate>,
     ) -> (Self, StateReader) {
+        let mut sources = SourceSync::new(sources);
+        sources.sync(&state);
         plan.publish(&state.plan());
         let snapshot = Arc::new(ArcSwap::from_pointee(state.clone()));
         let reader = StateReader {
@@ -137,6 +142,7 @@ impl Controller {
                 feedback,
                 journal,
                 stats,
+                sources,
                 seen_started: 0,
                 seen_done: 0,
             },
@@ -171,6 +177,11 @@ impl Controller {
             result: Some(outcome),
             version: self.state.version,
         });
+    }
+
+    /// Retries render source updates a full channel could not take.
+    pub(crate) fn flush_sources(&mut self) {
+        self.sources.flush();
     }
 
     /// Turns new render feedback into state events. Started is applied before done (a
@@ -210,8 +221,10 @@ impl Controller {
         });
     }
 
-    fn publish(&self) {
-        // Plan first: the render thread must never lag behind what the UI shows.
+    fn publish(&mut self) {
+        // Sources before the plan that may show them; plan before the snapshot, so the
+        // render thread never lags behind what the UI shows.
+        self.sources.sync(&self.state);
         self.plan.publish(&self.state.plan());
         self.snapshot.store(Arc::new(self.state.clone()));
     }
@@ -251,6 +264,7 @@ pub(crate) fn spawn(
                     Err(RecvTimeoutError::Timeout) => {}
                     Err(RecvTimeoutError::Disconnected) => break,
                 }
+                controller.flush_sources();
                 controller.poll_feedback();
             }
             tracing::info!("control thread stopped");
@@ -277,6 +291,7 @@ mod tests {
         feedback: Arc<RenderFeedback>,
         reader: StateReader,
         journal: Receiver<JournalEntry>,
+        _sources: Receiver<SourceUpdate>,
         next_id: u64,
         frame: u64,
     }
@@ -286,6 +301,7 @@ mod tests {
             let (writer, plan_reader) = plan_channel();
             let feedback = Arc::new(RenderFeedback::default());
             let (tx, journal) = crossbeam_channel::unbounded();
+            let (sources_tx, sources) = crossbeam_channel::unbounded();
             let (controller, reader) = Controller::new(
                 State::new(Format {
                     rate,
@@ -295,6 +311,7 @@ mod tests {
                 Arc::clone(&feedback),
                 Some(JournalSender::new(tx, Arc::new(JournalStats::default()))),
                 Arc::new(ControlStats::default()),
+                sources_tx,
             );
             Self {
                 controller,
@@ -302,6 +319,7 @@ mod tests {
                 feedback,
                 reader,
                 journal,
+                _sources: sources,
                 next_id: 1,
                 frame: 0,
             }
