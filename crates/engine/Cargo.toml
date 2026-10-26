@@ -1,0 +1,22 @@
+[package]
+name = "aiguillage-engine"
+description = "Engine: render loop on the master clock; state store and commands from Phase 1."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+aiguillage-core.workspace = true
+aiguillage-clock.workspace = true
+aiguillage-compositor.workspace = true
+wgpu.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+pollster.workspace = true
+
+[lints]
+workspace = true
