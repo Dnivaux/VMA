@@ -60,7 +60,7 @@ fait tourner sa propre boucle modale et le thread UI est gelé.
   temps, observations : saccades visibles, avertissements dans le terminal).
 - [x] Noter le « Plus long blocage UI » : il montre que l'UI a bien été gelée, sans effet sur
   le Program.
-- [ ] Commiter le rapport (`docs(soak): add Phase 0 hostile soak report (<os>)`).
+- [x] Commiter le rapport (`docs(soak): add Phase 0 hostile soak report (<os>)`).
 
 ## En cas d'échec
 Garder le rapport et la sortie du terminal (avertissements `frame clock missed slots`,

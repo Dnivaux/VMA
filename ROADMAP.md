@@ -57,7 +57,11 @@ titres HTML + natifs, multi-cadence dès la Phase 1, macOS plus tard).
 Inputs GStreamer (webcam / capture, fichier en boucle, image, couleur), Preview + Program,
 Cut / Fade (mixage gamma par défaut, linéaire en option), couche `Command`, cibles internes
 `Rgba16Float` + YUV → RGB, **cadence maître réglable (25 / 29,97 / 30 / 50 / 59,94 / 60p) avec
-rééchantillonnage des inputs** (ADR 0002). Spec à rédiger et faire valider avant de coder.
+rééchantillonnage des inputs** (ADR 0002).
+
+**Spec et plan proposés, en attente de validation** : [`docs/specs/phase-1.md`](docs/specs/phase-1.md)
+(critères A1–A14, plan en 10 étapes, 10 questions), specs `commands`, `io-gst`, `compositor`, `ui`,
+ADR 0003 (état / commandes / threads), 0004 (GStreamer), 0005 (chaîne couleur).
 
 ## Phase 2 — Sorties · ⬜
 ## Phase 3 — Réseau et audio · ⬜

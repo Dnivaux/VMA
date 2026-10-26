@@ -1,6 +1,6 @@
-# Spec — `compositor` (Phase 0)
+# Spec — `compositor`
 
-## Comportement
+## Phase 0 — Comportement
 - `RenderTarget` : texture hors écran `Rgba8Unorm` (`RENDER_ATTACHMENT | TEXTURE_BINDING | COPY_SRC`).
 - `TestPattern` : mire générée par shader WGSL (triangle plein écran, aucun buffer de sommets).
   - 2/3 haut : 8 barres 75 % (100/0/75/0) : blanc, jaune, cyan, vert, magenta, rouge, bleu, noir
@@ -13,10 +13,10 @@
 - `headless::request_gpu()` : device sans fenêtre (respecte `WGPU_BACKEND`, `WGPU_ADAPTER_NAME`).
 - `readback::read_rgba8()` : copie GPU → CPU **bloquante**, tests uniquement.
 
-## Couleur
+## Phase 0 — Couleur
 R'G'B' Rec.709 encodé, pleine plage, dans `Rgba8Unorm`. Linéaire + YUV en Phase 1.
 
-## Critères d'acceptation
+## Phase 0 — Critères d'acceptation
 | Critère | Test | Statut |
 |---|---|---|
 | Barres à 191 exactement, alpha 255 | `bars_have_exact_75_percent_values` | CI |
@@ -25,3 +25,43 @@ R'G'B' Rec.709 encodé, pleine plage, dans `Rgba8Unorm`. Linéaire + YUV en Phas
 | Golden frame 320×180 f0, PSNR ≥ 45 dB | `golden_frame_0` | CI |
 
 Mesuré en local : bit-exact sur RTX 5090 (Vulkan), 73 dB sur Intel ARL (Vulkan, Mesa).
+
+---
+
+## Phase 1 — Preview, Program, transitions, YUV (proposé, à valider)
+Voir [`phase-1.md`](phase-1.md) et l'ADR 0005 (chaîne couleur).
+
+### Chaîne de rendu par tick
+Seuls les inputs **visibles** (Program, Preview, source et destination d'un Fade : au plus 2
+en Phase 1) sont traités.
+
+1. **Passe d'entrée** (par input visible) : échantillonne les plans (NV12, I420, YUY2, UYVY,
+   RGBA, BGRA), applique plage et matrice (601 / 709) → R'G'B'. Si la taille diffère de celle du
+   Program : linéarise (EOTF BT.1886), écrit dans une texture `Rgba16Float` à la taille native.
+2. **Passe d'échelle** (si nécessaire) : échantillonnage bilinéaire de la texture linéaire
+   (= filtrage en lumière linéaire), **fit** avec bandes noires, ré-encodage en R'G'B' →
+   « calque » `Rgba16Float` à la taille du Program. Sans changement de taille, la passe 1 écrit
+   directement le calque, sans linéarisation (aller-retour inutile).
+   - Couleur unie : calque rempli directement. Input absent ou en signal perdu : noir.
+3. **Passe de mixage** → cibles `Rgba16Float` Program et Preview :
+   - hors transition : copie du calque ;
+   - Fade, domaine **gamma** (défaut) : `mix(from, to, p)` sur les valeurs encodées ;
+   - Fade, domaine **linéaire** (option) : décodage, `mix`, ré-encodage.
+4. **Passe de sortie** : `Rgba16Float` → `Rgba8Unorm` (arrondi au plus proche) dans les triple
+   buffers Program et Preview lus par l'UI (invariant ADR 0001), et plus tard vers les sorties.
+
+Toutes les ressources (textures intermédiaires, pipelines, bind groups) sont créées hors du
+thread de rendu (`vma-control`) ; le rendu ne fait qu'encoder. Downscale fort (4K → 1080p) en
+simple bilinéaire en Phase 1 (crénelage possible) ; mipmaps ou filtre plus large plus tard.
+
+### Critères d'acceptation (Phase 1)
+| Critère | Test | Où |
+|---|---|---|
+| **Fade 50 % entre deux couleurs** = moyenne des valeurs encodées, ±1 (A2) | golden analytique, domaine gamma | CI |
+| Fade 50 % en domaine linéaire = `encode((decode(a)+decode(b))/2)`, ±1 | golden analytique | CI |
+| Fade 0 % / 100 % = source / destination exactes (A4) | golden | CI |
+| Fade 50 % mire ↔ couleur : PSNR ≥ 45 dB contre l'image de référence | golden PNG `tests/golden/fade50.png` | CI |
+| YUV → RGB : barres 75 % synthétiques en NV12, I420, YUY2, UYVY, 601 / 709, limitée / pleine → R'G'B' attendu ±1 (A7) | golden analytique, 24 combinaisons | CI |
+| Sans changement de taille, passe d'entrée sans perte : RGBA → RGBA bit-exact | golden | CI |
+| Fit : source 4:3 dans un Program 16:9 → bandes noires de la bonne largeur, ±1 px | golden | CI |
+| Mise à l'échelle linéaire : damier noir / blanc 1 px réduit de moitié → gris 191 ±1 (`255 × 0,5^(1/2,4)` : moitié de la luminance), et non 128 | golden analytique | CI |
