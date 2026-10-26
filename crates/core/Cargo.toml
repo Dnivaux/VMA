@@ -1,0 +1,14 @@
+[package]
+name = "aiguillage-core"
+description = "Common types shared by every Aiguillage crate: frame rates, resolutions, ids, errors."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+
+[lints]
+workspace = true
