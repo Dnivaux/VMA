@@ -7,7 +7,7 @@ Légende : ✅ fait (tests verts) · 🟡 implémenté, validation incomplète �
 
 ---
 
-## Phase 0 — Fondations · *en revue (soak hostile à passer)*
+## Phase 0 — Fondations · *en revue (soak hostile Windows à passer)*
 
 ADR 0001 **accepté avec amendements** ; décisions produit dans l'ADR 0002 (nom VMA, egui,
 titres HTML + natifs, multi-cadence dès la Phase 1, macOS plus tard).
@@ -21,16 +21,17 @@ titres HTML + natifs, multi-cadence dès la Phase 1, macOS plus tard).
 | CI GitHub Actions (Ubuntu + Windows, fmt, clippy, tests, deny, MSRV) | ✅ | Run [40373180391](https://github.com/Dnivaux/VMA/actions/runs/40373180391) vert sur les 2 OS (commit `46a4162`) |
 | `core` : `FrameRate` rationnel, `Resolution`, `InputId` | ✅ | 7 tests unitaires (CI) |
 | `clock` : horloge à cadence fixe, images manquées, stats lock-free, `tracing` | ✅ | 6 tests (CI) |
-| `clock` : histogramme du retard au réveil (p50 / p99 / p99,9 / max), marge d'attente configurable — *amendement 4* | 🟡 | 3 tests locaux ; CI à relancer après push |
+| `clock` : histogramme du retard au réveil (p50 / p99 / p99,9 / max), marge d'attente configurable — *amendement 4* | ✅ | 3 tests (CI [40378932947](https://github.com/Dnivaux/VMA/actions/runs/40378932947)) |
 | `compositor` : mire WGSL, cibles de rendu, readback | ✅ | 4 tests golden / analytiques (CI : lavapipe, WARP) |
 | `engine` : thread de rendu, triple buffer lock-free, contre-pression GPU | ✅ | 3 tests unitaires + `runs_one_second` (CI) |
-| `engine` : invariant du triple buffer documenté + tests de stress CPU et GPU — *amendement 2* | 🟡 | `producer_never_writes_the_held_slot`, `triple_buffer_gpu_stress` locaux ; CI à relancer |
-| `engine` : perte du GPU (rendu arrêté, horloge maintenue, sortie en erreur), erreurs GPU comptées — *amendement 3* | 🟡 | `device_lost_stops_rendering_not_the_clock` local ; CI à relancer |
+| `engine` : invariant du triple buffer documenté + tests de stress CPU et GPU — *amendement 2* | ✅ | `producer_never_writes_the_held_slot`, `triple_buffer_gpu_stress` (CI [40378932947](https://github.com/Dnivaux/VMA/actions/runs/40378932947), lavapipe et WARP) |
+| `engine` : perte du GPU (rendu arrêté, horloge maintenue, sortie en erreur), erreurs GPU comptées — *amendement 3* | ✅ | `device_lost_stops_rendering_not_the_clock` (CI [40378932947](https://github.com/Dnivaux/VMA/actions/runs/40378932947)) |
 | Fenêtre eframe : Program + panneau Statistiques (dont retard au réveil, erreurs GPU) | ✅ | Lancement manuel : 50,00 fps, 0 manquée |
-| Mode soak dans l'app (`--soak`, `--hostile`, rapport Markdown, code de sortie) | 🟡 | Essai de 16 s hostile sous Hyprland : 0 manquée, 0 répétée |
+| Mode soak dans l'app (`--soak`, `--hostile`, rapport Markdown, code de sortie) | ✅ (manuel) | Soak hostile Linux de 10 min ci-dessous |
 | **Acceptation : 10 min à 50 fps sans image manquée** | ✅ (manuel) | 600 s, 30 002 images, 0 manquée, 0 répétée — [`tests/soak/reports/2026-10-26-phase0-render-loop.md`](tests/soak/reports/2026-10-26-phase0-render-loop.md) |
-| **Acceptation : soak hostile 10 min, 0 image manquée** (amendement 3) | ⬜ | À passer par le mainteneur, Linux et Windows : [`docs/manual-tests/phase0-soak-hostile.md`](docs/manual-tests/phase0-soak-hostile.md) |
-| **Acceptation : CI verte sur les 2 OS** | ✅ | Run 40373180391 ; à reconfirmer sur les commits des amendements |
+| **Acceptation : soak hostile 10 min, 0 image manquée — Linux** (amendement 3) | ✅ (manuel) | 600 s, 30 001 images, 0 manquée, 0 répétée, réveil p99 3 µs / max 1,4 ms, UI gelée jusqu'à 26,9 s sans effet sur le Program — [`tests/soak/reports/2026-10-26-phase0-hostile-linux.md`](tests/soak/reports/2026-10-26-phase0-hostile-linux.md) |
+| **Acceptation : soak hostile 10 min, 0 image manquée — Windows** | ⬜ | À passer par le mainteneur : [`docs/manual-tests/phase0-soak-hostile.md`](docs/manual-tests/phase0-soak-hostile.md) |
+| **Acceptation : CI verte sur les 2 OS** | ✅ | Runs 40373180391 et [40378932947](https://github.com/Dnivaux/VMA/actions/runs/40378932947) (32 tests, Ubuntu + Windows) |
 | Doc : `CLAUDE.md`, ADR 0001 et 0002, specs `clock` / `compositor` / `engine`, `docs/dev-setup.md`, checklist soak hostile | ✅ | — |
 
 « Local » = Arch Linux, RTX 5090, Rust 1.99.1.
