@@ -1,0 +1,15 @@
+[package]
+name = "aiguillage-clock"
+description = "Master clock: fixed-rate ticks on a rational frame rate, missed-frame accounting."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+aiguillage-core.workspace = true
+tracing.workspace = true
+
+[lints]
+workspace = true
