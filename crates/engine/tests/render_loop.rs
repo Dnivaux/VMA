@@ -100,7 +100,7 @@ fn runs_one_second() {
         mut reader,
         adapter,
         ..
-    } = spawn(FrameRate::FPS_50, Resolution::HD_720);
+    } = spawn(FrameRate::FPS_50, Resolution::new(320, 180).unwrap());
     eprintln!("adapter: {adapter}");
     let mut last = 0;
     let mut updates = 0;
@@ -119,7 +119,13 @@ fn runs_one_second() {
     let render = engine.render_stats().snapshot();
     eprintln!("{clock:?}\n{render:?}");
     assert!(clock.ticks >= 40, "only {} ticks in 1 s", clock.ticks);
-    assert!(render.frames_rendered >= 40);
+    // Small picture: software adapters (WARP) cannot do 4 passes at 720p50 on CI runners.
+    assert!(
+        render.frames_rendered >= 40,
+        "only {} frames rendered ({} skipped by GPU backpressure)",
+        render.frames_rendered,
+        render.gpu_dropped
+    );
     assert!(updates >= 20, "reader saw only {updates} new frames");
 }
 
