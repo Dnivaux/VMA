@@ -3,6 +3,7 @@
 //! - [`Mixer`]: Program composition — sources (solid colour, test pattern) rendered into
 //!   [`INTERNAL_FORMAT`] layers, Cut / Fade in the gamma or linear domain, output pass to
 //!   [`PROGRAM_FORMAT`].
+//! - [`thumbnails`]: every input drawn into its cell of a thumbnail atlas.
 //! - [`TestPattern`], plus helpers to create a headless device and read a texture back
 //!   (tests only).
 //!
@@ -18,6 +19,7 @@ mod mixer;
 pub mod readback;
 mod target;
 mod test_pattern;
+pub mod thumbnails;
 
 pub use error::CompositorError;
 pub use mixer::{INTERNAL_FORMAT, Mix, MixSpace, Mixer, Source};

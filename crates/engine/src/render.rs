@@ -8,10 +8,11 @@ use crate::state::{Format, State};
 use crate::stats::RenderStats;
 use crate::triple::{Consumer, Producer, TripleIndices, triple};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 use vma_clock::{ClockStats, FrameClock, SystemTime};
+use vma_compositor::thumbnails::{self, ATLAS_CELLS, ThumbnailPainter};
 use vma_compositor::{Mix, MixSpace, Mixer, RenderTarget, Source};
 use vma_core::{FrameRate, InputId, Resolution};
 
@@ -45,13 +46,54 @@ impl Default for EngineConfig {
     }
 }
 
-/// Program frames shared between the render thread (producer) and one reader.
+/// Frames of one output (Program, Preview, thumbnail atlas) shared between the render
+/// thread (producer) and one reader.
 #[derive(Debug)]
-struct ProgramFrames {
+struct OutputFrames {
     targets: [RenderTarget; 3],
     /// Frame index rendered in each slot.
     frame_index: [AtomicU64; 3],
+    /// Thumbnail atlas only: input shown in each cell of each slot (`id + 1`, 0 = none).
+    cells: [[AtomicU32; ATLAS_CELLS]; 3],
     indices: TripleIndices,
+}
+
+impl OutputFrames {
+    fn new(targets: [RenderTarget; 3], indices: TripleIndices) -> Self {
+        Self {
+            targets,
+            frame_index: Default::default(),
+            cells: std::array::from_fn(|_| std::array::from_fn(|_| AtomicU32::new(0))),
+            indices,
+        }
+    }
+}
+
+/// Producer side of an output.
+struct Output {
+    frames: Arc<OutputFrames>,
+    producer: Producer,
+}
+
+fn output(targets: [RenderTarget; 3]) -> (Output, FrameReader) {
+    let (indices, producer, consumer) = triple();
+    let frames = Arc::new(OutputFrames::new(targets, indices));
+    (
+        Output {
+            frames: Arc::clone(&frames),
+            producer,
+        },
+        FrameReader { frames, consumer },
+    )
+}
+
+/// The engine's outputs for the UI. Each reader is the single consumer of its frames.
+#[derive(Debug)]
+pub struct Readers {
+    pub program: FrameReader,
+    pub preview: FrameReader,
+    /// Thumbnail atlas, refreshed every other tick (see `vma_compositor::thumbnails`).
+    pub thumbnails: FrameReader,
 }
 
 /// Handle on the running engine: the `vma-render` and `vma-control` threads (and
@@ -71,10 +113,10 @@ pub struct RenderEngine {
     state: StateReader,
 }
 
-/// The single consumer of Program frames (typically the UI).
+/// The single consumer of one output's frames (typically the UI).
 #[derive(Debug)]
-pub struct ProgramReader {
-    frames: Arc<ProgramFrames>,
+pub struct FrameReader {
+    frames: Arc<OutputFrames>,
     consumer: Consumer,
 }
 
@@ -92,15 +134,20 @@ impl RenderEngine {
         queue: wgpu::Queue,
         config: EngineConfig,
         journal: Journal,
-    ) -> Result<(Self, ProgramReader), EngineError> {
-        let (indices, producer, consumer) = triple();
-        let frames = Arc::new(ProgramFrames {
-            targets: [0, 1, 2]
-                .map(|i| RenderTarget::new(&device, config.resolution, &format!("program[{i}]"))),
-            frame_index: Default::default(),
-            indices,
-        });
-        let mixer = Mixer::new(&device, config.resolution);
+    ) -> Result<(Self, Readers), EngineError> {
+        let targets = |name: &str| {
+            [0, 1, 2]
+                .map(|i| RenderTarget::new(&device, config.resolution, &format!("{name}[{i}]")))
+        };
+        let (program, program_reader) = output(targets("program"));
+        let (preview, preview_reader) = output(targets("preview"));
+        let (thumbs, thumbs_reader) =
+            output([0, 1, 2].map(|i| thumbnails::new_atlas(&device, &format!("thumbnails[{i}]"))));
+        let mixers = [
+            Mixer::new(&device, config.resolution),
+            Mixer::new(&device, config.resolution),
+        ];
+        let painter = ThumbnailPainter::new(&device);
         let clock = FrameClock::with_spin_margin(config.rate, config.spin_margin);
         let clock_stats = clock.stats();
         let render_stats = Arc::new(RenderStats::default());
@@ -139,9 +186,11 @@ impl RenderEngine {
             device,
             queue,
             clock,
-            mixer,
-            frames: Arc::clone(&frames),
-            producer,
+            mixers,
+            painter,
+            program,
+            preview,
+            thumbs,
             sequencer: Sequencer::new(plan_reader),
             sources: SourceTable::new(sources_rx),
             feedback: Arc::clone(&feedback),
@@ -179,7 +228,11 @@ impl RenderEngine {
                 commands,
                 state,
             },
-            ProgramReader { frames, consumer },
+            Readers {
+                program: program_reader,
+                preview: preview_reader,
+                thumbnails: thumbs_reader,
+            },
         ))
     }
 
@@ -236,7 +289,7 @@ impl Drop for RenderEngine {
     }
 }
 
-impl ProgramReader {
+impl FrameReader {
     /// Switches to the most recent published frame, if any.
     ///
     /// **Invariant** (see `triple.rs`): call it once per consumer frame, *before* recording
@@ -260,9 +313,19 @@ impl ProgramReader {
             .map_or(0, |f| f.load(Ordering::Acquire))
     }
 
-    /// The three Program targets, to register them once with the UI renderer.
+    /// The three targets, to register them once with the UI renderer.
     pub fn targets(&self) -> &[RenderTarget; 3] {
         &self.frames.targets
+    }
+
+    /// Thumbnail atlas: the cell showing `input` in the frame currently held, if any.
+    pub fn cell_of(&self, input: InputId) -> Option<usize> {
+        let wanted = input.0.checked_add(1)?;
+        self.frames
+            .cells
+            .get(self.current_slot())?
+            .iter()
+            .position(|c| c.load(Ordering::Acquire) == wanted)
     }
 }
 
@@ -280,13 +343,31 @@ fn install_gpu_handlers(device: &wgpu::Device, stats: &Arc<RenderStats>) {
     });
 }
 
+fn render_source_to_compositor(source: RenderSource, frame: u64) -> Source {
+    match source {
+        RenderSource::Color(c) => Source::Color(c),
+        RenderSource::TestPattern => Source::TestPattern { frame },
+    }
+}
+
+/// Publishes the back slot of `out` as frame `frame`.
+fn publish(out: &mut Output, frame: u64) {
+    if let Some(index) = out.frames.frame_index.get(out.producer.back()) {
+        index.store(frame, Ordering::Release);
+    }
+    out.producer.publish(&out.frames.indices);
+}
+
 struct RenderWorker {
     device: wgpu::Device,
     queue: wgpu::Queue,
     clock: FrameClock,
-    mixer: Mixer,
-    frames: Arc<ProgramFrames>,
-    producer: Producer,
+    /// Program, Preview.
+    mixers: [Mixer; 2],
+    painter: ThumbnailPainter,
+    program: Output,
+    preview: Output,
+    thumbs: Output,
     sequencer: Sequencer,
     sources: SourceTable,
     feedback: Arc<RenderFeedback>,
@@ -349,38 +430,66 @@ impl RenderWorker {
 
     fn source(&self, input: Option<InputId>, frame: u64) -> Source {
         match input.and_then(|id| self.sources.get(id)) {
-            Some(RenderSource::Color(c)) => Source::Color(c),
-            Some(RenderSource::TestPattern) => Source::TestPattern { frame },
+            Some(source) => render_source_to_compositor(source, frame),
             // No input, or one without pictures yet: black.
             None => Source::Black,
         }
     }
 
+    /// Renders Program, Preview and (every other tick) the thumbnails in one submission,
+    /// then publishes them.
     fn render(&mut self, composition: &Composition) {
-        let frame_index = composition.frame;
-        let mix = Mix {
-            from: self.source(composition.from, frame_index),
-            to: self.source(composition.to, frame_index),
+        let frame = composition.frame;
+        let program = Mix {
+            from: self.source(composition.from, frame),
+            to: self.source(composition.to, frame),
             mix: composition.mix,
             space: match composition.domain {
                 MixDomain::Gamma => MixSpace::Gamma,
                 MixDomain::Linear => MixSpace::Linear,
             },
         };
-        let slot = self.producer.back();
-        let (Some(target), Some(slot_index)) = (
-            self.frames.targets.get(slot),
-            self.frames.frame_index.get(slot),
-        ) else {
-            return;
-        };
+        let preview = Mix::single(self.source(composition.preview, frame));
+        let with_thumbnails = frame.is_multiple_of(2);
+
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("program"),
+                label: Some("tick"),
             });
-        self.mixer
-            .encode(&self.queue, &mut encoder, &mix, target.view());
+        for ((mixer, out), mix) in self
+            .mixers
+            .iter()
+            .zip([&self.program, &self.preview])
+            .zip([program, preview])
+        {
+            if let Some(target) = out.frames.targets.get(out.producer.back()) {
+                mixer.encode(&self.queue, &mut encoder, &mix, target.view());
+            }
+        }
+        let thumbs_slot = self.thumbs.producer.back();
+        if with_thumbnails
+            && let (Some(atlas), Some(cells)) = (
+                self.thumbs.frames.targets.get(thumbs_slot),
+                self.thumbs.frames.cells.get(thumbs_slot),
+            )
+        {
+            let sources = self
+                .sources
+                .iter()
+                .map(|(slot, _, source)| (slot, render_source_to_compositor(source, frame)));
+            self.painter
+                .encode(&self.queue, &mut encoder, atlas.view(), frame, sources);
+            // Visible to the reader through the publish below (Release / Acquire).
+            for value in cells {
+                value.store(0, Ordering::Relaxed);
+            }
+            for (slot, id, _) in self.sources.iter() {
+                if let Some(value) = cells.get(slot) {
+                    value.store(id.0.saturating_add(1), Ordering::Relaxed);
+                }
+            }
+        }
 
         self.stats.gpu_submitted();
         self.queue.submit([encoder.finish()]);
@@ -388,7 +497,10 @@ impl RenderWorker {
         self.queue
             .on_submitted_work_done(move || stats.gpu_completed());
 
-        slot_index.store(frame_index, Ordering::Release);
-        self.producer.publish(&self.frames.indices);
+        publish(&mut self.program, frame);
+        publish(&mut self.preview, frame);
+        if with_thumbnails {
+            publish(&mut self.thumbs, frame);
+        }
     }
 }

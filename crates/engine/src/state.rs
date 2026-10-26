@@ -105,9 +105,30 @@ impl TransitionState {
         }
     }
 
-    fn involves(&self, input: InputId) -> bool {
+    /// The outgoing (`None` = black) and incoming inputs.
+    pub fn inputs(&self) -> (Option<InputId>, InputId) {
         let (Self::Timed { from, to, .. } | Self::Fader { from, to, .. }) = *self;
+        (from, to)
+    }
+
+    /// True if `input` leaves or enters Program in this transition.
+    pub fn involves(&self, input: InputId) -> bool {
+        let (from, to) = self.inputs();
         from == Some(input) || to == input
+    }
+
+    /// Progress (0–1) as of render frame `frame`: a timed transition shows `(k + 1) / frames`
+    /// on its k-th frame (0 before its first frame); the T-Bar its position.
+    pub fn progress(&self, frame: u64) -> f32 {
+        match *self {
+            Self::Timed {
+                frames, started_at, ..
+            } => started_at.map_or(0.0, |start| {
+                let shown = frame.saturating_sub(start).saturating_add(1);
+                (shown as f64 / f64::from(frames.max(1))).min(1.0) as f32
+            }),
+            Self::Fader { value, .. } => f32::from(value) / 255.0,
+        }
     }
 
     fn ends(&self) -> (Option<InputId>, InputId, Ending) {

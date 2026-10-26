@@ -67,11 +67,36 @@ Par input : état, mode (taille, cadence, format), images reçues / s, répété
 latence arrivée → tick p50 / p99, conversions `videoconvert`. Global : commandes reçues /
 refusées, `journal_dropped`.
 
+## Mise en œuvre (étape 4 du plan, 2026-10-26)
+- `vma_ui::Switcher` : toute la surface de mélange. Il ne lit qu'une `View` (snapshot `State`,
+  `CommandSender`, identifiants de textures egui, dernier tick rendu, dernier refus) et ne
+  possède aucun objet GPU : les tests le font tourner sans fenêtre ni moteur.
+  `MainUi` le relie au moteur (trois `FrameReader` : Program, Preview, atlas des vignettes,
+  mis à jour en début de frame, invariant ADR 0001).
+- Ajouter : **Couleur** (6 couleurs prêtes + sélecteur) et **Mire** ; Caméra, Vidéo, Image
+  sont grisés jusqu'aux étapes 5–8. Une session normale démarre **vide**, comme la référence
+  (le mode `--soak` met une mire à l'antenne).
+- **Contrôles vidéo** sous Preview / Program (lecture, pause, position) : reportés à
+  l'étape 8, avec les vidéos ; le bouton Loop des vignettes et des réglages est déjà là.
+- T-Bar : barre verticale, **haut = Program seul, bas = transition terminée**. Arrivée en bas,
+  la transition se termine (échange) et le reste du geste est ignoré ; au relâchement, la
+  T-Bar repart en haut (observé sur la référence). Chaque position n'est envoyée qu'une fois.
+- La barre de progression d'une transition minutée s'affiche sous le bouton qui l'a lancée
+  (bouton 1 pour `Entrée`) ; Quick Play n'en a pas encore.
+- Menu d'un bouton de transition : **clic droit** (effet Fade / Cut, durée en ms).
+- Refus du moteur (`ControlStats::last_rejection`) et canal plein : message dans la barre du
+  haut pendant 4 s.
+- Barre du haut : Réglages, et un interrupteur **Statistiques** pour libérer de la place.
+- Panneau Statistiques : + commandes acceptées / refusées, lignes de journal écrites / perdues.
+- Le glyphe « ✕ » manque dans les polices d'egui : le bouton Fermer affiche « × ».
+- Journal activé par défaut dans `logs/` (`--journal-dir <dossier>`, `--no-journal`).
+
 ## Critères d'acceptation
 | Critère | Test |
 |---|---|
-| Chaque clic, double-clic, bouton, menu, T-Bar et raccourci émet exactement la `Command` attendue (A11) | test egui sans fenêtre (`egui::Context` + événements simulés), `CommandSender` factice |
-| Raccourcis ignorés quand un champ texte a le focus | idem |
-| L'UI reflète un nouvel état au plus une frame UI après sa publication | idem, snapshot injecté |
-| Tally conforme, y compris pendant une transition et à la T-Bar | idem |
+| Chaque clic, double-clic, bouton, menu, T-Bar et raccourci émet exactement la `Command` attendue (A11) | `crates/ui/tests/switcher.rs` (10 tests, `egui_kittest` piloté par AccessKit, `CommandSender::probe`) |
+| Raccourcis ignorés quand un champ texte a le focus | `switcher::double_click_opens_input_settings_and_typing_does_not_trigger_shortcuts` (vérifié : échoue si la protection est retirée) |
+| L'UI reflète un nouvel état au plus une frame UI après sa publication | `switcher::ui_follows_the_new_state_on_the_next_frame` |
+| Tally conforme, y compris pendant une transition et à la T-Bar | `tally::tests::red_green_and_both_red_during_a_transition` |
+| Chaque widget a un nom accessible | contrôle automatique d'`egui_kittest` dans chaque test |
 | Utilisation réelle : chaque type d'input, Quick Play, Cut, 4 boutons, T-Bar, contrôles vidéo, à la souris et au clavier | checklist `docs/manual-tests/phase1-inputs.md` |

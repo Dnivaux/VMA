@@ -28,13 +28,16 @@ use vma_compositor::{TEST_PATTERN_PERIOD_FRAMES, headless};
 use vma_core::Rgb8;
 use vma_core::{FrameRate, Resolution};
 use vma_engine::{
-    Command, EngineConfig, Format, InputSpec, Journal, OnAir, ProgramReader, RenderEngine, Source,
+    Command, EngineConfig, Format, FrameReader, InputSpec, Journal, OnAir, RenderEngine, Source,
     State,
 };
 
 struct Spawned {
     engine: RenderEngine,
-    reader: ProgramReader,
+    /// Program frames.
+    reader: FrameReader,
+    preview: FrameReader,
+    thumbnails: FrameReader,
     device: wgpu::Device,
     queue: wgpu::Queue,
     adapter: String,
@@ -79,11 +82,13 @@ fn spawn_with_journal(rate: FrameRate, resolution: Resolution, journal: Journal)
         resolution,
         ..EngineConfig::default()
     };
-    let (engine, reader) =
+    let (engine, readers) =
         RenderEngine::spawn(gpu.device.clone(), gpu.queue.clone(), config, journal).unwrap();
     Spawned {
         engine,
-        reader,
+        reader: readers.program,
+        preview: readers.preview,
+        thumbnails: readers.thumbnails,
         device: gpu.device,
         queue: gpu.queue,
         adapter,
@@ -153,6 +158,7 @@ fn triple_buffer_gpu_stress() {
         queue,
         adapter,
         pattern_from,
+        ..
     } = spawn(
         FrameRate::new(240, 1).unwrap(),
         Resolution::new(W, H).unwrap(),
@@ -463,23 +469,44 @@ fn commands_reach_the_render_thread_and_the_journal() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
-/// Reads the centre pixel of the newest Program frame at or after `min_frame`.
-fn center_pixel(spawned: &mut Spawned, min_frame: u64) -> [u8; 4] {
+#[derive(Clone, Copy)]
+enum Out {
+    Program,
+    Preview,
+    Thumbnails,
+}
+
+/// Waits for a frame at or after `min_frame` on `out`, then reads it back whole. The reader
+/// holds that slot until its next `update`, so the read is safe.
+fn read_frame(spawned: &mut Spawned, out: Out, min_frame: u64) -> (Vec<u8>, u32) {
     let end = Instant::now() + Duration::from_secs(5);
     while Instant::now() < end {
-        spawned.reader.update();
-        if spawned.reader.current_frame_index() >= min_frame {
-            // The reader holds this slot until its next `update`: safe to read back.
-            let target = &spawned.reader.targets()[spawned.reader.current_slot()];
+        let reader = match out {
+            Out::Program => &mut spawned.reader,
+            Out::Preview => &mut spawned.preview,
+            Out::Thumbnails => &mut spawned.thumbnails,
+        };
+        reader.update();
+        if reader.current_frame_index() >= min_frame {
+            let target = &reader.targets()[reader.current_slot()];
             let img = vma_compositor::readback::read_rgba8(&spawned.device, &spawned.queue, target)
                 .unwrap();
-            let r = target.resolution();
-            let i = ((r.height() / 2 * r.width() + r.width() / 2) * 4) as usize;
-            return img[i..i + 4].try_into().unwrap();
+            return (img, target.resolution().width());
         }
         std::thread::sleep(Duration::from_millis(1));
     }
-    panic!("no Program frame at or after {min_frame}");
+    panic!("no frame at or after {min_frame}");
+}
+
+fn pixel(img: &[u8], width: u32, x: u32, y: u32) -> [u8; 4] {
+    let i = ((y * width + x) * 4) as usize;
+    img[i..i + 4].try_into().unwrap()
+}
+
+/// Centre pixel of the newest Program frame at or after `min_frame`.
+fn center_pixel(spawned: &mut Spawned, min_frame: u64) -> [u8; 4] {
+    let (img, w) = read_frame(spawned, Out::Program, min_frame);
+    pixel(&img, w, w / 2, 90)
 }
 
 #[test]
@@ -519,6 +546,23 @@ fn program_pixels_follow_cut_and_fade() {
         == OnAir::Input(a)));
     let from = feedback.last_frame() + 1;
     assert_eq!(center_pixel(&mut spawned, from), [255, 0, 0, 255]);
+
+    // Preview shows blue; the thumbnails show both inputs in their cells.
+    let (img, w) = read_frame(&mut spawned, Out::Preview, from);
+    assert_eq!(pixel(&img, w, w / 2, 90), [0, 0, 255, 255]);
+    let (img, w) = read_frame(&mut spawned, Out::Thumbnails, from);
+    for (id, want) in [(a, [255, 0, 0, 255]), (b, [0, 0, 255, 255])] {
+        let cell = spawned
+            .thumbnails
+            .cell_of(id)
+            .expect("input has a thumbnail");
+        let (x, y, cw, ch) = vma_compositor::thumbnails::cell_rect(cell).unwrap();
+        assert_eq!(
+            pixel(&img, w, x + cw / 2, y + ch / 2),
+            want,
+            "thumbnail of {id}"
+        );
+    }
 
     commands.send(Source::Ui, Command::Cut).unwrap();
     assert!(wait_for(Duration::from_secs(2), || feedback.on_air()

@@ -52,7 +52,18 @@ fn main() -> anyhow::Result<ExitCode> {
         "VMA",
         native_options,
         Box::new(|cc| {
-            let app = App::new(cc, config, options.soak.clone(), &device_lost, &soak_handle)?;
+            let journal = match &options.journal_dir {
+                Some(dir) => Journal::Directory(dir.clone()),
+                None => Journal::Disabled,
+            };
+            let app = App::new(
+                cc,
+                config,
+                journal,
+                options.soak.clone(),
+                &device_lost,
+                &soak_handle,
+            )?;
             Ok(Box::new(app))
         }),
     )
@@ -83,6 +94,7 @@ impl<'a> App<'a> {
     fn new(
         cc: &eframe::CreationContext<'_>,
         config: EngineConfig,
+        journal: Journal,
         soak_options: Option<cli::SoakOptions>,
         device_lost: &'a OnceLock<String>,
         soak_handle: &OnceLock<soak::SoakHandle>,
@@ -99,34 +111,43 @@ impl<'a> App<'a> {
         tracing::info!(%adapter, "GPU adapter");
 
         // The engine installs the uncaptured-error handler and the device-lost callback.
-        let (engine, reader) = RenderEngine::spawn(
+        let (engine, readers) = RenderEngine::spawn(
             render_state.device.clone(),
             render_state.queue.clone(),
             config,
-            // Commands come from the UI from step 4 of the Phase 1 plan (journal enabled then).
-            Journal::Disabled,
+            journal,
         )?;
-        // Until the UI can add inputs (step 4), start with the test pattern on air.
-        engine.commands().send(
-            vma_engine::Source::Script,
-            vma_engine::Command::AddInput {
-                spec: vma_engine::InputSpec::TestSource {
-                    rate: config.rate,
-                    resolution: config.resolution,
+        // A soak measures the render loop: give it a moving picture on air. A normal session
+        // starts empty, like the reference.
+        if soak_options.is_some() {
+            engine.commands().send(
+                vma_engine::Source::Script,
+                vma_engine::Command::AddInput {
+                    spec: vma_engine::InputSpec::TestSource {
+                        rate: config.rate,
+                        resolution: config.resolution,
+                    },
+                    name: None,
                 },
-                name: None,
-            },
-        )?;
+            )?;
+        }
 
-        let program_textures = {
+        let textures = {
             let mut renderer = render_state.renderer.write();
-            reader.targets().each_ref().map(|target| {
-                renderer.register_native_texture(
-                    &render_state.device,
-                    target.view(),
-                    wgpu::FilterMode::Linear,
-                )
-            })
+            let mut register = |reader: &vma_engine::FrameReader| {
+                reader.targets().each_ref().map(|target| {
+                    renderer.register_native_texture(
+                        &render_state.device,
+                        target.view(),
+                        wgpu::FilterMode::Linear,
+                    )
+                })
+            };
+            vma_ui::OutputTextures {
+                program: register(&readers.program),
+                preview: register(&readers.preview),
+                thumbnails: register(&readers.thumbnails),
+            }
         };
 
         let render_stats = engine.render_stats();
@@ -148,7 +169,7 @@ impl<'a> App<'a> {
         }
 
         Ok(Self {
-            ui: MainUi::new(engine, reader, program_textures, adapter),
+            ui: MainUi::new(engine, readers, textures, adapter),
             render_stats,
             ui_probe,
             device_lost,

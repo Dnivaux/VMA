@@ -20,10 +20,12 @@ pub use command::{
     AutoPlay, Command, CommandId, DeviceId, Effect, InputSpec, MAX_TRANSITION_MS, MixDomain,
     Source, TRANSITION_BUTTONS, TransitionSetting,
 };
-pub use control::{CommandSender, ControlStats, SendError, StateReader};
+pub use control::{
+    CommandProbe, CommandSender, ControlStats, RejectionNotice, SendError, StateReader,
+};
 pub use journal::{Journal, JournalLine, JournalStats, Origin, Outcome, ReplayError, replay};
 pub use plan::{PlanProgress, PlanReader, PlanTransition, RenderPlan};
-pub use render::{EngineConfig, EngineError, ProgramReader, RenderEngine};
+pub use render::{EngineConfig, EngineError, FrameReader, Readers, RenderEngine};
 pub use sequencer::{Composition, OnAir, RenderFeedback, Sequencer};
 pub use state::{
     Ending, Event, Format, InputState, InputStatus, IoRequest, MAX_INPUTS, MAX_NAME_CHARS,

@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread::JoinHandle;
 use std::time::{Duration, SystemTime};
 
-use arc_swap::ArcSwap;
+use arc_swap::{ArcSwap, ArcSwapOption};
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, TrySendError};
 
 use crate::command::{Command, CommandId, Source};
@@ -49,7 +49,26 @@ pub struct CommandSender {
     next_id: Arc<AtomicU64>,
 }
 
+/// Receiving end of [`CommandSender::probe`]: what a component sent, for its tests.
+#[derive(Debug)]
+pub struct CommandProbe {
+    rx: Receiver<Envelope>,
+}
+
+impl CommandProbe {
+    /// Commands sent since the last call, in order.
+    pub fn take(&self) -> Vec<(Source, Command)> {
+        self.rx.try_iter().map(|e| (e.source, e.command)).collect()
+    }
+}
+
 impl CommandSender {
+    /// A sender connected to a [`CommandProbe`] instead of an engine (UI tests).
+    pub fn probe() -> (Self, CommandProbe) {
+        let (sender, rx) = command_channel();
+        (sender, CommandProbe { rx })
+    }
+
     pub fn send(&self, source: Source, command: Command) -> Result<CommandId, SendError> {
         let id = CommandId(self.next_id.fetch_add(1, Ordering::Relaxed));
         match self.tx.try_send(Envelope {
@@ -76,14 +95,26 @@ impl StateReader {
     }
 }
 
+/// The last refused command, for the UI to show.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RejectionNotice {
+    pub id: CommandId,
+    pub reason: String,
+}
+
 /// Counters of `vma-control`.
 #[derive(Debug, Default)]
 pub struct ControlStats {
     accepted: AtomicU64,
     rejected: AtomicU64,
+    last_rejection: ArcSwapOption<RejectionNotice>,
 }
 
 impl ControlStats {
+    pub fn last_rejection(&self) -> Option<Arc<RejectionNotice>> {
+        self.last_rejection.load_full()
+    }
+
     pub fn accepted(&self) -> u64 {
         self.accepted.load(Ordering::Relaxed)
     }
@@ -160,6 +191,12 @@ impl Controller {
             }
             Err(rejection) => {
                 self.stats.rejected.fetch_add(1, Ordering::Relaxed);
+                self.stats
+                    .last_rejection
+                    .store(Some(Arc::new(RejectionNotice {
+                        id: envelope.id,
+                        reason: rejection.to_string(),
+                    })));
                 tracing::info!(id = %envelope.id, command = ?envelope.command, %rejection, "command refused");
             }
         }

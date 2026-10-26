@@ -73,7 +73,8 @@ défaut des 4 boutons et le sens de « forcer le fade à cut » (questions de su
 | 1. `core` : `PixelFormat`, `ColorInfo`, `Rgb8`, `InputKind`, 29,97p, `serde` | ✅ | 21 tests `vma-core` ; CI verte Ubuntu + Windows ([run 40394934963](https://github.com/Dnivaux/VMA/actions/runs/40394934963)) |
 | 2. `engine` : `Command`, `State`, `vma-control`, journal, `RenderPlan` | ✅ (local) | 40 nouveaux tests unitaires `vma-engine` (temps simulé) : A3 (Cut au tick suivant), A4 côté moteur (6 cadences × 1 / 40 / 500 / 1000 ms), A15–A18, refus sans effet, rejeu du journal ; test de bout en bout avec les vrais threads (10/10 en local). CI à confirmer après push. A11 partiel : journal fait, l'UI n'envoie pas encore de commandes (étape 4) |
 | 3. `compositor` : `Rgba16Float`, sortie `Rgba8Unorm`, couleur unie, Cut / Fade | ✅ (local) | 8 golden `compositor::golden_mix` (A2, A4, A18 côté compositeur ; gamma et linéaire ; chaîne sans perte) et `render_loop::program_pixels_follow_cut_and_fade`, verts sur RTX 5090 et Intel ARL ; soak 60 s 1080p50 : 0 manquée. CI (lavapipe / WARP) à confirmer après push |
-| 4. `engine` + `ui` : Preview + Program, tally, barre d'inputs, boutons, T-Bar, raccourcis | ⬜ | — |
+| 4. `engine` + `ui` : Preview + Program, tally, barre d'inputs, boutons, T-Bar, raccourcis | ✅ (local) | **Premier jalon visible.** 10 tests d'UI sans fenêtre (A11, A17 côté UI : chaque bouton, menu, double-clic, T-Bar, raccourci émet la bonne `Command`), tally, vignettes et Preview vérifiées sur GPU ; soak de l'appli 10 s : 0 manquée. Checklist manuelle [`docs/manual-tests/phase1-inputs.md`](docs/manual-tests/phase1-inputs.md) à passer. Contrôles vidéo reportés à l'étape 8. CI à confirmer après push |
+| 5. `compositor` : upload CPU (NV12, I420, YUY2, UYVY, RGBA, BGRA), YUV → RGB, échelle, image fixe | ⬜ | — |
 
 ## Phase 2 — Sorties · ⬜
 ## Phase 3 — Réseau et audio · ⬜

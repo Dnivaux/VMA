@@ -1,6 +1,6 @@
 [package]
 name = "vma-ui"
-description = "egui user interface: Program view and statistics panel."
+description = "egui user interface: Preview / Program, transitions, T-Bar, input bar, statistics."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -11,7 +11,14 @@ publish.workspace = true
 vma-core.workspace = true
 vma-clock.workspace = true
 vma-engine.workspace = true
+vma-compositor.workspace = true
 egui.workspace = true
+
+[dev-dependencies]
+# Headless egui tests driven through AccessKit (test only, not in the binary).
+egui_kittest.workspace = true
+# The app gets egui's bundled fonts through eframe; headless tests need them too.
+egui = { workspace = true, features = ["default_fonts"] }
 
 [lints]
 workspace = true

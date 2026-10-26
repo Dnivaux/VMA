@@ -1,16 +1,11 @@
 use egui::{Color32, RichText};
 use std::time::Duration;
-use vma_engine::{ProgramReader, RenderEngine};
+use vma_engine::{FrameReader, RenderEngine};
 
 const OK: Color32 = Color32::from_rgb(80, 200, 120);
 const BAD: Color32 = Color32::from_rgb(230, 70, 70);
 
-pub(crate) fn show(
-    ui: &mut egui::Ui,
-    engine: &RenderEngine,
-    reader: &ProgramReader,
-    adapter: &str,
-) {
+pub(crate) fn show(ui: &mut egui::Ui, engine: &RenderEngine, reader: &FrameReader, adapter: &str) {
     let clock = engine.clock_stats().snapshot();
     let render = engine.render_stats().snapshot();
     let ui_dt = ui.input(|i| i.stable_dt);
@@ -63,6 +58,20 @@ pub(crate) fn show(
                 },
             );
             row(ui, "Utilisation GPU", "non mesurée (à venir)".into());
+            let control = engine.control_stats();
+            let journal = engine.journal_stats();
+            row(ui, "Commandes acceptées", control.accepted().to_string());
+            row(ui, "Commandes refusées", control.rejected().to_string());
+            row(
+                ui,
+                "Journal : lignes écrites",
+                journal.written().to_string(),
+            );
+            counter(
+                ui,
+                "Journal : lignes perdues",
+                journal.dropped() + journal.write_errors(),
+            );
         });
 
     ui.separator();

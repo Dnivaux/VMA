@@ -1,90 +1,100 @@
-//! egui user interface.
+//! egui user interface (spec `ui.md`).
 //!
-//! Phase 0: the Program view and the statistics panel. The UI never mutates engine state
-//! directly; from Phase 1 every action goes through the engine's `Command` channel.
+//! The UI never mutates engine state: every action is a `Command` sent to the engine, and
+//! each frame is drawn from the latest state snapshot. [`MainUi`] wires the engine to the
+//! [`Switcher`] (the mixer surface) and the statistics panel.
 
 mod stats_panel;
+mod switcher;
+mod tally;
 
-use egui::{Color32, Stroke, TextureId};
-use vma_engine::{ProgramReader, RenderEngine};
+pub use switcher::{Images, Switcher, View};
+pub use tally::{TALLY_PREVIEW, TALLY_PROGRAM, Tally};
 
-/// Tally red, used for the Program border.
-pub const TALLY_PROGRAM: Color32 = Color32::from_rgb(220, 30, 30);
+use egui::{Rect, TextureId};
+use vma_compositor::thumbnails::{self, ATLAS_COLUMNS, ATLAS_ROWS};
+use vma_engine::{Readers, RenderEngine};
+
+/// egui textures of every engine output, registered once at startup (one per slot).
+#[derive(Debug, Clone, Copy)]
+pub struct OutputTextures {
+    pub program: [TextureId; 3],
+    pub preview: [TextureId; 3],
+    pub thumbnails: [TextureId; 3],
+}
 
 /// Root UI state.
 #[derive(Debug)]
 pub struct MainUi {
     engine: RenderEngine,
-    reader: ProgramReader,
-    /// egui texture of each Program slot, registered once at startup.
-    program_textures: [TextureId; 3],
+    readers: Readers,
+    textures: OutputTextures,
+    switcher: Switcher,
     adapter: String,
 }
 
 impl MainUi {
     pub fn new(
         engine: RenderEngine,
-        reader: ProgramReader,
-        program_textures: [TextureId; 3],
+        readers: Readers,
+        textures: OutputTextures,
         adapter: String,
     ) -> Self {
         Self {
             engine,
-            reader,
-            program_textures,
+            readers,
+            textures,
+            switcher: Switcher::default(),
             adapter,
         }
     }
 
     /// Draws one UI frame.
     pub fn show(&mut self, ui: &mut egui::Ui) {
-        // Take the newest Program frame before recording anything that samples it.
-        self.reader.update();
+        // Take the newest frames before recording anything that samples them (ADR 0001).
+        self.readers.program.update();
+        self.readers.preview.update();
+        self.readers.thumbnails.update();
 
-        egui::Panel::right("stats")
-            .resizable(false)
-            .default_size(280.0)
-            .show(ui, |ui| {
-                stats_panel::show(ui, &self.engine, &self.reader, &self.adapter);
-            });
+        if self.switcher.show_stats {
+            egui::Panel::right("stats")
+                .resizable(false)
+                .default_size(280.0)
+                .show(ui, |ui| {
+                    stats_panel::show(ui, &self.engine, &self.readers.program, &self.adapter);
+                });
+        }
 
-        egui::CentralPanel::default().show(ui, |ui| self.program_view(ui));
-
-        // The Program changes every tick: keep repainting at the display rate.
-        ui.ctx().request_repaint();
-    }
-
-    fn program_view(&self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("PROGRAM").strong().color(TALLY_PROGRAM));
-            ui.label(format!(
-                "{} · {}",
-                self.engine.config().resolution,
-                self.engine.config().rate
-            ));
-        });
-
-        let aspect = self.engine.config().resolution.aspect_ratio();
-        let area = ui.available_rect_before_wrap().shrink(4.0);
-        let size = if area.width() / area.height() > aspect {
-            egui::vec2(area.height() * aspect, area.height())
-        } else {
-            egui::vec2(area.width(), area.width() / aspect)
+        let pick = |set: &[TextureId; 3], slot: usize| set.get(slot).copied().unwrap_or_default();
+        let thumbs = &self.readers.thumbnails;
+        let thumbnail_uv = |input| {
+            let cell = thumbs.cell_of(input)?;
+            let (x, y, w, h) = thumbnails::cell_rect(cell)?;
+            let (aw, ah) = ((ATLAS_COLUMNS * w) as f32, (ATLAS_ROWS * h) as f32);
+            Some(Rect::from_min_max(
+                egui::pos2(x as f32 / aw, y as f32 / ah),
+                egui::pos2((x + w) as f32 / aw, (y + h) as f32 / ah),
+            ))
         };
-        let rect = egui::Rect::from_center_size(area.center(), size);
-        ui.allocate_rect(area, egui::Sense::hover());
+        let state = self.engine.state().load();
+        let stats = self.engine.control_stats();
+        let rejection = stats.last_rejection();
+        let commands = self.engine.commands();
+        let view = View {
+            state: &state,
+            commands: &commands,
+            images: Images {
+                program: pick(&self.textures.program, self.readers.program.current_slot()),
+                preview: pick(&self.textures.preview, self.readers.preview.current_slot()),
+                thumbnails: pick(&self.textures.thumbnails, thumbs.current_slot()),
+                thumbnail_uv: &thumbnail_uv,
+            },
+            frame: self.engine.feedback().last_frame(),
+            rejection: rejection.as_deref(),
+        };
+        self.switcher.show(ui, &view);
 
-        let texture = self
-            .program_textures
-            .get(self.reader.current_slot())
-            .copied()
-            .unwrap_or_default();
-        egui::Image::from_texture((texture, size)).paint_at(ui, rect);
-        ui.painter().rect_stroke(
-            rect,
-            0.0,
-            Stroke::new(2.0, TALLY_PROGRAM),
-            egui::StrokeKind::Outside,
-        );
+        // Program and Preview change every tick: keep repainting at the display rate.
+        ui.ctx().request_repaint();
     }
 }

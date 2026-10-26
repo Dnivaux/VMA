@@ -141,6 +141,14 @@ impl SourceTable {
         }
     }
 
+    /// Known inputs with their slot (stable while the input exists: also its thumbnail cell).
+    pub(crate) fn iter(&self) -> impl Iterator<Item = (usize, InputId, RenderSource)> + Clone {
+        self.entries
+            .iter()
+            .enumerate()
+            .filter_map(|(slot, e)| e.map(|(id, s)| (slot, id, s)))
+    }
+
     pub(crate) fn get(&self, id: InputId) -> Option<RenderSource> {
         self.entries
             .iter()

@@ -37,6 +37,7 @@ VMA_SOAK_SECS=60 cargo test --release -p vma-engine --test render_loop -- --igno
 # Soak dans l'application réelle (rapport Markdown, code 2 si images manquées/répétées) :
 cargo run --release -- --soak 600 --report tests/soak/reports/$(date +%F)-x.md
 cargo run --release -- --soak 600 --hostile --report …   # + agressions fenêtre (checklist docs/manual-tests/)
+# Journal des commandes : logs/commands-AAAA-MM-JJ.jsonl par défaut (--journal-dir, --no-journal)
 
 # Regénérer les golden frames après un changement visuel VOULU (puis relire le PNG) :
 VMA_UPDATE_GOLDEN=1 cargo test -p vma-compositor --test golden_test_pattern
@@ -50,7 +51,7 @@ Variables wgpu utiles : `WGPU_BACKEND=vulkan|dx12` ; `WGPU_ADAPTER_NAME=Intel` (
 | `crates/clock` | Horloge maître à cadence fixe, compteur d'images manquées. |
 | `crates/compositor` | wgpu/WGSL : `Mixer` (calques `Rgba16Float`, Cut / Fade gamma ou linéaire, sortie `Rgba8Unorm`), mire, readback (tests). |
 | `crates/engine` | `State` + `Command` (thread `vma-control`, journal JSONL), thread de rendu cadencé par l'horloge (plan seqlock, `Sequencer`), triple buffer vers l'UI, stats. |
-| `crates/ui` | egui : vue Program, panneau Statistiques. |
+| `crates/ui` | egui : `Switcher` (Preview / Program, transitions, T-Bar, barre d'inputs, raccourcis, réglages), panneau Statistiques. Tests sans fenêtre avec `egui_kittest`. |
 | `app/` | Binaire : assemble fenêtre eframe, moteur, UI. |
 | `crates/{io-gst,io-ndi,io-html,audio,replay,api}` | Squelettes vides pour les phases suivantes. |
 | `docs/adr/` | Décisions d'architecture (une par fichier, à faire valider). 0001 archi (acceptée avec amendements), 0002 décisions produit. |

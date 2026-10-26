@@ -108,14 +108,7 @@ impl TestPattern {
         target: &wgpu::TextureView,
         frame_index: u64,
     ) {
-        let phase =
-            (frame_index % TEST_PATTERN_PERIOD_FRAMES) as f32 / TEST_PATTERN_PERIOD_FRAMES as f32;
-        let uniforms = Uniforms {
-            phase,
-            _pad: [0.0; 3],
-        };
-        queue.write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&uniforms));
-
+        self.prepare(queue, frame_index);
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("test_pattern.pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -132,6 +125,23 @@ impl TestPattern {
             occlusion_query_set: None,
             multiview_mask: None,
         });
+        self.draw(&mut pass);
+    }
+
+    /// Sets the frame index for the next draws (one value per submission: every draw of
+    /// this pattern in a submission shows the same frame).
+    pub fn prepare(&self, queue: &wgpu::Queue, frame_index: u64) {
+        let phase =
+            (frame_index % TEST_PATTERN_PERIOD_FRAMES) as f32 / TEST_PATTERN_PERIOD_FRAMES as f32;
+        let uniforms = Uniforms {
+            phase,
+            _pad: [0.0; 3],
+        };
+        queue.write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&uniforms));
+    }
+
+    /// Draws the pattern over the pass's current viewport (the whole target by default).
+    pub fn draw(&self, pass: &mut wgpu::RenderPass<'_>) {
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, &self.bind_group, &[]);
         pass.draw(0..3, 0..1);

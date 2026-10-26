@@ -1,3 +1,4 @@
 /target
 *.actual.png
 *.diff.png
+/logs

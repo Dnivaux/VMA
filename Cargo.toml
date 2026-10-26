@@ -37,6 +37,7 @@ wgpu = "30.0"                                                # MIT OR Apache-2.0
 egui = "0.37"                                                # MIT OR Apache-2.0
 eframe = { version = "0.37", default-features = false }      # MIT OR Apache-2.0
 egui-wgpu = "0.37"                                           # MIT OR Apache-2.0
+egui_kittest = "0.37"                                        # MIT OR Apache-2.0 (tests only)
 crossbeam-channel = "0.5"                                    # MIT OR Apache-2.0
 arc-swap = "1.9"                                             # MIT OR Apache-2.0
 thiserror = "2.0"                                            # MIT OR Apache-2.0

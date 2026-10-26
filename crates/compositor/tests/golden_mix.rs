@@ -244,3 +244,50 @@ fn fade_50_percent_pattern_to_color() {
     eprintln!("fade 50 % pattern → colour: PSNR {score:.2} dB");
     assert!(score >= 45.0, "PSNR {score:.2} dB");
 }
+
+#[test]
+fn thumbnail_atlas_cells() {
+    use vma_compositor::thumbnails::{self, THUMBNAIL_HEIGHT, THUMBNAIL_WIDTH, ThumbnailPainter};
+    let gpu = pollster::block_on(headless::request_gpu()).expect("GPU adapter required");
+    let painter = ThumbnailPainter::new(&gpu.device);
+    let atlas = thumbnails::new_atlas(&gpu.device, "atlas");
+    let green = Rgb8::new(10, 200, 30);
+    let cells = [
+        (0, Source::Color(green)),
+        (9, Source::TestPattern { frame: 0 }),
+        (63, Source::Color(Rgb8::WHITE)),
+        (5, Source::Black),
+    ];
+    let mut encoder = gpu.device.create_command_encoder(&Default::default());
+    painter.encode(&gpu.queue, &mut encoder, atlas.view(), 0, cells.into_iter());
+    gpu.queue.submit([encoder.finish()]);
+    let img = readback::read_rgba8(&gpu.device, &gpu.queue, &atlas).unwrap();
+    let aw = atlas.resolution().width();
+    let cell = |c: usize| -> Vec<u8> {
+        let (x, y, w, h) = thumbnails::cell_rect(c).unwrap();
+        (y..y + h)
+            .flat_map(|row| {
+                let start = ((row * aw + x) * 4) as usize;
+                img[start..start + (w * 4) as usize].to_vec()
+            })
+            .collect()
+    };
+    let uniform = |c: usize, rgb: [u8; 3]| {
+        assert!(
+            cell(c)
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .all(|p| p[..3] == rgb && p[3] == 255),
+            "cell {c} is not {rgb:?}"
+        );
+    };
+    uniform(0, [green.r, green.g, green.b]);
+    uniform(63, [255; 3]);
+    uniform(5, [0; 3]);
+    // The pattern at thumbnail size is the 320 × 180 golden.
+    assert_eq!((THUMBNAIL_WIDTH, THUMBNAIL_HEIGHT), (W, H));
+    let score = psnr(&cell(9), &golden_pattern());
+    eprintln!("pattern thumbnail: PSNR {score:.2} dB");
+    assert!(score >= 45.0, "PSNR {score:.2} dB");
+}
