@@ -1,0 +1,81 @@
+use aiguillage_engine::{ProgramReader, RenderEngine};
+use egui::{Color32, RichText};
+use std::time::Duration;
+
+const OK: Color32 = Color32::from_rgb(80, 200, 120);
+const BAD: Color32 = Color32::from_rgb(230, 70, 70);
+
+pub(crate) fn show(
+    ui: &mut egui::Ui,
+    engine: &RenderEngine,
+    reader: &ProgramReader,
+    adapter: &str,
+) {
+    let clock = engine.clock_stats().snapshot();
+    let render = engine.render_stats().snapshot();
+    let ui_dt = ui.input(|i| i.stable_dt);
+
+    ui.heading("Statistiques");
+    ui.separator();
+
+    egui::Grid::new("stats_grid")
+        .num_columns(2)
+        .spacing([12.0, 6.0])
+        .striped(true)
+        .show(ui, |ui| {
+            row(ui, "Cadence cible", clock.rate.to_string());
+            row(
+                ui,
+                "Cadence mesurée",
+                format!("{:.2} fps", render.measured_fps),
+            );
+            counter(ui, "Images manquées (horloge)", clock.missed);
+            counter(ui, "Images répétées (GPU saturé)", render.gpu_dropped);
+            row(ui, "Images rendues", render.frames_rendered.to_string());
+            row(
+                ui,
+                "Image affichée",
+                format!("#{}", reader.current_frame_index()),
+            );
+            row(ui, "Rendu CPU (dernier)", ms(render.last_cpu));
+            row(ui, "Rendu CPU (moyen)", ms(render.avg_cpu));
+            row(ui, "Rendu CPU (max)", ms(render.max_cpu));
+            row(ui, "Retard réveil (max)", ms(clock.max_lateness));
+            row(ui, "Images GPU en vol", render.gpu_in_flight.to_string());
+            row(
+                ui,
+                "Rafraîchissement UI",
+                if ui_dt > 0.0 {
+                    format!("{:.0} Hz", 1.0 / ui_dt)
+                } else {
+                    "—".into()
+                },
+            );
+            row(ui, "Utilisation GPU", "non mesurée (à venir)".into());
+        });
+
+    ui.separator();
+    ui.label(RichText::new(adapter).small().weak());
+}
+
+fn row(ui: &mut egui::Ui, label: &str, value: String) {
+    ui.label(label);
+    ui.label(RichText::new(value).monospace());
+    ui.end_row();
+}
+
+fn counter(ui: &mut egui::Ui, label: &str, value: u64) {
+    ui.label(label);
+    let color = if value == 0 { OK } else { BAD };
+    ui.label(
+        RichText::new(value.to_string())
+            .monospace()
+            .strong()
+            .color(color),
+    );
+    ui.end_row();
+}
+
+fn ms(d: Duration) -> String {
+    format!("{:.3} ms", d.as_secs_f64() * 1000.0)
+}

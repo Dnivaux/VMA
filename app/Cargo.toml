@@ -1,0 +1,24 @@
+[package]
+name = "aiguillage"
+description = "Aiguillage — open-source live video production switcher."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+aiguillage-core.workspace = true
+aiguillage-engine.workspace = true
+aiguillage-ui.workspace = true
+eframe = { workspace = true, features = ["wgpu", "default_fonts", "wayland", "x11", "accesskit"] }
+egui.workspace = true
+egui-wgpu.workspace = true
+wgpu.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tracing-appender.workspace = true
+
+[lints]
+workspace = true
