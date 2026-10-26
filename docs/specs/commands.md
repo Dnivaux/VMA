@@ -89,8 +89,8 @@ attempts }` → (reconnexion) `Starting`…
 - `SetFader { value }` : démarre (si besoin) une transition manuelle avec l'effet du bouton 1 ;
   progression = `value / 255`. `255` termine : échange, et la T-Bar repart de 0 sans effet
   visible. Pendant une transition minutée, `SetFader` est refusé.
-- Transition demandée pendant une transition : refusée ; `Cut` pendant une transition : la
-  termine immédiatement (à confirmer par observation).
+- Transition demandée pendant une transition : refusée ; `Cut` pendant une transition :
+  **refusé aussi, la transition continue** (observé sur la référence le 2026-10-26).
 - `SetPreview` / `CutDirect` pendant une transition : refusés.
 - **Auto-lecture** (inputs vidéo) : au début d'une transition, l'input entrant démarre si
   `play_on_transition` (depuis le début si `restart_on_transition`) ; à la fin, l'input sortant

@@ -135,7 +135,7 @@ Les dix propositions ont été acceptées ; §7 en corrige trois pour coller à 
 | # | Décision |
 |---|---|
 | 1 | Après Cut / Fade / transition : Preview et Program **s'échangent** (confirmé par la doc de la référence) |
-| 2 | Fade pendant un Fade : ignoré ; Cut pendant un Fade : le termine (à confirmer par observation, §7.3) |
+| 2 | Fade pendant un Fade : ignoré ; Cut pendant un Fade : **ignoré aussi, le Fade continue** (observé sur la référence le 2026-10-26, §7.3 ; d'abord prévu « le termine ») |
 | 3 | Input en signal perdu à l'antenne : noir, état visible dans l'UI |
 | 4 | Raccourcis `1`–`9` Preview, `Espace` Cut, `Entrée` transition 1 (la référence n'a pas de raccourcis imposés : ils sont définis par l'utilisateur, ce qu'on fera en Phase 5) |
 | 5 | Cadence et résolution choisies au démarrage ; changement à chaud en Phase 5 |
@@ -184,6 +184,13 @@ Catégories d'inputs, glisser-déposer pour réordonner → Phase 5 (projet).
 Valeurs par défaut et cas limites **non décrits** dans la documentation, à observer dans le
 logiciel (checklist [`docs/manual-tests/observation-reference-phase1.md`](../manual-tests/observation-reference-phase1.md)).
 En attendant, la valeur entre parenthèses est utilisée.
+
+**Observé le 2026-10-26** : tout est confirmé sauf deux points.
+- **Cut pendant une transition : ignoré** (le Fade continue), et non « la termine ». Corrigé.
+- Durées par défaut des 4 boutons : **pas encore relevées** (question de suivi) ; Fade 500 /
+  1000 / 1500 ms et Cut restent provisoires.
+
+Liste d'origine :
 - Effets et durées par défaut des 4 boutons de transition (Fade 500 ms, Fade 1000 ms, Fade
   1500 ms, Cut).
 - Quick Play échange-t-il aussi Preview et Program ? (oui)

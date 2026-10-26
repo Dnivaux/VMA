@@ -470,15 +470,21 @@ mod tests {
     }
 
     #[test]
-    fn cut_during_a_fade_ends_it_on_the_next_tick() {
+    fn cut_during_a_fade_is_ignored_and_the_fade_runs_on() {
+        // Observed on the reference (checklist, 2026-10-26).
         let mut rig = Rig::new(FrameRate::FPS_50);
         let a = rig.color();
         let b = rig.color();
         rig.send(Command::Transition { button: 3 });
+        let mut mixing = 0;
         for _ in 0..5 {
-            rig.tick();
+            mixing += usize::from(rig.tick().to.is_some());
         }
         rig.send(Command::Cut);
+        while rig.controller.state().transition.is_some() {
+            mixing += usize::from(rig.tick().to.is_some());
+        }
+        assert_eq!(mixing, 75, "the 1500 ms Fade ran to its end");
         let c = rig.tick();
         assert_eq!((c.single(), c.preview), (Some(Some(b)), Some(a)));
     }
@@ -493,7 +499,10 @@ mod tests {
         for _ in 0..30 {
             rig.tick();
         }
-        rig.send(Command::Cut); // ends the running Fade
+        rig.send(Command::Cut); // refused: the Fade runs on
+        for _ in 0..40 {
+            rig.tick();
+        }
         rig.send(Command::SetPreview { input: InputId(99) }); // refused
         run_transition(&mut rig, Command::QuickPlay { input: None });
         rig.send(Command::SetFader { value: 90 });

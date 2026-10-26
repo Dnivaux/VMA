@@ -28,7 +28,7 @@ pub enum Command {
     },
     PreviewNext,
     PreviewPrevious,
-    /// Preview ↔ Program, without transition. Ends a running transition at once.
+    /// Preview ↔ Program, without transition. Refused while a transition runs.
     Cut,
     /// Sends an input straight to Program, Preview unchanged.
     CutDirect {

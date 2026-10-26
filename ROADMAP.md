@@ -63,9 +63,10 @@ rééchantillonnage des inputs** (ADR 0002).
 (critères A1–A20, plan en 10 étapes), specs `commands`, `io-gst`, `compositor`, `ui`, ADR 0003
 (état / commandes / threads), 0004 (GStreamer), 0005 (chaîne couleur) acceptés.
 Ajouts « alignement sur la référence » (§7 : vignettes live, Quick Play, 4 boutons de
-transition, T-Bar, contrôles vidéo) **validés** le même jour. Valeurs par défaut non
-documentées à confirmer par observation (personne disponible plus tard ; valeurs provisoires en
-attendant) : [`docs/manual-tests/observation-reference-phase1.md`](docs/manual-tests/observation-reference-phase1.md).
+transition, T-Bar, contrôles vidéo) **validés** le même jour. Observation de la référence faite
+le 2026-10-26 ([`docs/manual-tests/observation-reference-phase1.md`](docs/manual-tests/observation-reference-phase1.md)) :
+tout confirmé sauf « Cut pendant un Fade » (ignoré, corrigé) ; reste à relever les durées par
+défaut des 4 boutons et le sens de « forcer le fade à cut » (questions de suivi).
 
 | Étape (plan §5) | État | Preuve |
 |---|---|---|

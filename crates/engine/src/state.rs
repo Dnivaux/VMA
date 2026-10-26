@@ -338,11 +338,8 @@ impl State {
             Command::PreviewNext => self.step_preview(1),
             Command::PreviewPrevious => self.step_preview(-1),
             Command::Cut => {
-                if self.transition.is_some() {
-                    let mut io = Vec::new();
-                    self.finish_transition(&mut io);
-                    return Ok(Change { changed: true, io });
-                }
+                // Observed on the reference: Cut during a Fade is ignored, the Fade runs on.
+                self.require_idle()?;
                 let to = self.preview.ok_or(Rejection::NoPreview)?;
                 Ok(self.cut(self.program, to, Ending::Swap))
             }
@@ -926,11 +923,11 @@ mod tests {
             Command::CutDirect { input: c },
             Command::SetFader { value: 10 },
             Command::PreviewNext,
+            Command::Cut,
         ] {
             assert_eq!(refused(&mut s, command), Rejection::TransitionRunning);
         }
-        // Cut ends it at once.
-        s.apply(&Command::Cut).unwrap();
+        done(&mut s);
         assert_eq!(
             (s.program, s.preview, s.transition),
             (Some(b), Some(a), None)
