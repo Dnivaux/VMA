@@ -11,9 +11,11 @@
 //! The clock never allocates after construction and holds no locks: statistics are atomics
 //! that the UI reads with [`ClockStats::snapshot`].
 
+mod histogram;
 mod stats;
 mod time;
 
+pub use histogram::{LatencyHistogram, LatencySummary};
 pub use stats::{ClockStats, ClockStatsSnapshot};
 pub use time::{ManualTime, SystemTime, TimeSource};
 
@@ -55,6 +57,11 @@ impl FrameClock<SystemTime> {
     /// Clock on the system monotonic time, starting now.
     pub fn new(rate: FrameRate) -> Self {
         Self::with_source(rate, SystemTime::default())
+    }
+
+    /// Clock on the system monotonic time with an explicit spin margin (see [`SystemTime`]).
+    pub fn with_spin_margin(rate: FrameRate, spin_margin: Duration) -> Self {
+        Self::with_source(rate, SystemTime::with_spin_margin(spin_margin))
     }
 }
 
@@ -166,6 +173,9 @@ mod tests {
         let s = clock.stats().snapshot();
         assert_eq!(s.missed, 0);
         assert_eq!(s.max_lateness, Duration::from_millis(15));
+        assert_eq!(s.wake.count, 2);
+        assert_eq!(s.wake.max, Duration::from_millis(15));
+        assert_eq!(s.wake.p50, Duration::ZERO);
     }
 
     #[test]

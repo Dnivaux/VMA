@@ -1,4 +1,5 @@
 use crate::Tick;
+use crate::histogram::{LatencyHistogram, LatencySummary};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use vma_core::FrameRate;
@@ -12,6 +13,7 @@ pub struct ClockStats {
     last_index: AtomicU64,
     last_lateness_ns: AtomicU64,
     max_lateness_ns: AtomicU64,
+    wake: LatencyHistogram,
 }
 
 /// Point-in-time copy of [`ClockStats`].
@@ -25,6 +27,8 @@ pub struct ClockStatsSnapshot {
     pub last_index: u64,
     pub last_lateness: Duration,
     pub max_lateness: Duration,
+    /// Distribution of the wake-up lateness since start (p50 / p99 / p99.9 / max).
+    pub wake: LatencySummary,
 }
 
 impl ClockStats {
@@ -36,6 +40,7 @@ impl ClockStats {
             last_index: AtomicU64::new(0),
             last_lateness_ns: AtomicU64::new(0),
             max_lateness_ns: AtomicU64::new(0),
+            wake: LatencyHistogram::default(),
         }
     }
 
@@ -46,6 +51,7 @@ impl ClockStats {
         self.last_index.store(tick.index, Ordering::Relaxed);
         self.last_lateness_ns.store(lateness, Ordering::Relaxed);
         self.max_lateness_ns.fetch_max(lateness, Ordering::Relaxed);
+        self.wake.record(tick.lateness());
     }
 
     pub fn missed(&self) -> u64 {
@@ -60,6 +66,7 @@ impl ClockStats {
             last_index: self.last_index.load(Ordering::Relaxed),
             last_lateness: Duration::from_nanos(self.last_lateness_ns.load(Ordering::Relaxed)),
             max_lateness: Duration::from_nanos(self.max_lateness_ns.load(Ordering::Relaxed)),
+            wake: self.wake.snapshot(),
         }
     }
 }
