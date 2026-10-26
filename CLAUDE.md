@@ -46,7 +46,7 @@ Variables wgpu utiles : `WGPU_BACKEND=vulkan|dx12` ; `WGPU_ADAPTER_NAME=Intel` (
 ## Structure
 | Chemin | Rôle |
 |---|---|
-| `crates/core` | Types communs (`FrameRate` rationnel, `Resolution`, `InputId`). **Ne pas modifier sans le signaler** : tout en dépend. |
+| `crates/core` | Types communs, sérialisables (`FrameRate` rationnel, `Resolution`, `InputId`, `PixelFormat`, `ColorInfo`, `Rgb8`, `InputKind`). **Ne pas modifier sans le signaler** : tout en dépend. |
 | `crates/clock` | Horloge maître à cadence fixe, compteur d'images manquées. |
 | `crates/compositor` | wgpu/WGSL : mire, cibles de rendu, readback (tests). |
 | `crates/engine` | Thread de rendu cadencé par l'horloge, triple buffer vers l'UI, stats. (State store + `Command` en Phase 1.) |

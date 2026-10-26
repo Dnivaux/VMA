@@ -47,6 +47,8 @@ tracing-appender = "0.2"                                     # MIT
 bytemuck = { version = "1.25", features = ["derive"] }       # MIT OR Apache-2.0 OR Zlib
 pollster = "1.0"                                             # MIT OR Apache-2.0
 image = { version = "0.25", default-features = false, features = ["png"] } # MIT OR Apache-2.0
+serde = { version = "1.0", features = ["derive"] }           # MIT OR Apache-2.0
+serde_json = "1.0"                                           # MIT OR Apache-2.0
 
 [workspace.lints.rust]
 unsafe_code = "deny"

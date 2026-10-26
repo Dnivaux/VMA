@@ -1,6 +1,8 @@
 use std::fmt;
 use std::time::Duration;
 
+use serde::{Deserialize, Serialize};
+
 /// Errors produced when building a [`FrameRate`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum RateError {
@@ -13,15 +15,35 @@ pub enum RateError {
 /// A rational frame rate, in frames per second: `num / den`.
 ///
 /// Rational (not float) so that 59.94 (60000/1001) stays exact and long-running schedules
-/// never drift. Always stored in reduced form, so equality is structural.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// never drift. Always stored in reduced form, so equality is structural (also when
+/// deserialised: `{"num":120000,"den":2002}` reads as 59.94).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(try_from = "RawFrameRate")]
 pub struct FrameRate {
     num: u32,
     den: u32,
 }
 
+#[derive(Deserialize)]
+struct RawFrameRate {
+    num: u32,
+    den: u32,
+}
+
+impl TryFrom<RawFrameRate> for FrameRate {
+    type Error = RateError;
+
+    fn try_from(raw: RawFrameRate) -> Result<Self, Self::Error> {
+        Self::new(raw.num, raw.den)
+    }
+}
+
 impl FrameRate {
     pub const FPS_25: Self = Self { num: 25, den: 1 };
+    pub const FPS_29_97: Self = Self {
+        num: 30000,
+        den: 1001,
+    };
     pub const FPS_30: Self = Self { num: 30, den: 1 };
     pub const FPS_50: Self = Self { num: 50, den: 1 };
     pub const FPS_59_94: Self = Self {
@@ -32,6 +54,16 @@ impl FrameRate {
 
     /// Project default (brief §4, Phase 0).
     pub const DEFAULT: Self = Self::FPS_50;
+
+    /// Master rates supported from Phase 1, each with its own acceptance run (ADR 0002).
+    pub const MASTER_RATES: [Self; 6] = [
+        Self::FPS_25,
+        Self::FPS_29_97,
+        Self::FPS_30,
+        Self::FPS_50,
+        Self::FPS_59_94,
+        Self::FPS_60,
+    ];
 
     pub fn new(num: u32, den: u32) -> Result<Self, RateError> {
         if num == 0 {
@@ -158,5 +190,22 @@ mod tests {
     fn display() {
         assert_eq!(FrameRate::FPS_50.to_string(), "50p");
         assert_eq!(FrameRate::FPS_59_94.to_string(), "59.94p");
+        assert_eq!(FrameRate::FPS_29_97.to_string(), "29.97p");
+    }
+
+    #[test]
+    fn master_rate_constants_are_reduced() {
+        for r in FrameRate::MASTER_RATES {
+            assert_eq!(FrameRate::new(r.num(), r.den()), Ok(r));
+        }
+    }
+
+    #[test]
+    fn serde_validates_and_reduces() {
+        let json = serde_json::to_string(&FrameRate::FPS_59_94).unwrap();
+        assert_eq!(json, r#"{"num":60000,"den":1001}"#);
+        let r: FrameRate = serde_json::from_str(r#"{"num":120000,"den":2002}"#).unwrap();
+        assert_eq!(r, FrameRate::FPS_59_94);
+        assert!(serde_json::from_str::<FrameRate>(r#"{"num":50,"den":0}"#).is_err());
     }
 }

@@ -1,6 +1,6 @@
 [package]
 name = "vma-core"
-description = "Common types shared by every VMA crate: frame rates, resolutions, ids, errors."
+description = "Common types shared by every VMA crate: frame rates, resolutions, ids, pixel formats, colour."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,6 +9,10 @@ publish.workspace = true
 
 [dependencies]
 thiserror.workspace = true
+serde.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
 
 [lints]
 workspace = true

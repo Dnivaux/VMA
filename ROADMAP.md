@@ -63,8 +63,14 @@ rééchantillonnage des inputs** (ADR 0002).
 (critères A1–A20, plan en 10 étapes), specs `commands`, `io-gst`, `compositor`, `ui`, ADR 0003
 (état / commandes / threads), 0004 (GStreamer), 0005 (chaîne couleur) acceptés.
 Ajouts « alignement sur la référence » (§7 : vignettes live, Quick Play, 4 boutons de
-transition, T-Bar, contrôles vidéo) **en attente de validation** ; valeurs par défaut à
-confirmer par observation : [`docs/manual-tests/observation-reference-phase1.md`](docs/manual-tests/observation-reference-phase1.md).
+transition, T-Bar, contrôles vidéo) **validés** le même jour. Valeurs par défaut non
+documentées à confirmer par observation (personne disponible plus tard ; valeurs provisoires en
+attendant) : [`docs/manual-tests/observation-reference-phase1.md`](docs/manual-tests/observation-reference-phase1.md).
+
+| Étape (plan §5) | État | Preuve |
+|---|---|---|
+| 1. `core` : `PixelFormat`, `ColorInfo`, `Rgb8`, `InputKind`, 29,97p, `serde` | ✅ (local) | 21 tests `vma-core` ; clippy, `cargo deny`, MSRV 1.95 OK. CI à confirmer après push |
+| 2. `engine` : `Command`, `State`, `vma-control`, journal, `RenderPlan` | ⬜ | — |
 
 ## Phase 2 — Sorties · ⬜
 ## Phase 3 — Réseau et audio · ⬜

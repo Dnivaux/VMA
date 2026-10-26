@@ -1,9 +1,10 @@
 # Phase 1 — Mélange de base : spec d'ensemble et plan
 
 - **Statut** : **validé** par le mainteneur le 2026-10-26 (« oui pour tout »), avec la consigne
-  de **se rapprocher le plus possible du comportement de la référence** → §7, ajouts à valider
+  de **se rapprocher le plus possible du comportement de la référence** → §7, ajouts validés
+  le même jour
 - **Date** : 2026-10-26
-- **Références** : BRIEF §4 (Phase 1), §5, §8 ; ADR 0001 (amendé), ADR 0002 ; ADR proposés
+- **Références** : BRIEF §4 (Phase 1), §5, §8 ; ADR 0001 (amendé), ADR 0002 ; ADR acceptés
   0003 (état, commandes, threads), 0004 (entrées GStreamer), 0005 (chaîne couleur)
 - **Specs de module** : [`commands.md`](commands.md) (engine), [`io-gst.md`](io-gst.md),
   [`compositor.md`](compositor.md) § Phase 1, [`ui.md`](ui.md)
@@ -81,11 +82,21 @@ requis (et listé comme tel dans `ROADMAP.md`).
 | A14 | CI verte Ubuntu + Windows, GStreamer installé en CI | workflow | CI |
 
 ## 4. Changements dans `core` (à signaler, BRIEF §10)
-Ajouts uniquement, aucun type existant modifié :
-- `PixelFormat` (`Nv12`, `I420`, `Yuy2`, `Uyvy`, `Rgba`, `Bgra`) ;
-- `ColorInfo { matrix: Matrix (Bt601 | Bt709), range: Range (Limited | Full) }` ;
-- `Rgb8 { r, g, b }` (couleur unie, R'G'B' encodé) ;
-- `InputKind` (`Capture`, `File`, `Image`, `Color`) — description sérialisable d'un input.
+Ajouts uniquement, aucun type existant modifié dans sa forme (fait à l'étape 1) :
+- `PixelFormat` (`Nv12`, `I420`, `Yuy2`, `Uyvy`, `Rgba`, `Bgra`), avec la géométrie des plans
+  (`plane`, `PlaneSize`, `frame_bytes` ; dimensions de chroma arrondies au supérieur) partagée
+  par `io-gst` (copie) et `compositor` (textures) ;
+- `ColorInfo { matrix: Matrix (Bt601 | Bt709), range: Range (Limited | Full) }`, avec
+  `ColorInfo::assumed` (règle par défaut de `io-gst.md`) et `ycbcr_to_rgb` (matrice affine
+  3 × 4 sur les codes normalisés, utilisée par le shader et par les références CPU des tests) ;
+- `Rgb8 { r, g, b }` (couleur unie, R'G'B' encodé), texte `#rrggbb` ;
+- `InputKind` (`Capture`, `File`, `Image`, `Color`, `TestSource`) : étiquette du type d'input
+  (la description complète reste `InputSpec`, dans `engine`) ; `TestSource` ajouté pour suivre
+  `InputSpec` ;
+- `FrameRate::FPS_29_97` et `FrameRate::MASTER_RATES` (les 6 cadences maîtres, ADR 0002) ;
+- `serde` (`Serialize` / `Deserialize`) sur tous les types de `core`, pour l'état et le journal.
+  `FrameRate` et `Resolution` sont **validés à la lecture** (dénominateur nul, dimension nulle
+  ou > 8192 refusés ; cadence réduite).
 
 ## 5. Plan d'implémentation (un commit = une fonctionnalité testée)
 Ordre choisi pour avoir un Program qui change le plus tôt possible, puis brancher le vrai
@@ -141,7 +152,7 @@ icônes ni des textes) et jamais le nom. Source : guide utilisateur public de la
 (version 28, sections *Getting Started*, *Transitions*, *Inputs*, *Settings – Options*,
 *Shortcut Function Reference*), consulté le 2026-10-26.
 
-### 7.1 Ajouts et corrections à la Phase 1 (à valider)
+### 7.1 Ajouts et corrections à la Phase 1 (validés le 2026-10-26)
 | Comportement documenté | Avant | Désormais |
 |---|---|---|
 | Barre d'inputs avec une **petite vue live** de chaque input | liste textuelle | **vignettes live** (rendues à cadence réduite, voir `compositor.md`) |
