@@ -7,6 +7,10 @@
 //!   with the real threads, journal written and replayable.
 //! - `program_pixels_follow_cut_and_fade`: solid colours on air, Cut, Fade, read back from the
 //!   Program frames the UI would show.
+//! - `feed_pictures_reach_program_preview_and_thumbnails`: pictures pushed into an input's
+//!   feed, read back from every output.
+//! - `hot_add_and_remove_without_missed_frames`: A12, 20 fed inputs added and removed while
+//!   rendering.
 //!
 //! The other tests put a test-pattern input on air first (`spawn`).
 //! - `soak_render_loop`: the Phase 0 acceptance test (10 min at 50 fps, zero missed frame).
@@ -28,8 +32,8 @@ use vma_compositor::{TEST_PATTERN_PERIOD_FRAMES, headless};
 use vma_core::Rgb8;
 use vma_core::{FrameRate, Resolution};
 use vma_engine::{
-    Command, EngineConfig, Format, FrameReader, InputSpec, Journal, OnAir, RenderEngine, Source,
-    State,
+    Command, EngineConfig, Format, FrameReader, InputSpec, InputStatus, Journal, OnAir,
+    RenderEngine, Source, State,
 };
 
 struct Spawned {
@@ -589,4 +593,170 @@ fn program_pixels_follow_cut_and_fade() {
     let from = feedback.last_frame() + 1;
     assert_eq!(center_pixel(&mut spawned, from), [255, 0, 0, 255]);
     spawned.engine.stop();
+}
+
+/// Adds an input fed from outside (a file spec: no `io-gst` yet, so nothing opens it) and
+/// attaches a 320 × 180 RGBA feed to it.
+fn add_fed_input(spawned: &Spawned) -> (vma_core::InputId, vma_engine::FrameSink) {
+    let state = spawned.engine.state();
+    let before = state.load().inputs.len();
+    spawned
+        .engine
+        .commands()
+        .send(
+            Source::Script,
+            Command::AddInput {
+                spec: InputSpec::File {
+                    path: "fed.mkv".into(),
+                },
+                name: None,
+            },
+        )
+        .unwrap();
+    assert!(wait_for(Duration::from_secs(2), || state
+        .load()
+        .inputs
+        .len()
+        > before));
+    let id = state.load().inputs.last().unwrap().id;
+    let sink = spawned
+        .engine
+        .feeds()
+        .create(
+            id,
+            vma_core::PixelFormat::Rgba,
+            Resolution::new(320, 180).unwrap(),
+            vma_core::ColorInfo::RGB_FULL,
+            Some(FrameRate::FPS_50),
+        )
+        .unwrap();
+    assert!(
+        wait_for(Duration::from_secs(2), || matches!(
+            state.load().input(id).map(|i| i.status),
+            Some(InputStatus::Live { source: Some(_) })
+        )),
+        "{id} never went live"
+    );
+    (id, sink)
+}
+
+fn solid(rgb: [u8; 3]) -> Vec<u8> {
+    [rgb[0], rgb[1], rgb[2], 255].repeat(320 * 180)
+}
+
+/// A picture pushed into a feed shows in the Program, the Preview and the thumbnails; the
+/// per-input statistics count it.
+#[test]
+fn feed_pictures_reach_program_preview_and_thumbnails() {
+    let mut spawned = spawn_with_journal(
+        FrameRate::FPS_50,
+        Resolution::new(320, 180).unwrap(),
+        Journal::Disabled,
+    );
+    let feedback = spawned.engine.feedback();
+    let (a, mut sink_a) = add_fed_input(&spawned);
+    let (b, mut sink_b) = add_fed_input(&spawned);
+    // First input on air, second in Preview (state rules). Black until the first picture.
+    assert!(wait_for(Duration::from_secs(2), || feedback.on_air()
+        == OnAir::Input(a)));
+    let from = feedback.last_frame() + 1;
+    assert_eq!(center_pixel(&mut spawned, from), [0, 0, 0, 255]);
+
+    sink_a.push_packed(&solid([0, 200, 0]), 0).unwrap();
+    sink_b.push_packed(&solid([0, 0, 200]), 0).unwrap();
+    let from = feedback.last_frame() + 2;
+    assert_eq!(center_pixel(&mut spawned, from), [0, 200, 0, 255]);
+    let (img, w) = read_frame(&mut spawned, Out::Preview, from);
+    assert_eq!(pixel(&img, w, w / 2, 90), [0, 0, 200, 255]);
+    let (img, w) = read_frame(&mut spawned, Out::Thumbnails, from);
+    for (id, want) in [(a, [0, 200, 0, 255]), (b, [0, 0, 200, 255])] {
+        let cell = spawned
+            .thumbnails
+            .cell_of(id)
+            .expect("input has a thumbnail");
+        let (x, y, cw, ch) = vma_compositor::thumbnails::cell_rect(cell).unwrap();
+        assert_eq!(
+            pixel(&img, w, x + cw / 2, y + ch / 2),
+            want,
+            "thumbnail of {id}"
+        );
+    }
+
+    // A new picture replaces the old one on the next tick; the old one is not shown again.
+    sink_a.push_packed(&solid([200, 0, 0]), 1).unwrap();
+    let from = feedback.last_frame() + 2;
+    assert_eq!(center_pixel(&mut spawned, from), [200, 0, 0, 255]);
+
+    let stats = spawned.engine.input_stats().get(a).expect("stats of a");
+    let s = stats.snapshot();
+    assert_eq!((s.received, s.skipped, s.last_source_frame), (2, 0, 1));
+    assert_eq!(s.shown, 2);
+    assert!(s.repeated > 0, "a still picture is repeated on every tick");
+    assert_eq!(spawned.engine.input_stats().load().len(), 2);
+}
+
+/// A12: 20 inputs added, fed by a 50p source, cut to the Program, then removed while the
+/// engine renders: every one is seen on air with its own colour, nothing is left behind,
+/// and the clock misses no frame.
+#[test]
+fn hot_add_and_remove_without_missed_frames() {
+    let mut spawned = spawn(FrameRate::FPS_50, Resolution::new(320, 180).unwrap());
+    let commands = spawned.engine.commands();
+    let feedback = spawned.engine.feedback();
+    let state = spawned.engine.state();
+    let missed_before = spawned.engine.clock_stats().snapshot().missed;
+    for cycle in 0..20u8 {
+        let (id, mut sink) = add_fed_input(&spawned);
+        let colour = [10 + cycle * 10, 255 - cycle * 10, 128];
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let source = {
+            let stop = std::sync::Arc::clone(&stop);
+            let picture = solid(colour);
+            std::thread::spawn(move || {
+                let mut k = 0;
+                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    sink.push_packed(&picture, k).unwrap();
+                    k += 1;
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                // Still fine after the input is gone (the feed is detached).
+                sink.push_packed(&picture, k).unwrap();
+            })
+        };
+        commands
+            .send(Source::Script, Command::CutDirect { input: id })
+            .unwrap();
+        assert!(wait_for(Duration::from_secs(2), || feedback.on_air()
+            == OnAir::Input(id)));
+        let from = feedback.last_frame() + 2;
+        let [r, g, b] = colour;
+        assert_eq!(
+            center_pixel(&mut spawned, from),
+            [r, g, b, 255],
+            "cycle {cycle}"
+        );
+        commands
+            .send(Source::Script, Command::RemoveInput { input: id })
+            .unwrap();
+        assert!(wait_for(Duration::from_secs(2), || state
+            .load()
+            .input(id)
+            .is_none()));
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        source.join().unwrap();
+    }
+    assert!(wait_for(Duration::from_secs(2), || spawned
+        .engine
+        .input_stats()
+        .load()
+        .is_empty()));
+    let clock = spawned.engine.clock_stats().snapshot();
+    let render = spawned.engine.render_stats().snapshot();
+    eprintln!("adapter: {}\n{clock:?}\n{render:?}", spawned.adapter);
+    assert_eq!(
+        clock.missed - missed_before,
+        0,
+        "missed frames during hot add / remove"
+    );
+    assert_eq!(render.gpu_errors, 0);
 }

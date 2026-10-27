@@ -7,6 +7,7 @@
 
 mod command;
 mod control;
+mod feed;
 mod journal;
 mod plan;
 mod render;
@@ -21,8 +22,10 @@ pub use command::{
     Source, TRANSITION_BUTTONS, TransitionSetting,
 };
 pub use control::{
-    CommandProbe, CommandSender, ControlStats, RejectionNotice, SendError, StateReader,
+    CommandProbe, CommandSender, ControlStats, InputFeedStats, InputStatsReader, RejectionNotice,
+    SendError, StateReader,
 };
+pub use feed::{FeedError, FeedRegistry, FeedStats, FeedStatsSnapshot, FrameSink};
 pub use journal::{Journal, JournalLine, JournalStats, Origin, Outcome, ReplayError, replay};
 pub use plan::{PlanProgress, PlanReader, PlanTransition, RenderPlan};
 pub use render::{EngineConfig, EngineError, FrameReader, Readers, RenderEngine};

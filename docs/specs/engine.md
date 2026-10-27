@@ -24,6 +24,28 @@ ce fichier couvre le thread de rendu.
   qu'il existe) ; `FrameReader::cell_of(id)` la donne pour l'image détenue.
 - Les tests GPU du moteur mettent une mire à l'antenne (`spawn`) ; l'application ne le fait
   qu'en mode `--soak`.
+- **Étape 6 (2026-10-27) : feeds d'images par input** (module `feed`). Un feed = 3
+  `InputFrame` (textures par plan, cf. `compositor.md`) derrière un triple buffer d'indices,
+  métadonnées par emplacement (n° d'image source, heure d'arrivée) et statistiques en
+  atomiques (`FeedStats` : reçues, sautées, répétées, montrées, latence arrivée → tick).
+  - **Producteur** : `FrameSink` (`push`, `push_packed` ; plans validés, jamais bloquant),
+    détenu par le thread qui reçoit les images (streaming GStreamer à l'étape 7).
+  - **Création** : `RenderEngine::feeds()` → `FeedRegistry::create(input, format, taille,
+    colorimétrie, cadence)`, appelé hors du thread de rendu (il crée les textures). Le feed est
+    envoyé à `vma-control` (canal borné) qui, si l'input existe et n'est pas généré, l'attache
+    à la table des sources (avant le plan, comme le reste), passe l'input en `Live { source }`
+    par l'événement journalisé `Event::InputLive`, et publie ses stats
+    (`RenderEngine::input_stats()`). Un second feed pour le même input remplace le premier
+    (changement de caps). *Écart avec `io-gst.md` (« textures créées par `vma-control` ») :
+    elles sont créées par l'appelant, hors rendu lui aussi ; `vma-control` ne fait que les
+    attacher.*
+  - **Rendu** : à chaque tick, après le plan et la table, **chaque** feed prend sa dernière
+    image publiée (`advance`), rendu ou non (stats comptées en ticks maîtres). Pas d'image
+    encore : noir. Program, Preview et vignettes utilisent la même image du tick.
+  - **Retrait** : un feed qui quitte la table (input retiré, feed remplacé) est **renvoyé** à
+    `vma-control` par un second canal borné et libéré là ; abandon sur le thread de rendu
+    seulement si ce canal est plein (journalisé `warn`). Le `FrameSink` d'un input retiré reste
+    utilisable (images ignorées) jusqu'à ce que son propriétaire le lâche.
 
 ## Phase 0 — thread de rendu
 
@@ -48,6 +70,15 @@ ce fichier couvre le thread de rendu.
   (`device_lost_ticks`), `device_lost` et `RenderStats::device_lost_reason()` exposés.
   L'application ferme alors la fenêtre et sort en erreur (ADR 0001, « Perte du GPU »).
 - Drop de `RenderEngine` = arrêt + `join` du thread.
+
+## Critères d'acceptation (étape 6)
+| Critère | Test | Où |
+|---|---|---|
+| **A5** côté moteur : source à chacune des 6 cadences maîtres sur chacune des 6 (36 combinaisons, 40 s simulées) → l'image prise au tick *n* est toujours `floor(n · source / maître)` ; reçues = montrées + sautées, ticks = montrées + répétées ; latence < une période source | `feed::tests::every_source_rate_resamples_onto_every_master_rate` | CI |
+| Comptes exacts : 25p sur 50p (chaque image 2 fois), 60p sur 50p (1 sur 6 sautée), 29,97p sur 30p (3 répétitions en 3003 ticks) | `feed::tests::rate_ratios_give_the_expected_counts` | CI |
+| Producteur et rendu en parallèle : pas d'emplacement déchiré, pas de retour en arrière | `feed::tests::producer_and_reader_race_without_tearing` | CI |
+| Image d'un feed au Program, en Preview et en vignette ; noir avant la première ; stats | `render_loop::feed_pictures_reach_program_preview_and_thumbnails` | CI (GPU logiciel) |
+| **A12** : 20 inputs alimentés à 50p ajoutés, mis au Program, retirés pendant le rendu → chacun vu avec sa couleur, rien ne reste, 0 image manquée | `render_loop::hot_add_and_remove_without_missed_frames` | CI (GPU logiciel) |
 
 ## Critères d'acceptation
 | Critère | Test | Statut |

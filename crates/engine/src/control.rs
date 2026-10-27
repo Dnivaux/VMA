@@ -14,11 +14,13 @@ use arc_swap::{ArcSwap, ArcSwapOption};
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, TrySendError};
 
 use crate::command::{Command, CommandId, Source};
+use crate::feed::{Attach, FeedReader, FeedStats};
 use crate::journal::{JournalLine, JournalSender, Origin, Outcome, utc_rfc3339};
 use crate::plan::PlanWriter;
 use crate::sequencer::RenderFeedback;
 use crate::sources::{SourceSync, SourceUpdate};
 use crate::state::{Event, IoRequest, State};
+use vma_core::InputId;
 
 /// Commands waiting to be applied before `send` reports the channel full.
 const COMMAND_CAPACITY: usize = 1024;
@@ -102,6 +104,30 @@ pub struct RejectionNotice {
     pub reason: String,
 }
 
+/// Every input that has a picture feed, with its statistics, in order of attachment.
+pub type InputFeedStats = Vec<(InputId, Arc<FeedStats>)>;
+
+/// Reads [`InputFeedStats`]. Cheap to load; the counters inside are live atomics.
+#[derive(Debug, Clone, Default)]
+pub struct InputStatsReader {
+    feeds: Arc<ArcSwap<InputFeedStats>>,
+}
+
+impl InputStatsReader {
+    pub fn load(&self) -> Arc<InputFeedStats> {
+        self.feeds.load_full()
+    }
+
+    /// Statistics of `input`'s current feed, if it has one.
+    pub fn get(&self, input: InputId) -> Option<Arc<FeedStats>> {
+        self.feeds
+            .load()
+            .iter()
+            .find(|(id, _)| *id == input)
+            .map(|(_, s)| Arc::clone(s))
+    }
+}
+
 /// Counters of `vma-control`.
 #[derive(Debug, Default)]
 pub struct ControlStats {
@@ -145,6 +171,7 @@ pub(crate) struct Controller {
     journal: Option<JournalSender>,
     stats: Arc<ControlStats>,
     sources: SourceSync,
+    input_stats: InputStatsReader,
     seen_started: u64,
     seen_done: u64,
 }
@@ -174,6 +201,7 @@ impl Controller {
                 journal,
                 stats,
                 sources,
+                input_stats: InputStatsReader::default(),
                 seen_started: 0,
                 seen_done: 0,
             },
@@ -214,6 +242,45 @@ impl Controller {
             result: Some(outcome),
             version: self.state.version,
         });
+    }
+
+    pub(crate) fn input_stats(&self) -> InputStatsReader {
+        self.input_stats.clone()
+    }
+
+    /// Attaches a new picture feed to its input (if it still exists and takes pictures from
+    /// outside): the input goes live, the render thread gets the feed before the plan.
+    pub(crate) fn attach(&mut self, attach: Attach) {
+        let Attach {
+            input,
+            source,
+            reader,
+            stats,
+        } = attach;
+        if !self
+            .state
+            .input(input)
+            .is_some_and(|i| !i.spec.is_generated())
+        {
+            tracing::debug!(%input, "feed for a missing or generated input dropped");
+            return;
+        }
+        self.sources.attach(input, reader);
+        let mut feeds: Vec<_> = self
+            .input_stats
+            .load()
+            .iter()
+            .filter(|(id, _)| *id != input)
+            .cloned()
+            .collect();
+        feeds.push((input, stats));
+        self.input_stats.feeds.store(Arc::new(feeds));
+        let before = self.state.version;
+        self.event(Event::InputLive { input, source });
+        if self.state.version == before {
+            // Same format as before (a replaced feed): publish the new feed anyway.
+            self.publish();
+        }
     }
 
     /// Retries render source updates a full channel could not take.
@@ -262,6 +329,15 @@ impl Controller {
         // Sources before the plan that may show them; plan before the snapshot, so the
         // render thread never lags behind what the UI shows.
         self.sources.sync(&self.state);
+        let feeds = self.input_stats.load();
+        if feeds.iter().any(|(id, _)| self.state.input(*id).is_none()) {
+            let kept = feeds
+                .iter()
+                .filter(|(id, _)| self.state.input(*id).is_some())
+                .cloned()
+                .collect();
+            self.input_stats.feeds.store(Arc::new(kept));
+        }
         self.plan.publish(&self.state.plan());
         self.snapshot.store(Arc::new(self.state.clone()));
     }
@@ -286,20 +362,37 @@ impl Controller {
     }
 }
 
+/// What `vma-control` receives besides commands.
+#[derive(Debug)]
+pub(crate) struct ControlInputs {
+    pub(crate) commands: Receiver<Envelope>,
+    /// New picture feeds (`FeedRegistry::create`).
+    pub(crate) attach: Receiver<Attach>,
+    /// Feeds the render thread no longer uses: dropped (GPU textures freed) here.
+    pub(crate) retired: Receiver<FeedReader>,
+}
+
 /// Runs the controller on the `vma-control` thread until `stop` is set.
 pub(crate) fn spawn(
     mut controller: Controller,
-    commands: Receiver<Envelope>,
+    inputs: ControlInputs,
     stop: Arc<AtomicBool>,
 ) -> std::io::Result<JoinHandle<()>> {
     std::thread::Builder::new()
         .name("vma-control".into())
         .spawn(move || {
             while !stop.load(Ordering::Acquire) {
-                match commands.recv_timeout(FEEDBACK_POLL) {
+                match inputs.commands.recv_timeout(FEEDBACK_POLL) {
                     Ok(envelope) => controller.handle(envelope),
                     Err(RecvTimeoutError::Timeout) => {}
                     Err(RecvTimeoutError::Disconnected) => break,
+                }
+                while let Ok(attach) = inputs.attach.try_recv() {
+                    controller.attach(attach);
+                }
+                // Dropping a retired feed frees its textures on this thread.
+                for retired in inputs.retired.try_iter() {
+                    drop(retired);
                 }
                 controller.flush_sources();
                 controller.poll_feedback();

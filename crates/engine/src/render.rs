@@ -1,5 +1,9 @@
 use crate::command::MixDomain;
-use crate::control::{self, CommandSender, ControlStats, Controller, StateReader, command_channel};
+use crate::control::{
+    self, CommandSender, ControlInputs, ControlStats, Controller, InputStatsReader, StateReader,
+    command_channel,
+};
+use crate::feed::{ATTACH_CAPACITY, FeedRegistry};
 use crate::journal::{self, Journal, JournalStats};
 use crate::plan::plan_channel;
 use crate::sequencer::{Composition, RenderFeedback, Sequencer};
@@ -13,7 +17,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 use vma_clock::{ClockStats, FrameClock, SystemTime};
 use vma_compositor::thumbnails::{self, ATLAS_CELLS, ThumbnailPainter};
-use vma_compositor::{Mix, MixSpace, Mixer, RenderTarget, Source};
+use vma_compositor::{FramePipelines, Mix, MixSpace, Mixer, RenderTarget, Source};
 use vma_core::{FrameRate, InputId, Resolution};
 
 /// Maximum number of Program frames queued on the GPU. Beyond that the tick is skipped
@@ -111,6 +115,8 @@ pub struct RenderEngine {
     feedback: Arc<RenderFeedback>,
     commands: CommandSender,
     state: StateReader,
+    feeds: FeedRegistry,
+    input_stats: InputStatsReader,
 }
 
 /// The single consumer of one output's frames (typically the UI).
@@ -168,6 +174,14 @@ impl RenderEngine {
         };
         let (plan_writer, plan_reader) = plan_channel();
         let (sources_tx, sources_rx) = crossbeam_channel::bounded(SOURCE_CAPACITY);
+        let (retired_tx, retired_rx) = crossbeam_channel::bounded(SOURCE_CAPACITY);
+        let (attach_tx, attach_rx) = crossbeam_channel::bounded(ATTACH_CAPACITY);
+        let feeds = FeedRegistry::new(
+            device.clone(),
+            queue.clone(),
+            FramePipelines::new(&device),
+            attach_tx,
+        );
         let (controller, state) = Controller::new(
             State::new(Format {
                 rate: config.rate,
@@ -179,8 +193,17 @@ impl RenderEngine {
             Arc::clone(&control_stats),
             sources_tx,
         );
+        let input_stats = controller.input_stats();
         let (commands, command_rx) = command_channel();
-        let control_thread = control::spawn(controller, command_rx, Arc::clone(&stop))?;
+        let control_thread = control::spawn(
+            controller,
+            ControlInputs {
+                commands: command_rx,
+                attach: attach_rx,
+                retired: retired_rx,
+            },
+            Arc::clone(&stop),
+        )?;
 
         let worker = RenderWorker {
             device,
@@ -192,7 +215,7 @@ impl RenderEngine {
             preview,
             thumbs,
             sequencer: Sequencer::new(plan_reader),
-            sources: SourceTable::new(sources_rx),
+            sources: SourceTable::new(sources_rx, retired_tx),
             feedback: Arc::clone(&feedback),
             stats: Arc::clone(&render_stats),
             stop: Arc::clone(&stop),
@@ -227,6 +250,8 @@ impl RenderEngine {
                 feedback,
                 commands,
                 state,
+                feeds,
+                input_stats,
             },
             Readers {
                 program: program_reader,
@@ -244,6 +269,16 @@ impl RenderEngine {
     /// Reads the latest state snapshot (clonable).
     pub fn state(&self) -> StateReader {
         self.state.clone()
+    }
+
+    /// Creates picture feeds for inputs fed from outside the engine (clonable).
+    pub fn feeds(&self) -> FeedRegistry {
+        self.feeds.clone()
+    }
+
+    /// Per-input statistics of the picture feeds (clonable).
+    pub fn input_stats(&self) -> InputStatsReader {
+        self.input_stats.clone()
     }
 
     pub fn control_stats(&self) -> Arc<ControlStats> {
@@ -343,10 +378,11 @@ fn install_gpu_handlers(device: &wgpu::Device, stats: &Arc<RenderStats>) {
     });
 }
 
-fn render_source_to_compositor(source: RenderSource, frame: u64) -> Source<'static> {
+fn render_source_to_compositor(source: &RenderSource, frame: u64) -> Source<'_> {
     match source {
-        RenderSource::Color(c) => Source::Color(c),
+        RenderSource::Color(c) => Source::Color(*c),
         RenderSource::TestPattern => Source::TestPattern { frame },
+        RenderSource::Feed(reader) => reader.current().map_or(Source::Black, Source::Frame),
     }
 }
 
@@ -394,6 +430,9 @@ impl RenderWorker {
             // their timing. Plan first, then the sources it may reference (see `sources.rs`).
             let composition = self.sequencer.tick(tick.index, &self.feedback);
             self.sources.drain();
+            // Every feed takes its latest picture once per tick, rendered or not, so the
+            // per-input statistics count master ticks.
+            self.sources.advance(started);
 
             // A lost device accepts no more work: keep the clock (and the stats) running,
             // render nothing. Recovery is the application's job (ADR 0001, « Perte du GPU »).

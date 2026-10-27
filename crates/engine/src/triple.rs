@@ -62,10 +62,12 @@ impl Producer {
         usize::from(self.back)
     }
 
-    /// Publishes the back slot and takes the previous middle slot as the new back.
-    pub(crate) fn publish(&mut self, shared: &TripleIndices) {
+    /// Publishes the back slot and takes the previous middle slot as the new back. Returns
+    /// `true` if that middle slot held a frame the consumer never took (it is now dropped).
+    pub(crate) fn publish(&mut self, shared: &TripleIndices) -> bool {
         let old = shared.middle.swap(self.back | FRESH, Ordering::AcqRel);
         self.back = old & INDEX_MASK;
+        old & FRESH != 0
     }
 }
 
@@ -110,8 +112,9 @@ mod tests {
     #[test]
     fn producer_overwrites_unconsumed_frames() {
         let (shared, mut p, mut c) = triple();
-        for _ in 0..5 {
-            p.publish(&shared);
+        assert!(!p.publish(&shared), "first frame drops nothing");
+        for _ in 0..4 {
+            assert!(p.publish(&shared), "unconsumed frame dropped");
         }
         let latest_slot = {
             let b = p.back();

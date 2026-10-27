@@ -118,6 +118,8 @@ Précisions apportées en codant (à relire) :
   journalisés (`"source":"render"`, champ `event` au lieu de `command` / `result`). C'est ce qui
   rend le **rejeu** exact : `replay(état initial, journal)` réapplique commandes et événements
   et vérifie, ligne par ligne, le même résultat et la même version.
+  *(Étape 6)* `Event::InputLive { input, source }` : un feed d'images est attaché à l'input
+  (`Starting` → `Live { source: Some(format) }`), journalisé comme les autres événements.
 - `Restart` et `SetPosition` ne changent pas l'état (pas de nouvelle version) : ce sont des
   demandes pour `io-gst` (`IoRequest::Seek`). Toute commande acceptée renvoie ses `IoRequest`
   (ouvrir, fermer, lecture, pause, seek, boucle) ; `vma-control` les journalise en `debug`

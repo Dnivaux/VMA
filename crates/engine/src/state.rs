@@ -186,6 +186,12 @@ pub enum Event {
     TransitionStarted { id: u64, frame: u64 },
     /// The render thread showed the last frame of a timed transition.
     TransitionDone { id: u64 },
+    /// A picture feed was attached to an input (`FeedRegistry::create`): it is live with
+    /// this source format.
+    InputLive {
+        input: InputId,
+        source: SourceFormat,
+    },
 }
 
 /// The whole mixer state, versioned. Readers get immutable snapshots (`StateReader`).
@@ -319,8 +325,8 @@ impl State {
         Ok(change.io)
     }
 
-    /// Applies an event from the render thread (or, later, `io-gst`). Stale events (a
-    /// transition that already ended) are ignored.
+    /// Applies an event from the render thread or from a picture feed (later, `io-gst`).
+    /// Stale events (a transition that already ended, an input that is gone) are ignored.
     pub fn apply_event(&mut self, event: &Event) -> Vec<IoRequest> {
         let mut io = Vec::new();
         let changed = match (*event, &mut self.transition) {
@@ -338,6 +344,18 @@ impl State {
             (Event::TransitionDone { id }, Some(t)) if t.id() == id => {
                 self.finish_transition(&mut io);
                 true
+            }
+            (Event::InputLive { input, source }, _) => {
+                let live = InputStatus::Live {
+                    source: Some(source),
+                };
+                match self.inputs.iter_mut().find(|i| i.id == input) {
+                    Some(i) if !i.spec.is_generated() && i.status != live => {
+                        i.status = live;
+                        true
+                    }
+                    _ => false,
+                }
             }
             _ => false,
         };
@@ -1317,5 +1335,46 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn input_live_event_sets_the_source_format_once() {
+        let mut s = state();
+        color(&mut s, 1);
+        s.apply(&Command::AddInput {
+            spec: InputSpec::Image {
+                path: "logo.png".into(),
+            },
+            name: None,
+        })
+        .unwrap();
+        let (colour, image) = (s.inputs[0].id, s.inputs[1].id);
+        assert_eq!(s.input(image).unwrap().status, InputStatus::Starting);
+        let source = SourceFormat {
+            resolution: Resolution::new(640, 480).unwrap(),
+            rate: None,
+            pixel: vma_core::PixelFormat::Rgba,
+        };
+        let v = s.version;
+        s.apply_event(&Event::InputLive {
+            input: image,
+            source,
+        });
+        assert_eq!(
+            s.input(image).unwrap().status,
+            InputStatus::Live {
+                source: Some(source)
+            }
+        );
+        assert_eq!(s.version, v + 1);
+        // Same event again, a generated input, an unknown input: no change.
+        for input in [image, colour, InputId(999)] {
+            s.apply_event(&Event::InputLive { input, source });
+        }
+        assert_eq!(s.version, v + 1);
+        assert_eq!(
+            s.input(colour).unwrap().status,
+            InputStatus::Live { source: None }
+        );
     }
 }

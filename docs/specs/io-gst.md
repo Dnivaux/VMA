@@ -24,8 +24,9 @@ choisi est affiché dans l'UI.
 
 ## Transport des images
 - Par input, 3 jeux de textures (un par plan : NV12 = Y `R8` + UV `Rg8` ; I420 = 3 × `R8` ;
-  YUY2 / UYVY = `Rgba8` de largeur w/2 ; RGBA / BGRA = `Rgba8` / `Bgra8`), créés par
-  `vma-control` quand les caps sont connues.
+  YUY2 / UYVY = `Rgba8` de largeur w/2 ; RGBA / BGRA = `Rgba8` / `Bgra8`), créés quand les
+  caps sont connues par `FeedRegistry::create` (appelé par `vma-io`, hors rendu) puis attachés
+  par `vma-control` (spec `engine.md`, étape 6).
 - Callback `new-sample` (thread de streaming) : `write_texture` de chaque plan dans le slot
   « back » (pas de copie intermédiaire côté application), métadonnées en atomiques (PTS source,
   heure d'arrivée monotone, n° d'image source), puis publication (triple buffer d'indices).

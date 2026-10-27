@@ -90,6 +90,9 @@ refusées, `journal_dropped`.
 - Panneau Statistiques : + commandes acceptées / refusées, lignes de journal écrites / perdues.
 - Le glyphe « ✕ » manque dans les polices d'egui : le bouton Fermer affiche « × ».
 - Journal activé par défaut dans `logs/` (`--journal-dir <dossier>`, `--no-journal`).
+- *(Étape 6)* Panneau Statistiques, section **Inputs** : une ligne par input doté d'un feed
+  (format source, reçues / s sur ~1 s, répétées, sautées, latence p50 / p99 / max). Le nombre
+  de conversions `videoconvert` arrivera avec `io-gst` (étape 7).
 
 ## Critères d'acceptation
 | Critère | Test |

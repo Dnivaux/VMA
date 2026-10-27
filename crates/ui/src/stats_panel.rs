@@ -1,6 +1,6 @@
 use egui::{Color32, RichText};
 use std::time::Duration;
-use vma_engine::{FrameReader, RenderEngine};
+use vma_engine::{FrameReader, InputStatus, RenderEngine};
 
 const OK: Color32 = Color32::from_rgb(80, 200, 120);
 const BAD: Color32 = Color32::from_rgb(230, 70, 70);
@@ -74,8 +74,80 @@ pub(crate) fn show(ui: &mut egui::Ui, engine: &RenderEngine, reader: &FrameReade
             );
         });
 
+    inputs(ui, engine);
+
     ui.separator();
     ui.label(RichText::new(adapter).small().weak());
+}
+
+/// One line per input with a picture feed (spec `ui.md`, « Statistiques »): state, source
+/// format, pictures received per second, repeated, skipped, arrival → tick latency.
+fn inputs(ui: &mut egui::Ui, engine: &RenderEngine) {
+    let state = engine.state().load();
+    let feeds = engine.input_stats().load();
+    if feeds.is_empty() {
+        return;
+    }
+    ui.separator();
+    ui.label(RichText::new("Inputs").strong());
+    let now = ui.input(|i| i.time);
+    egui::Grid::new("input_stats_grid")
+        .num_columns(2)
+        .spacing([12.0, 4.0])
+        .striped(true)
+        .show(ui, |ui| {
+            for (id, stats) in feeds.iter() {
+                let Some(input) = state.input(*id) else {
+                    continue;
+                };
+                let s = stats.snapshot();
+                let status = match input.status {
+                    InputStatus::Live { source: Some(f) } => format!(
+                        "{} {}{}",
+                        f.resolution,
+                        f.pixel,
+                        f.rate.map(|r| format!(" {r}")).unwrap_or_default()
+                    ),
+                    InputStatus::Live { source: None } => "en direct".into(),
+                    InputStatus::Starting => "démarrage".into(),
+                    InputStatus::SignalLost { .. } => "signal perdu".into(),
+                };
+                row(ui, &input.name, status);
+                // Received per second, from the previous sample kept in egui's memory.
+                let key = egui::Id::unique(("vma.input_rate", id.0));
+                let previous: Option<(u64, f64, f64)> = ui.data(|d| d.get_temp(key));
+                let rate = match previous {
+                    Some((count, at, rate)) if now - at < 1.0 => {
+                        ui.data_mut(|d| d.insert_temp(key, (count, at, rate)));
+                        rate
+                    }
+                    Some((count, at, _)) => {
+                        let rate = (s.received - count.min(s.received)) as f64 / (now - at);
+                        ui.data_mut(|d| d.insert_temp(key, (s.received, now, rate)));
+                        rate
+                    }
+                    None => {
+                        ui.data_mut(|d| d.insert_temp(key, (s.received, now, 0.0)));
+                        0.0
+                    }
+                };
+                row(
+                    ui,
+                    "  reçues / répétées / sautées",
+                    format!("{rate:.1}/s · {} · {}", s.repeated, s.skipped),
+                );
+                row(
+                    ui,
+                    "  latence p50 / p99 / max",
+                    format!(
+                        "{} / {} / {}",
+                        ms(s.latency.p50),
+                        ms(s.latency.p99),
+                        ms(s.latency.max)
+                    ),
+                );
+            }
+        });
 }
 
 fn row(ui: &mut egui::Ui, label: &str, value: String) {
