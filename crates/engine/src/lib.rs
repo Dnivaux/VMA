@@ -22,13 +22,13 @@ pub use command::{
     Source, TRANSITION_BUTTONS, TransitionSetting,
 };
 pub use control::{
-    CommandProbe, CommandSender, ControlStats, InputFeedStats, InputStatsReader, RejectionNotice,
-    SendError, StateReader,
+    CommandProbe, CommandSender, ControlStats, InputFeedStats, InputStatsReader, IoEvent,
+    IoEventSender, IoRequests, RejectionNotice, SendError, StateReader,
 };
 pub use feed::{FeedError, FeedRegistry, FeedStats, FeedStatsSnapshot, FrameSink};
 pub use journal::{Journal, JournalLine, JournalStats, Origin, Outcome, ReplayError, replay};
 pub use plan::{PlanProgress, PlanReader, PlanTransition, RenderPlan};
-pub use render::{EngineConfig, EngineError, FrameReader, Readers, RenderEngine};
+pub use render::{EngineConfig, EngineError, FrameReader, IoPort, Readers, RenderEngine};
 pub use sequencer::{Composition, OnAir, RenderFeedback, Sequencer};
 pub use state::{
     Ending, Event, Format, InputState, InputStatus, IoRequest, MAX_INPUTS, MAX_NAME_CHARS,

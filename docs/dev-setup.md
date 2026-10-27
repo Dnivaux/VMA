@@ -27,6 +27,12 @@ gst-inspect-1.0 srtsink     # SRT (Phase 2) — absent sur la machine de dev au 
 ```
 NDI (`ndisrc`/`ndisink`, gst-plugins-rs) : procédure à documenter en Phase 3.
 
+Windows : installeurs officiels MSVC x86_64 (runtime **et** développement, 1.26.11 en CI,
+`.msi` ; à partir de 1.28 un seul `.exe`), puis `PATH` += `…\msvc_x86_64\bin` (le
+`pkg-config` de GStreamer en premier) et `PKG_CONFIG_PATH=…\msvc_x86_64\lib\pkgconfig`.
+La CI le fait dans `.github/workflows/ci.yml` (sommes SHA-256 vérifiées, installeurs en
+cache).
+
 État constaté sur la machine de dev (2026-10-26, après installation) : GStreamer 1.28.8
 (`gstreamer`, `gst-plugins-base`, `gst-plugins-good`, `gst-plugins-bad-libs`, `gst-libav`) ;
 `v4l2src`, `appsink`, `nvh264enc`, `nvh264dec`, `rtmp2sink`, `matroskamux` présents — suffisant

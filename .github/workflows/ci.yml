@@ -8,6 +8,10 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -D warnings
+  # GStreamer for Windows (ADR 0004): official MSVC installers, runtime + development.
+  GST_WIN_VERSION: "1.26.11"
+  GST_WIN_RUNTIME_SHA256: 31cbc21fa0950b5c1e79c80959b2799805cb05a7a35953a13a9f790776137605
+  GST_WIN_DEVEL_SHA256: af0a0720692052aaf5fb0cf2847ef34a87016ef0f914328d516f049e6c86f587
 
 jobs:
   fmt:
@@ -29,6 +33,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+      - name: Install GStreamer development files
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.95"
@@ -51,12 +59,52 @@ jobs:
       WGPU_BACKEND: ${{ matrix.wgpu_backend }}
     steps:
       - uses: actions/checkout@v5
-      - name: Install Linux dependencies (lavapipe, windowing headers)
+      - name: Install Linux dependencies (lavapipe, windowing headers, GStreamer)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y mesa-vulkan-drivers libvulkan1 vulkan-tools \
-            libxkbcommon-dev libwayland-dev libx11-dev libxcursor-dev libxrandr-dev libxi-dev
+            libxkbcommon-dev libwayland-dev libx11-dev libxcursor-dev libxrandr-dev libxi-dev \
+            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+            gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-libav
+      - name: Cache GStreamer installers (Windows)
+        if: runner.os == 'Windows'
+        uses: actions/cache@v4
+        with:
+          path: gst-installers
+          key: gstreamer-msvc-x86_64-${{ env.GST_WIN_VERSION }}
+      - name: Install GStreamer (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $v = $env:GST_WIN_VERSION
+          $base = "https://gstreamer.freedesktop.org/data/pkg/windows/$v/msvc"
+          New-Item -ItemType Directory -Force gst-installers | Out-Null
+          $files = @{
+            "gstreamer-1.0-msvc-x86_64-$v.msi" = $env:GST_WIN_RUNTIME_SHA256
+            "gstreamer-1.0-devel-msvc-x86_64-$v.msi" = $env:GST_WIN_DEVEL_SHA256
+          }
+          foreach ($name in $files.Keys) {
+            $path = "gst-installers\$name"
+            if (-not (Test-Path $path)) { Invoke-WebRequest "$base/$name" -OutFile $path }
+            $hash = (Get-FileHash $path -Algorithm SHA256).Hash.ToLower()
+            if ($hash -ne $files[$name]) { throw "checksum mismatch for $name" }
+            $p = Start-Process msiexec -Wait -PassThru -ArgumentList "/i `"$path`" /qn /norestart ADDLOCAL=ALL"
+            if ($p.ExitCode -ne 0) { throw "msiexec $name failed: $($p.ExitCode)" }
+          }
+          $root = [Environment]::GetEnvironmentVariable('GSTREAMER_1_0_ROOT_MSVC_X86_64', 'Machine')
+          if (-not $root) {
+            $root = @('C:\Program Files\gstreamer\1.0\msvc_x86_64', 'C:\gstreamer\1.0\msvc_x86_64') |
+              Where-Object { Test-Path $_ } | Select-Object -First 1
+          }
+          if (-not $root) { throw "GStreamer install directory not found" }
+          $root = $root.TrimEnd('\')
+          Write-Host "GStreamer in $root"
+          # GStreamer's own pkg-config first (gstreamer-rs README).
+          "$root\bin" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
+          "PKG_CONFIG_PATH=$root\lib\pkgconfig" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+          "GSTREAMER_1_0_ROOT_MSVC_X86_64=$root\" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy

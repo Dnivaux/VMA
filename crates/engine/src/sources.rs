@@ -7,7 +7,7 @@
 //! carries the render side of the input's picture feed ([`FeedReader`]). A feed leaving the
 //! table (input removed, feed replaced) is **sent back** to `vma-control` on a second bounded
 //! channel, so its GPU textures are freed there, never on the render thread. Inputs without a
-//! feed yet render black.
+//! feed yet, or not live (signal lost), render black.
 
 use std::collections::VecDeque;
 use std::time::Instant;
@@ -17,7 +17,7 @@ use vma_core::{InputId, Rgb8};
 
 use crate::command::InputSpec;
 use crate::feed::FeedReader;
-use crate::state::{MAX_INPUTS, State};
+use crate::state::{InputStatus, MAX_INPUTS, State};
 
 /// Capacity of the update channel (a full refresh of every input fits twice), and of the
 /// channel returning retired feeds.
@@ -113,9 +113,10 @@ impl SourceSync {
             .filter_map(|i| {
                 generated_source(&i.spec)
                     .or_else(|| {
-                        self.feeds
-                            .iter()
-                            .find(|f| f.input == i.id)
+                        // A feed is shown while its input is live: signal lost → black.
+                        matches!(i.status, InputStatus::Live { .. })
+                            .then(|| self.feeds.iter().find(|f| f.input == i.id))
+                            .flatten()
                             .map(|f| SourceKey::Feed(f.serial))
                     })
                     .map(|k| (i.id, k))

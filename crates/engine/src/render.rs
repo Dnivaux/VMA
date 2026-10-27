@@ -1,7 +1,7 @@
 use crate::command::MixDomain;
 use crate::control::{
-    self, CommandSender, ControlInputs, ControlStats, Controller, InputStatsReader, StateReader,
-    command_channel,
+    self, CommandSender, ControlInputs, ControlStats, Controller, InputStatsReader, IoEventSender,
+    IoRequests, StateReader, command_channel, io_channels,
 };
 use crate::feed::{ATTACH_CAPACITY, FeedRegistry};
 use crate::journal::{self, Journal, JournalStats};
@@ -117,6 +117,16 @@ pub struct RenderEngine {
     state: StateReader,
     feeds: FeedRegistry,
     input_stats: InputStatsReader,
+    io_port: Option<IoPort>,
+}
+
+/// What `vma-io` needs from the engine: the requests of `vma-control` (open, close, play…),
+/// a way to report events, and the feed registry. Taken once ([`RenderEngine::take_io_port`]).
+#[derive(Debug)]
+pub struct IoPort {
+    pub requests: IoRequests,
+    pub events: IoEventSender,
+    pub feeds: FeedRegistry,
 }
 
 /// The single consumer of one output's frames (typically the UI).
@@ -182,7 +192,8 @@ impl RenderEngine {
             FramePipelines::new(&device),
             attach_tx,
         );
-        let (controller, state) = Controller::new(
+        let ((io_tx, io_requests), (io_events, io_events_rx)) = io_channels();
+        let (mut controller, state) = Controller::new(
             State::new(Format {
                 rate: config.rate,
                 resolution: config.resolution,
@@ -193,6 +204,7 @@ impl RenderEngine {
             Arc::clone(&control_stats),
             sources_tx,
         );
+        controller.set_io(io_tx);
         let input_stats = controller.input_stats();
         let (commands, command_rx) = command_channel();
         let control_thread = control::spawn(
@@ -201,6 +213,7 @@ impl RenderEngine {
                 commands: command_rx,
                 attach: attach_rx,
                 retired: retired_rx,
+                io_events: io_events_rx,
             },
             Arc::clone(&stop),
         )?;
@@ -250,8 +263,13 @@ impl RenderEngine {
                 feedback,
                 commands,
                 state,
-                feeds,
+                feeds: feeds.clone(),
                 input_stats,
+                io_port: Some(IoPort {
+                    requests: io_requests,
+                    events: io_events,
+                    feeds,
+                }),
             },
             Readers {
                 program: program_reader,
@@ -274,6 +292,12 @@ impl RenderEngine {
     /// Creates picture feeds for inputs fed from outside the engine (clonable).
     pub fn feeds(&self) -> FeedRegistry {
         self.feeds.clone()
+    }
+
+    /// The link for `vma-io` (`io-gst`); `None` once taken. Without it, the requests of
+    /// `vma-control` are dropped (logged) once the channel is full.
+    pub fn take_io_port(&mut self) -> Option<IoPort> {
+        self.io_port.take()
     }
 
     /// Per-input statistics of the picture feeds (clonable).

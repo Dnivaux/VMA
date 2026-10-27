@@ -171,12 +171,29 @@ pub enum Rejection {
 /// Work for `io-gst` that follows from an accepted command.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IoRequest {
-    Open { input: InputId },
-    Close { input: InputId },
-    Play { input: InputId },
-    Pause { input: InputId },
-    Seek { input: InputId, ms: u64 },
-    SetLoop { input: InputId, enabled: bool },
+    /// Start producing pictures for a new input (its feed is created when the format is
+    /// known, see `FeedRegistry`).
+    Open {
+        input: InputId,
+        spec: InputSpec,
+    },
+    Close {
+        input: InputId,
+    },
+    Play {
+        input: InputId,
+    },
+    Pause {
+        input: InputId,
+    },
+    Seek {
+        input: InputId,
+        ms: u64,
+    },
+    SetLoop {
+        input: InputId,
+        enabled: bool,
+    },
 }
 
 /// Something that happened outside `vma-control` and changes the state.
@@ -191,6 +208,13 @@ pub enum Event {
     InputLive {
         input: InputId,
         source: SourceFormat,
+    },
+    /// An input stopped producing pictures (error, end of a live stream, timeout); `io-gst`
+    /// retries on its own. `frame` is the master frame index when `vma-control` received it.
+    SignalLost {
+        input: InputId,
+        frame: u64,
+        attempts: u32,
     },
 }
 
@@ -345,6 +369,30 @@ impl State {
                 self.finish_transition(&mut io);
                 true
             }
+            (
+                Event::SignalLost {
+                    input,
+                    frame,
+                    attempts,
+                },
+                _,
+            ) => match self.inputs.iter_mut().find(|i| i.id == input) {
+                Some(i) if !i.spec.is_generated() => {
+                    // Keep the first loss frame across retries.
+                    let since_frame = match i.status {
+                        InputStatus::SignalLost { since_frame, .. } => since_frame,
+                        _ => frame,
+                    };
+                    let lost = InputStatus::SignalLost {
+                        since_frame,
+                        attempts,
+                    };
+                    let changed = i.status != lost;
+                    i.status = lost;
+                    changed
+                }
+                _ => false,
+            },
             (Event::InputLive { input, source }, _) => {
                 let live = InputStatus::Live {
                     source: Some(source),
@@ -518,7 +566,10 @@ impl State {
         let io = if generated {
             Vec::new()
         } else {
-            vec![IoRequest::Open { input: id }]
+            vec![IoRequest::Open {
+                input: id,
+                spec: spec.clone(),
+            }]
         };
         Ok(Change { changed: true, io })
     }
@@ -1233,7 +1284,9 @@ mod tests {
             })
             .unwrap();
         let v = s.inputs[0].id;
-        assert_eq!(io, [IoRequest::Open { input: v }]);
+        assert!(
+            matches!(&io[..], [IoRequest::Open { input, spec: InputSpec::File { .. } }] if *input == v)
+        );
         assert_eq!(s.input(v).unwrap().playback, Some(Playback::default()));
         assert_eq!(s.input(v).unwrap().status, InputStatus::Starting);
         assert_eq!(
@@ -1376,5 +1429,45 @@ mod tests {
             s.input(colour).unwrap().status,
             InputStatus::Live { source: None }
         );
+    }
+
+    #[test]
+    fn signal_lost_keeps_the_first_frame_and_counts_attempts() {
+        let mut s = state();
+        s.apply(&Command::AddInput {
+            spec: InputSpec::Image {
+                path: "missing.png".into(),
+            },
+            name: None,
+        })
+        .unwrap();
+        let id = s.inputs[0].id;
+        s.apply_event(&Event::SignalLost {
+            input: id,
+            frame: 100,
+            attempts: 1,
+        });
+        s.apply_event(&Event::SignalLost {
+            input: id,
+            frame: 150,
+            attempts: 2,
+        });
+        assert_eq!(
+            s.input(id).unwrap().status,
+            InputStatus::SignalLost {
+                since_frame: 100,
+                attempts: 2
+            }
+        );
+        let source = SourceFormat {
+            resolution: Resolution::new(8, 8).unwrap(),
+            rate: None,
+            pixel: PixelFormat::Rgba,
+        };
+        s.apply_event(&Event::InputLive { input: id, source });
+        assert!(matches!(
+            s.input(id).unwrap().status,
+            InputStatus::Live { .. }
+        ));
     }
 }

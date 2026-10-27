@@ -9,8 +9,19 @@ publish.workspace = true
 
 [dependencies]
 vma-core.workspace = true
+vma-engine.workspace = true
+vma-compositor.workspace = true
 image.workspace = true
 thiserror.workspace = true
+tracing.workspace = true
+crossbeam-channel.workspace = true
+gstreamer.workspace = true
+gstreamer-app.workspace = true
+gstreamer-video.workspace = true
+
+[dev-dependencies]
+pollster.workspace = true
+wgpu.workspace = true
 
 [lints]
 workspace = true

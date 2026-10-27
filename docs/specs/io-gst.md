@@ -73,14 +73,40 @@ pub enum IoEvent { Caps { input, caps }, Live { input }, SignalLost { input, rea
 `FrameSink` est fourni par `engine` (textures + indices + métadonnées) ; `io-gst` ne connaît pas
 le compositeur.
 
+## Mise en œuvre (étape 7 du plan, 2026-10-27)
+- `IoRuntime::start(port)` : `gst::init` puis thread `vma-io`, branché sur le moteur par
+  `RenderEngine::take_io_port()` (`IoPort` : demandes de `vma-control`, envoi d'`IoEvent`,
+  `FeedRegistry`). `IoRequest::Open` porte désormais la spec de l'input. Sans GStreamer
+  (init en échec) : le runtime démarre quand même, les images fixes marchent, capture et
+  fichier passent en « signal perdu » (raison journalisée) ; `gstreamer_error()`.
+- **Image fixe** : décodée sur `vma-io` (`still`), feed RGBA créé, image poussée une fois ;
+  fichier absent ou illisible → `SignalLost` (sans nouvelle tentative).
+- **Pipeline** (`pipeline.rs`) : `<source> ! videoconvert ! appsink` (caps = les 6 formats,
+  `max-buffers=1`, `drop=true`, `sync` selon la source). Le callback `new-sample` (thread de
+  streaming) lit le format négocié (colorimétrie des caps, sinon la règle par défaut),
+  crée le feed au premier format ou à un changement, et pousse les plans (*strides* de
+  GStreamer). `videoconvert` reste en passthrough pour les formats acceptés ; sinon la
+  conversion est détectée (exposée dans les stats avec l'étape 8).
+- **Perte** : erreur du bus ou EOS (relayés par un *sync handler*), ou silence (aucune image
+  après 5 s au démarrage, puis plus de `max(500 ms, 10 périodes)`) pour les sources live.
+  **Reconnexion** (`PipelineSlot`) : pipeline détruit, recréé après 1, 2, 5, puis 10 s ;
+  le compteur repart de zéro dès que des images arrivent ; chaque redémarrage crée un nouveau
+  feed, donc l'input repasse `Live` par `Event::InputLive`. `Event::SignalLost` →
+  état « signal perdu » (première image de perte conservée, tentatives), rendu en noir.
+- Les pipelines ne sont ouverts en production qu'avec la capture et les fichiers (étape 8) ;
+  à l'étape 7 ils sont testés avec `videotestsrc`. `TestSource` reste la mire du compositeur
+  (spec `commands.md`). Le critère **A9** (fichier en boucle) passe à l'étape 8 avec
+  l'input fichier.
+
 ## Critères d'acceptation
 | Critère | Test | Où |
 |---|---|---|
-| `videotestsrc` 1080p50 → images publiées dans l'ordre, au bon rythme (± 2 %) | intégration | CI |
-| Chaque format accepté arrive sans `videoconvert` ; un format non listé passe par lui | intégration (caps forcées) | CI |
+| `videotestsrc` 1080p50 → images publiées dans l'ordre, au bon rythme (± 2 %) | `pipeline::tests::live_test_source_delivers_in_order_at_its_rate` (± 1 image/s) | CI |
+| Chaque format accepté arrive sans `videoconvert` ; un format non listé passe par lui | `pipeline::tests::accepted_formats_arrive_without_conversion` (Y444 converti) | CI |
 | Fichier en boucle : ≥ 3 boucles, n° d'image continu modulo la durée, 0 image noire (A9) | fichier MKV généré par le test | CI |
 | Lecture / pause / redémarrage / position ; fin sans Loop = dernière image tenue (A20) | idem | CI |
-| Erreur forcée du pipeline → `SignalLost`, puis reconnexion → `Live` (A8) | élément factice qui échoue | CI |
+| Erreur forcée du pipeline → `SignalLost`, puis reconnexion → `Live` (A8) | `pipeline::tests::errors_end_of_stream_and_silence_are_losses` (`identity error-after`, EOS, `valve` fermée), `runtime::tests::lost_pipeline_is_reported_and_reconnected`, `failing_start_counts_attempts_with_backoff` | CI |
 | Débrancher / rebrancher la webcam pendant le Program | checklist `docs/manual-tests/phase1-inputs.md` | manuel |
-| GStreamer absent → l'application démarre, inputs capture / fichier désactivés avec message | test avec initialisation simulée en échec | CI |
+| GStreamer absent → l'application démarre, inputs capture / fichier désactivés avec message | `runtime::tests::without_gstreamer_images_still_work` (message dans l'UI : étape 8, avec l'ajout d'input) | CI |
+| Image fixe au Program (fit), image absente = signal perdu, retrait = feed détaché | `tests/runtime.rs` (3 tests, moteur réel) | CI |
 | Mode de capture choisi selon les règles ci-dessus | test unitaire sur des listes de caps | CI |

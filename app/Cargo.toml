@@ -12,6 +12,7 @@ vma-core.workspace = true
 vma-clock.workspace = true
 vma-engine.workspace = true
 vma-ui.workspace = true
+vma-io-gst.workspace = true
 eframe = { workspace = true, features = ["wgpu", "default_fonts", "wayland", "x11", "accesskit"] }
 egui.workspace = true
 egui-wgpu.workspace = true

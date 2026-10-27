@@ -128,6 +128,65 @@ impl InputStatsReader {
     }
 }
 
+/// Capacity of the channels between `vma-control` and `vma-io`.
+pub(crate) const IO_CAPACITY: usize = 256;
+
+/// What `vma-io` reports to `vma-control` (besides feeds, see `FeedRegistry`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IoEvent {
+    /// The input produces no pictures any more; `attempts` = reconnection attempts so far.
+    SignalLost {
+        input: InputId,
+        attempts: u32,
+        reason: String,
+    },
+}
+
+/// Requests from `vma-control` to `vma-io`, in order.
+#[derive(Debug)]
+pub struct IoRequests {
+    rx: Receiver<IoRequest>,
+}
+
+impl IoRequests {
+    /// Next request, waiting at most `timeout`. `Err` once the engine is stopped.
+    pub fn recv_timeout(&self, timeout: Duration) -> Result<Option<IoRequest>, SendError> {
+        match self.rx.recv_timeout(timeout) {
+            Ok(request) => Ok(Some(request)),
+            Err(RecvTimeoutError::Timeout) => Ok(None),
+            Err(RecvTimeoutError::Disconnected) => Err(SendError::Stopped),
+        }
+    }
+}
+
+/// Sends [`IoEvent`]s to `vma-control`. Clonable; never blocks.
+#[derive(Debug, Clone)]
+pub struct IoEventSender {
+    tx: Sender<IoEvent>,
+}
+
+impl IoEventSender {
+    pub fn send(&self, event: IoEvent) -> Result<(), SendError> {
+        self.tx.try_send(event).map_err(|e| match e {
+            TrySendError::Full(_) => SendError::Full,
+            TrySendError::Disconnected(_) => SendError::Stopped,
+        })
+    }
+}
+
+/// Both ends of the link between the engine and `vma-io`.
+pub(crate) fn io_channels() -> (
+    (Sender<IoRequest>, IoRequests),
+    (IoEventSender, Receiver<IoEvent>),
+) {
+    let (req_tx, req_rx) = crossbeam_channel::bounded(IO_CAPACITY);
+    let (ev_tx, ev_rx) = crossbeam_channel::bounded(IO_CAPACITY);
+    (
+        (req_tx, IoRequests { rx: req_rx }),
+        (IoEventSender { tx: ev_tx }, ev_rx),
+    )
+}
+
 /// Counters of `vma-control`.
 #[derive(Debug, Default)]
 pub struct ControlStats {
@@ -172,6 +231,7 @@ pub(crate) struct Controller {
     stats: Arc<ControlStats>,
     sources: SourceSync,
     input_stats: InputStatsReader,
+    io: Option<Sender<IoRequest>>,
     seen_started: u64,
     seen_done: u64,
 }
@@ -202,6 +262,7 @@ impl Controller {
                 stats,
                 sources,
                 input_stats: InputStatsReader::default(),
+                io: None,
                 seen_started: 0,
                 seen_done: 0,
             },
@@ -242,6 +303,29 @@ impl Controller {
             result: Some(outcome),
             version: self.state.version,
         });
+    }
+
+    /// Where accepted commands send their [`IoRequest`]s (none: they are only logged).
+    pub(crate) fn set_io(&mut self, io: Sender<IoRequest>) {
+        self.io = Some(io);
+    }
+
+    /// Applies an event reported by `vma-io`.
+    pub(crate) fn io_event(&mut self, event: IoEvent) {
+        match event {
+            IoEvent::SignalLost {
+                input,
+                attempts,
+                reason,
+            } => {
+                tracing::warn!(%input, attempts, %reason, "signal lost");
+                self.event(Event::SignalLost {
+                    input,
+                    frame: self.feedback.last_frame(),
+                    attempts,
+                });
+            }
+        }
     }
 
     pub(crate) fn input_stats(&self) -> InputStatsReader {
@@ -343,9 +427,16 @@ impl Controller {
     }
 
     fn forward(&self, io: &[IoRequest]) {
-        // `io-gst` arrives at step 7 of the Phase 1 plan; until then requests are only logged.
         for request in io {
-            tracing::debug!(?request, "io request");
+            match &self.io {
+                Some(tx) => {
+                    if let Err(e) = tx.try_send(request.clone()) {
+                        // Full: `vma-io` is stuck; disconnected: it is gone. Never wait.
+                        tracing::error!(?request, error = %e, "io request dropped");
+                    }
+                }
+                None => tracing::debug!(?request, "io request (no io runtime)"),
+            }
         }
     }
 
@@ -370,6 +461,8 @@ pub(crate) struct ControlInputs {
     pub(crate) attach: Receiver<Attach>,
     /// Feeds the render thread no longer uses: dropped (GPU textures freed) here.
     pub(crate) retired: Receiver<FeedReader>,
+    /// Events from `vma-io`.
+    pub(crate) io_events: Receiver<IoEvent>,
 }
 
 /// Runs the controller on the `vma-control` thread until `stop` is set.
@@ -389,6 +482,9 @@ pub(crate) fn spawn(
                 }
                 while let Ok(attach) = inputs.attach.try_recv() {
                     controller.attach(attach);
+                }
+                while let Ok(event) = inputs.io_events.try_recv() {
+                    controller.io_event(event);
                 }
                 // Dropping a retired feed frees its textures on this thread.
                 for retired in inputs.retired.try_iter() {

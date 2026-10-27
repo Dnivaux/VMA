@@ -31,6 +31,7 @@ vma-clock = { path = "crates/clock" }
 vma-engine = { path = "crates/engine" }
 vma-compositor = { path = "crates/compositor" }
 vma-ui = { path = "crates/ui" }
+vma-io-gst = { path = "crates/io-gst" }
 
 # External crates — licence noted for each (rule 2.6). Enforced by deny.toml.
 wgpu = "30.0"                                                # MIT OR Apache-2.0
@@ -48,6 +49,9 @@ tracing-appender = "0.2"                                     # MIT
 bytemuck = { version = "1.25", features = ["derive"] }       # MIT OR Apache-2.0 OR Zlib
 pollster = "1.0"                                             # MIT OR Apache-2.0
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] } # MIT OR Apache-2.0 (PNG: png, MIT OR Apache-2.0 ; JPEG: zune-jpeg, MIT OR Apache-2.0 OR Zlib)
+gstreamer = "0.25"                                           # MIT OR Apache-2.0 (bindings ; GStreamer lui-même LGPL-2.1+, lié dynamiquement, ADR 0004)
+gstreamer-app = "0.25"                                       # MIT OR Apache-2.0
+gstreamer-video = "0.25"                                     # MIT OR Apache-2.0
 serde = { version = "1.0", features = ["derive"] }           # MIT OR Apache-2.0
 serde_json = "1.0"                                           # MIT OR Apache-2.0
 

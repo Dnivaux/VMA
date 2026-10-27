@@ -85,6 +85,8 @@ fn main() -> anyhow::Result<ExitCode> {
 
 struct App<'a> {
     ui: MainUi,
+    /// `vma-io`, dropped after the engine (inside `ui`): its requests channel closes first.
+    _io: Option<vma_io_gst::IoRuntime>,
     render_stats: Arc<RenderStats>,
     ui_probe: Arc<soak::UiProbe>,
     device_lost: &'a OnceLock<String>,
@@ -111,12 +113,23 @@ impl<'a> App<'a> {
         tracing::info!(%adapter, "GPU adapter");
 
         // The engine installs the uncaptured-error handler and the device-lost callback.
-        let (engine, readers) = RenderEngine::spawn(
+        let (mut engine, readers) = RenderEngine::spawn(
             render_state.device.clone(),
             render_state.queue.clone(),
             config,
             journal,
         )?;
+        // Images, capture and files (ADR 0004). Without GStreamer the runtime still serves
+        // still images; without the thread at all, those inputs stay « Démarrage ».
+        let io = engine
+            .take_io_port()
+            .and_then(|port| match vma_io_gst::IoRuntime::start(port) {
+                Ok(io) => Some(io),
+                Err(e) => {
+                    tracing::error!(error = %e, "io runtime not started");
+                    None
+                }
+            });
         // A soak measures the render loop: give it a moving picture on air. A normal session
         // starts empty, like the reference.
         if soak_options.is_some() {
@@ -170,6 +183,7 @@ impl<'a> App<'a> {
 
         Ok(Self {
             ui: MainUi::new(engine, readers, textures, adapter),
+            _io: io,
             render_stats,
             ui_probe,
             device_lost,
