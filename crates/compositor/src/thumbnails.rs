@@ -1,10 +1,11 @@
 //! Input thumbnails: every input drawn into its cell of one [`PROGRAM_FORMAT`] atlas, so the
 //! UI registers three textures (one per triple-buffer slot) instead of one per input.
 //!
-//! Phase 1 sources are drawn straight at thumbnail size: solid colours through a pipeline
-//! whose output is the blend constant (no buffer per input), the test pattern through its own
-//! pipeline with the cell as viewport. Scaled video sources join with the upload path.
+//! Phase 1 sources are drawn straight at thumbnail size: solid colours through one pipeline
+//! reading the cell's colour from a single uniform array (one buffer for the whole atlas, not
+//! one per input), the test pattern through its own pipeline with the cell as viewport. Scaled video sources join with the upload path.
 
+use bytemuck::Zeroable;
 use vma_core::{Resolution, Rgb8};
 
 use crate::{PROGRAM_FORMAT, RenderTarget, Source, TestPattern};
@@ -47,10 +48,18 @@ pub fn new_atlas(device: &wgpu::Device, label: &str) -> RenderTarget {
     RenderTarget::new(device, atlas_resolution(), label)
 }
 
+/// Solid colours of the cells, as the shader's `array<vec4<f32>, 64>` uniform.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct CellColors([[f32; 4]; ATLAS_CELLS]);
+
 /// Draws thumbnails into an atlas.
 #[derive(Debug)]
 pub struct ThumbnailPainter {
     solid: wgpu::RenderPipeline,
+    /// `ATLAS_CELLS` colours (`vec4<f32>` each), indexed by cell.
+    colors: wgpu::Buffer,
+    colors_bind_group: wgpu::BindGroup,
     pattern: TestPattern,
 }
 
@@ -60,18 +69,38 @@ impl ThumbnailPainter {
             label: Some("thumbnail.solid"),
             source: wgpu::ShaderSource::Wgsl(include_str!("shaders/solid.wgsl").into()),
         });
+        let colors = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("thumbnail.solid.colors"),
+            size: std::mem::size_of::<CellColors>() as wgpu::BufferAddress,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("thumbnail.solid.bgl"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+        });
+        let colors_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("thumbnail.solid.bg"),
+            layout: &bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: colors.as_entire_binding(),
+            }],
+        });
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("thumbnail.solid"),
-            bind_group_layouts: &[],
+            bind_group_layouts: &[Some(&bind_group_layout)],
             immediate_size: 0,
         });
-        // Output = blend constant × 1 + destination × 0: the colour comes from
-        // `set_blend_constant`, set per cell.
-        let constant = wgpu::BlendComponent {
-            src_factor: wgpu::BlendFactor::Constant,
-            dst_factor: wgpu::BlendFactor::Zero,
-            operation: wgpu::BlendOperation::Add,
-        };
         let solid = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("thumbnail.solid"),
             layout: Some(&layout),
@@ -90,10 +119,7 @@ impl ThumbnailPainter {
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: PROGRAM_FORMAT,
-                    blend: Some(wgpu::BlendState {
-                        color: constant,
-                        alpha: constant,
-                    }),
+                    blend: None,
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
             }),
@@ -102,6 +128,8 @@ impl ThumbnailPainter {
         });
         Self {
             solid,
+            colors,
+            colors_bind_group,
             pattern: TestPattern::new(device),
         }
     }
@@ -117,10 +145,24 @@ impl ThumbnailPainter {
         frame: u64,
         cells: impl Iterator<Item = (usize, Source)> + Clone,
     ) {
-        if cells
-            .clone()
-            .any(|(_, s)| matches!(s, Source::TestPattern { .. }))
-        {
+        let mut colors = CellColors::zeroed();
+        let mut any_pattern = false;
+        for (cell, source) in cells.clone() {
+            let solid = match source {
+                Source::Black => Rgb8::BLACK,
+                Source::Color(c) => c,
+                Source::TestPattern { .. } => {
+                    any_pattern = true;
+                    continue;
+                }
+            };
+            if let Some(slot) = colors.0.get_mut(cell) {
+                *slot = [solid.r, solid.g, solid.b, 255].map(|v| f32::from(v) / 255.0);
+            }
+        }
+        // One write per atlas, ordered before this encoder's submission.
+        queue.write_buffer(&self.colors, 0, bytemuck::bytes_of(&colors));
+        if any_pattern {
             self.pattern.prepare(queue, frame);
         }
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -145,22 +187,15 @@ impl ThumbnailPainter {
                 continue;
             };
             pass.set_viewport(x as f32, y as f32, w as f32, h as f32, 0.0, 1.0);
-            let solid = match source {
-                Source::Black => Rgb8::BLACK,
-                Source::Color(c) => c,
-                Source::TestPattern { .. } => {
-                    self.pattern.draw(&mut pass);
-                    continue;
-                }
-            };
+            if let Source::TestPattern { .. } = source {
+                self.pattern.draw(&mut pass);
+                continue;
+            }
+            // The instance index selects the cell's colour.
+            let cell = cell as u32;
             pass.set_pipeline(&self.solid);
-            pass.set_blend_constant(wgpu::Color {
-                r: f64::from(solid.r) / 255.0,
-                g: f64::from(solid.g) / 255.0,
-                b: f64::from(solid.b) / 255.0,
-                a: 1.0,
-            });
-            pass.draw(0..3, 0..1);
+            pass.set_bind_group(0, &self.colors_bind_group, &[]);
+            pass.draw(0..3, cell..cell + 1);
         }
     }
 }
