@@ -7,7 +7,7 @@
 //!   reconnects, and publishes the position of the video files.
 //!
 //! - Capture devices: listed by a device monitor ([`IoRuntime::devices`]), opened in the mode
-//!   closest to the master format ([`CaptureMode`]).
+//!   closest to the master format ([`CaptureMode`], [`IoRuntime::pipeline_info`]).
 
 mod devices;
 mod feeds;
@@ -20,7 +20,7 @@ mod supervisor;
 pub use devices::CaptureDevice;
 pub use feeds::{Feeds, PictureOut, VideoFormat};
 pub use mode::{CaptureMode, Encoding};
-pub use runtime::IoRuntime;
+pub use runtime::{IoRuntime, PipelineInfo};
 
 /// Errors of `io-gst`.
 #[derive(Debug, thiserror::Error)]

@@ -8,9 +8,9 @@
 use egui::{Color32, Key, Rect, RichText, Sense, Stroke, StrokeKind, TextureId, Vec2};
 use vma_core::{InputId, Rgb8};
 use vma_engine::{
-    AutoPlay, Command, CommandId, CommandSender, Effect, InputSpec, InputState, InputStatus,
-    MAX_TRANSITION_MS, MixDomain, RejectionNotice, SendError, Source, State, TransitionSetting,
-    TransitionState,
+    AutoPlay, Command, CommandId, CommandSender, DeviceId, Effect, InputSpec, InputState,
+    InputStatus, MAX_NAME_CHARS, MAX_TRANSITION_MS, MixDomain, Playback, RejectionNotice,
+    SendError, Source, State, Timeline, TransitionSetting, TransitionState,
 };
 
 use crate::tally::{TALLY_PREVIEW, TALLY_PROGRAM, Tally};
@@ -21,6 +21,10 @@ const COLUMN_WIDTH: f32 = 150.0;
 const THUMB: Vec2 = Vec2::new(160.0, 90.0);
 /// How long a message stays visible, in seconds.
 const MESSAGE_SECS: f64 = 4.0;
+/// Height of the video controls under Preview / Program.
+const CONTROLS_HEIGHT: f32 = 28.0;
+/// Colour of warnings and messages.
+const WARNING: Color32 = Color32::from_rgb(230, 160, 40);
 /// Shortcut keys selecting inputs 1–9 for Preview.
 const NUMBER_KEYS: [Key; 9] = [
     Key::Num1,
@@ -62,12 +66,67 @@ impl std::fmt::Debug for Images<'_> {
     }
 }
 
+/// A capture device offered by « Ajouter → Caméra / capture ».
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CaptureChoice {
+    pub id: DeviceId,
+    pub name: String,
+}
+
+/// A file the operator asked for. The caller opens the dialog (the switcher never blocks)
+/// and adds the input with the chosen path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileKind {
+    Video,
+    Image,
+}
+
+/// What the switcher shows about the inputs fed by `vma-io` (capture, files).
+pub struct IoView<'a> {
+    /// Why capture devices and videos are unavailable (GStreamer missing), if they are.
+    pub unavailable: Option<&'a str>,
+    /// Capture devices connected now.
+    pub devices: &'a [CaptureChoice],
+    /// Position and duration of a video input.
+    pub timeline: &'a dyn Fn(InputId) -> Option<Timeline>,
+    /// Mode a capture input runs in, as shown (« 1280x720 30p MJPEG »).
+    pub capture_mode: &'a dyn Fn(InputId) -> Option<String>,
+}
+
+impl IoView<'static> {
+    /// No device, no timeline, nothing unavailable.
+    pub fn empty() -> Self {
+        fn no_timeline(_: InputId) -> Option<Timeline> {
+            None
+        }
+        fn no_mode(_: InputId) -> Option<String> {
+            None
+        }
+        Self {
+            unavailable: None,
+            devices: &[],
+            timeline: &no_timeline,
+            capture_mode: &no_mode,
+        }
+    }
+}
+
+impl std::fmt::Debug for IoView<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("IoView")
+            .field("unavailable", &self.unavailable)
+            .field("devices", &self.devices)
+            .finish_non_exhaustive()
+    }
+}
+
 /// Everything the switcher reads for one UI frame.
 #[derive(Debug)]
 pub struct View<'a> {
     pub state: &'a State,
     pub commands: &'a CommandSender,
     pub images: Images<'a>,
+    pub io: IoView<'a>,
     /// Last frame index processed by the render thread (transition progress).
     pub frame: u64,
     /// Last command refused by the engine.
@@ -99,6 +158,10 @@ pub struct Switcher {
     /// Button pressed last (its transition gets the progress bar).
     active_button: Option<u8>,
     new_color: [u8; 3],
+    /// File asked for in « Ajouter », not taken by the caller yet.
+    file_request: Option<FileKind>,
+    /// Position slider being dragged: input and position (ms), sent on release.
+    scrub: Option<(InputId, f64)>,
 }
 
 impl Default for Switcher {
@@ -112,11 +175,18 @@ impl Default for Switcher {
             seen_rejection: None,
             active_button: None,
             new_color: [64, 64, 64],
+            file_request: None,
+            scrub: None,
         }
     }
 }
 
 impl Switcher {
+    /// The file the operator asked to open (« Ajouter → Vidéo… / Image… »), once.
+    pub fn take_file_request(&mut self) -> Option<FileKind> {
+        self.file_request.take()
+    }
+
     pub fn show(&mut self, ui: &mut egui::Ui, view: &View<'_>) {
         let now = ui.input(|i| i.time);
         if let Some(notice) = view.rejection
@@ -134,9 +204,16 @@ impl Switcher {
                     self.settings_open = true;
                 }
                 ui.toggle_value(&mut self.show_stats, "Statistiques");
+                if let Some(reason) = view.io.unavailable {
+                    ui.label(
+                        RichText::new("GStreamer introuvable : caméras et vidéos désactivées")
+                            .color(WARNING),
+                    )
+                    .on_hover_text(reason);
+                }
                 if let Some((text, since)) = &self.message {
                     if now - since < MESSAGE_SECS {
-                        ui.label(RichText::new(text).color(Color32::from_rgb(230, 160, 40)));
+                        ui.label(RichText::new(text).color(WARNING));
                     } else {
                         self.message = None;
                     }
@@ -207,7 +284,7 @@ impl Switcher {
         }
     }
 
-    fn output_view(&self, ui: &mut egui::Ui, view: &View<'_>, area: Rect, output: Output) {
+    fn output_view(&mut self, ui: &mut egui::Ui, view: &View<'_>, area: Rect, output: Output) {
         let state = view.state;
         let (title, color, texture, input) = match output {
             Output::Preview => ("PREVIEW", TALLY_PREVIEW, view.images.preview, state.preview),
@@ -227,7 +304,11 @@ impl Switcher {
             egui::FontId::proportional(14.0),
             color,
         );
-        let body = Rect::from_min_max(area.min + Vec2::new(0.0, 24.0), area.max).shrink(6.0);
+        let mut body = Rect::from_min_max(area.min + Vec2::new(0.0, 24.0), area.max).shrink(6.0);
+        let video = input.and_then(|id| state.input(id)?.playback.map(|p| (id, p)));
+        if video.is_some() {
+            body.max.y -= CONTROLS_HEIGHT;
+        }
         let aspect = state.format.resolution.aspect_ratio();
         let size = if body.width() / body.height().max(1.0) > aspect {
             Vec2::new(body.height() * aspect, body.height())
@@ -240,6 +321,78 @@ impl Switcher {
         egui::Image::from_texture((texture, size)).paint_at(ui, rect);
         ui.painter()
             .rect_stroke(rect, 0.0, Stroke::new(2.0, color), StrokeKind::Outside);
+        if let Some((id, playback)) = video {
+            let controls = Rect::from_min_size(
+                egui::pos2(rect.left(), rect.bottom() + 4.0),
+                Vec2::new(rect.width(), CONTROLS_HEIGHT - 4.0),
+            );
+            ui.scope_builder(egui::UiBuilder::new().max_rect(controls), |ui| {
+                ui.push_id(output.name(), |ui| {
+                    self.video_controls(ui, view, id, playback)
+                });
+            });
+        }
+    }
+
+    /// Play / pause, back to the start, position (spec `ui.md`, « Contrôles vidéo »).
+    fn video_controls(
+        &mut self,
+        ui: &mut egui::Ui,
+        view: &View<'_>,
+        id: InputId,
+        playback: Playback,
+    ) {
+        let timeline = (view.io.timeline)(id).unwrap_or_default();
+        ui.horizontal(|ui| {
+            let command = if playback.playing {
+                ui.button("Pause")
+                    .clicked()
+                    .then_some(Command::Pause { input: id })
+            } else {
+                ui.button("Lecture")
+                    .clicked()
+                    .then_some(Command::Play { input: id })
+            };
+            if let Some(command) = command {
+                self.send(ui, view, command);
+            }
+            if ui
+                .button("Début")
+                .on_hover_text("Revenir au début")
+                .clicked()
+            {
+                self.send(ui, view, Command::Restart { input: id });
+            }
+            let duration = timeline.duration_ms.unwrap_or(0);
+            let mut position = match self.scrub {
+                Some((scrubbed, ms)) if scrubbed == id => ms,
+                _ => timeline.position_ms.min(duration) as f64,
+            };
+            let time = ui.label(
+                RichText::new(format!(
+                    "{} / {}{}",
+                    clock(position as u64),
+                    clock(duration),
+                    if timeline.ended { " · fin" } else { "" }
+                ))
+                .monospace(),
+            );
+            ui.spacing_mut().slider_width = ui.available_width().max(40.0);
+            let slider = ui
+                .add_enabled(
+                    duration > 0,
+                    egui::Slider::new(&mut position, 0.0..=duration as f64).show_value(false),
+                )
+                .labelled_by(time.id);
+            if slider.dragged() {
+                self.scrub = Some((id, position));
+            }
+            if slider.drag_stopped() || (slider.changed() && !slider.dragged()) {
+                self.scrub = None;
+                let ms = position.round() as u64;
+                self.send(ui, view, Command::SetPosition { input: id, ms });
+            }
+        });
     }
 
     fn transition_column(&mut self, ui: &mut egui::Ui, view: &View<'_>) {
@@ -404,9 +557,43 @@ impl Switcher {
             );
         }
         ui.separator();
-        for label in ["Caméra / capture", "Vidéo", "Image"] {
-            ui.add_enabled(false, egui::Button::new(label))
-                .on_disabled_hover_text("Bientôt (Phase 1, étapes 5 à 8)");
+        let unavailable = view.io.unavailable;
+        ui.add_enabled_ui(unavailable.is_none(), |ui| {
+            ui.menu_button("Caméra / capture", |ui| {
+                if view.io.devices.is_empty() {
+                    ui.label(RichText::new("Aucun périphérique détecté").weak());
+                }
+                for device in view.io.devices {
+                    if ui
+                        .button(&device.name)
+                        .on_hover_text(&device.id.0)
+                        .clicked()
+                    {
+                        let name: String = device.name.chars().take(MAX_NAME_CHARS).collect();
+                        let spec = InputSpec::Capture {
+                            device: device.id.clone(),
+                        };
+                        let name = (!name.trim().is_empty()).then_some(name);
+                        self.send(ui, view, Command::AddInput { spec, name });
+                        ui.close();
+                    }
+                }
+            });
+            if ui.button("Vidéo…").clicked() {
+                self.file_request = Some(FileKind::Video);
+                ui.close();
+            }
+        });
+        if unavailable.is_some() {
+            ui.label(
+                RichText::new("GStreamer introuvable :\ncaméras et vidéos indisponibles")
+                    .small()
+                    .color(WARNING),
+            );
+        }
+        if ui.button("Image…").clicked() {
+            self.file_request = Some(FileKind::Image);
+            ui.close();
         }
     }
 
@@ -455,6 +642,11 @@ impl Switcher {
                         format!("Vignette {number}"),
                     )
                 });
+                // Mode (size, rate, format) on hover.
+                let thumb = match source_mode(input, (view.io.capture_mode)(id)) {
+                    Some(mode) => thumb.on_hover_text(mode),
+                    None => thumb,
+                };
                 if thumb.clicked() {
                     self.send(ui, view, Command::SetPreview { input: id });
                 }
@@ -654,6 +846,43 @@ enum Output {
     Program,
 }
 
+impl Output {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Preview => "preview",
+            Self::Program => "program",
+        }
+    }
+}
+
+/// « 01:03 » (minutes : secondes), hours added past one hour.
+fn clock(ms: u64) -> String {
+    let s = ms / 1000;
+    match s / 3600 {
+        0 => format!("{:02}:{:02}", s / 60, s % 60),
+        h => format!("{h}:{:02}:{:02}", s / 60 % 60, s % 60),
+    }
+}
+
+/// What the thumbnail tooltip says about an input's source: the capture mode, and the
+/// format of the pictures it delivers.
+fn source_mode(input: &InputState, capture: Option<String>) -> Option<String> {
+    let delivered = match input.status {
+        InputStatus::Live { source: Some(f) } => Some(format!(
+            "{} {}{}",
+            f.resolution,
+            f.pixel,
+            f.rate.map(|r| format!(" {r}")).unwrap_or_default()
+        )),
+        _ => None,
+    };
+    match (capture, delivered) {
+        (Some(c), Some(d)) => Some(format!("Mode {c} → {d}")),
+        (Some(c), None) => Some(format!("Mode {c}")),
+        (None, d) => d,
+    }
+}
+
 /// « Fade 0,5 s », « Cut ».
 fn describe(setting: TransitionSetting) -> String {
     match setting.effect {
@@ -680,7 +909,7 @@ fn status_overlay(ui: &egui::Ui, rect: Rect, input: &InputState) {
         egui::Align2::CENTER_CENTER,
         text,
         egui::FontId::proportional(12.0),
-        Color32::from_rgb(230, 160, 40),
+        WARNING,
     );
 }
 
@@ -695,5 +924,12 @@ mod tests {
         assert_eq!(describe(TransitionSetting::fade(1500)), "Fade 1,5 s");
         assert_eq!(describe(TransitionSetting::fade(0)), "Cut");
         assert_eq!(describe(TransitionSetting::CUT), "Cut");
+    }
+
+    #[test]
+    fn clock_labels() {
+        assert_eq!(clock(0), "00:00");
+        assert_eq!(clock(63_999), "01:03");
+        assert_eq!(clock(3_725_000), "1:02:05");
     }
 }

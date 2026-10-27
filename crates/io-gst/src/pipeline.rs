@@ -433,8 +433,6 @@ impl GstInput {
     }
 
     /// Whether `videoconvert` converts (the source format is not uploaded as is).
-    // Shown in the statistics with the add-input UI (step 8c).
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn converting(&self) -> bool {
         self.shared.converting.load(Ordering::Relaxed)
     }

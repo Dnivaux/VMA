@@ -13,6 +13,8 @@ vma-clock.workspace = true
 vma-engine.workspace = true
 vma-compositor.workspace = true
 egui.workspace = true
+rfd.workspace = true
+tracing.workspace = true
 
 [dev-dependencies]
 # Headless egui tests driven through AccessKit (test only, not in the binary).

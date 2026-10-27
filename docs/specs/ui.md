@@ -74,10 +74,11 @@ refusées, `journal_dropped`.
   `MainUi` le relie au moteur (trois `FrameReader` : Program, Preview, atlas des vignettes,
   mis à jour en début de frame, invariant ADR 0001).
 - Ajouter : **Couleur** (6 couleurs prêtes + sélecteur) et **Mire** ; Caméra, Vidéo, Image
-  sont grisés jusqu'aux étapes 5–8. Une session normale démarre **vide**, comme la référence
+  sont grisés jusqu'aux étapes 5–8 (actifs depuis l'étape 8c). Une session normale démarre **vide**, comme la référence
   (le mode `--soak` met une mire à l'antenne).
 - **Contrôles vidéo** sous Preview / Program (lecture, pause, position) : reportés à
-  l'étape 8, avec les vidéos ; le bouton Loop des vignettes et des réglages est déjà là.
+  l'étape 8, avec les vidéos (faits à l'étape 8c) ; le bouton Loop des vignettes et des
+  réglages est déjà là.
 - T-Bar : barre verticale, **haut = Program seul, bas = transition terminée**. Arrivée en bas,
   la transition se termine (échange) et le reste du geste est ignoré ; au relâchement, la
   T-Bar repart en haut (observé sur la référence). Chaque position n'est envoyée qu'une fois.
@@ -94,12 +95,43 @@ refusées, `journal_dropped`.
   (format source, reçues / s sur ~1 s, répétées, sautées, latence p50 / p99 / max). Le nombre
   de conversions `videoconvert` arrivera avec `io-gst` (étape 7).
 
+## Mise en œuvre (étape 8c, 2026-10-27) : capture, fichiers, contrôles vidéo
+- L'UI ne dépend pas de GStreamer : `MainUi` reçoit un `IoStatus` (implémenté par l'app
+  au-dessus de `vma_io_gst::IoRuntime`) : GStreamer indisponible, périphériques connectés,
+  mode de capture et conversion par input. `MainUi` possède `vma-io` et le libère après le
+  moteur. Le `Switcher` lit ces infos dans `View::io` (`IoView`), plus `Timelines` pour la
+  position des vidéos.
+- **Ajouter** :
+  - **Caméra / capture** : sous-menu des périphériques connectés, nom affiché, identifiant au
+    survol, « Aucun périphérique détecté » sinon ; `AddInput { Capture, name: nom du
+    périphérique }` ;
+  - **Vidéo…** et **Image…** : le `Switcher` ne fait que noter la demande
+    (`take_file_request`) ; `MainUi` ouvre le sélecteur natif `rfd` sur un thread à part
+    (`vma-file-dialog` : l'UI continue de s'afficher), puis envoie `AddInput { File | Image }`.
+    Filtres : vidéos (mp4, mov, mkv, webm, avi, m4v, mxf, ts, mts), images (png, jpg, jpeg),
+    et « Tous les fichiers ». Linux : portail XDG (pas de GTK lié) ;
+  - **GStreamer introuvable** : Caméra et Vidéo grisés avec un message dans le menu, et un
+    avertissement permanent dans la barre du haut (raison au survol) ; les images restent
+    possibles.
+- **Contrôles vidéo** sous Preview et Program quand l'input affiché est une vidéo : Lecture
+  / Pause (selon `playing` de l'état), Début (`Restart`), temps « 00:12 / 01:03 » (« · fin »
+  à la fin sans Loop), curseur de position : `SetPosition` envoyé une fois, au relâchement (ou
+  à une valeur posée au clavier / par l'accessibilité), le curseur suit la souris pendant le
+  glissé. Pas de glyphes ▶ / ⏸ : les polices d'egui ne les ont pas toutes, libellés texte.
+- **Vignettes** : au survol, le mode (« Mode 1280x720 30p MJPEG → 1280x720 I420 30p » pour une
+  capture, le format livré sinon).
+- **Statistiques**, par input : mode de capture, conversion (« aucune » ou « videoconvert
+  (CPU) »).
+
 ## Critères d'acceptation
 | Critère | Test |
 |---|---|
 | Chaque clic, double-clic, bouton, menu, T-Bar et raccourci émet exactement la `Command` attendue (A11) | `crates/ui/tests/switcher.rs` (10 tests, `egui_kittest` piloté par AccessKit, `CommandSender::probe`) |
+| Ajouter : caméra listée → `AddInput { Capture }` nommé ; Vidéo… / Image… → demande de fichier, aucune commande avant le choix | `switcher::add_menu_capture_devices_and_files` |
+| GStreamer absent : avertissement, Caméra et Vidéo désactivés, Image possible | `switcher::without_gstreamer_capture_and_video_are_disabled` |
+| Contrôles vidéo : Lecture / Pause selon l'état, Début, position (une `SetPosition`), temps affiché | `switcher::video_controls` |
 | Raccourcis ignorés quand un champ texte a le focus | `switcher::double_click_opens_input_settings_and_typing_does_not_trigger_shortcuts` (vérifié : échoue si la protection est retirée) |
 | L'UI reflète un nouvel état au plus une frame UI après sa publication | `switcher::ui_follows_the_new_state_on_the_next_frame` |
 | Tally conforme, y compris pendant une transition et à la T-Bar | `tally::tests::red_green_and_both_red_during_a_transition` |
 | Chaque widget a un nom accessible | contrôle automatique d'`egui_kittest` dans chaque test |
-| Utilisation réelle : chaque type d'input, Quick Play, Cut, 4 boutons, T-Bar, contrôles vidéo, à la souris et au clavier | checklist `docs/manual-tests/phase1-inputs.md` |
+| Utilisation réelle : chaque type d'input, Quick Play, Cut, 4 boutons, T-Bar, contrôles vidéo, à la souris et au clavier ; sélecteur de fichier natif (Linux, Windows) | checklist `docs/manual-tests/phase1-inputs.md` |

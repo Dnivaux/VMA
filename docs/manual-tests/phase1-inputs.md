@@ -52,7 +52,25 @@ Cocher chaque case ; noter tout ce qui surprend sous « Remarques ».
 - [ ] Après la session : `logs/commands-AAAA-MM-JJ.jsonl` contient une ligne par action
       (`"source":"ui"`), et des lignes `"source":"render"` pour les fondus.
 
-## Étape 8 — capture (à passer avec l'étape 8c : ajout d'input dans l'UI)
+## Étape 8 — vidéos et images
+Préparer une vidéo courte (quelques secondes, avec du son) et une image PNG ou JPEG.
+- [ ] « + Ajouter → Image… » : le sélecteur de fichier natif s'ouvre ; **pendant qu'il est
+      ouvert, le Program continue de bouger** dans la fenêtre ; choisir l'image : elle arrive.
+- [ ] « + Ajouter → Vidéo… » : choisir la vidéo ; l'input apparaît **en pause sur sa première
+      image** ; le son n'est pas joué (Phase 3).
+- [ ] Mettre la vidéo en Preview : sous la Preview, **Lecture** la lance ; le temps avance
+      (« 00:03 / 00:10 ») ; **Pause** la fige sur l'image courante ; **Début** revient au
+      début.
+- [ ] Glisser le curseur de position : l'image suit **au relâchement**.
+- [ ] Sans Loop, laisser finir : la **dernière image reste** (« · fin »), pas de noir ;
+      Lecture repart du début.
+- [ ] Loop (vignette) activé : la boucle est **invisible** (pas de noir, pas d'à-coup).
+- [ ] Auto-lecture (Réglages, valeurs par défaut) : une vidéo en pause qui passe au Program
+      par un Fade **démarre** ; celle qui quitte le Program **se met en pause**.
+- [ ] Statistiques : la vidéo affiche son format, « conversion : aucune » pour du H.264 / MJPEG
+      courant.
+
+## Étape 8 — capture
 Il faut une webcam USB (et, sous Windows, la même checklist).
 - [ ] « + Ajouter → Capture » : la webcam est listée **une seule fois** (pas de doublon
       PipeWire sous Linux) ; l'ajouter : l'image arrive en moins de 2 s.

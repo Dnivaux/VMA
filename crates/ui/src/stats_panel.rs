@@ -2,10 +2,18 @@ use egui::{Color32, RichText};
 use std::time::Duration;
 use vma_engine::{FrameReader, InputStatus, RenderEngine};
 
+use crate::IoStatus;
+
 const OK: Color32 = Color32::from_rgb(80, 200, 120);
 const BAD: Color32 = Color32::from_rgb(230, 70, 70);
 
-pub(crate) fn show(ui: &mut egui::Ui, engine: &RenderEngine, reader: &FrameReader, adapter: &str) {
+pub(crate) fn show(
+    ui: &mut egui::Ui,
+    engine: &RenderEngine,
+    io: &dyn IoStatus,
+    reader: &FrameReader,
+    adapter: &str,
+) {
     let clock = engine.clock_stats().snapshot();
     let render = engine.render_stats().snapshot();
     let ui_dt = ui.input(|i| i.stable_dt);
@@ -74,15 +82,16 @@ pub(crate) fn show(ui: &mut egui::Ui, engine: &RenderEngine, reader: &FrameReade
             );
         });
 
-    inputs(ui, engine);
+    inputs(ui, engine, io);
 
     ui.separator();
     ui.label(RichText::new(adapter).small().weak());
 }
 
 /// One line per input with a picture feed (spec `ui.md`, « Statistiques »): state, source
-/// format, pictures received per second, repeated, skipped, arrival → tick latency.
-fn inputs(ui: &mut egui::Ui, engine: &RenderEngine) {
+/// format, capture mode, conversion, pictures received per second, repeated, skipped,
+/// arrival → tick latency.
+fn inputs(ui: &mut egui::Ui, engine: &RenderEngine, io: &dyn IoStatus) {
     let state = engine.state().load();
     let feeds = engine.input_stats().load();
     if feeds.is_empty() {
@@ -113,6 +122,14 @@ fn inputs(ui: &mut egui::Ui, engine: &RenderEngine) {
                     InputStatus::SignalLost { .. } => "signal perdu".into(),
                 };
                 row(ui, &input.name, status);
+                if let Some(mode) = io.capture_mode(*id) {
+                    row(ui, "  mode de capture", mode);
+                }
+                match io.converting(*id) {
+                    Some(true) => row(ui, "  conversion", "videoconvert (CPU)".into()),
+                    Some(false) => row(ui, "  conversion", "aucune".into()),
+                    None => {}
+                }
                 // Received per second, from the previous sample kept in egui's memory.
                 let key = egui::Id::unique(("vma.input_rate", id.0));
                 let previous: Option<(u64, f64, f64)> = ui.data(|d| d.get_temp(key));

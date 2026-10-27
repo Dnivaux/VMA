@@ -28,8 +28,17 @@ const TIMELINE_PERIOD: Duration = Duration::from_millis(250);
 /// How often the list of capture devices is read again.
 const DEVICES_PERIOD: Duration = Duration::from_secs(1);
 
-/// Mode of every open capture device.
-type Modes = Arc<ArcSwap<Vec<(InputId, CaptureMode)>>>;
+/// What a running pipeline reports for the statistics and the UI.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PipelineInfo {
+    /// Capture device: the mode it was opened in.
+    pub mode: Option<CaptureMode>,
+    /// `videoconvert` converts the pictures (the source format is not uploaded as is).
+    pub converting: bool,
+}
+
+/// Info of every running pipeline.
+type Infos = Arc<ArcSwap<Vec<(InputId, PipelineInfo)>>>;
 
 /// One input backed by a pipeline: running, or waiting to be retried.
 #[derive(Debug)]
@@ -87,9 +96,13 @@ impl<F: Feeds> PipelineSlot<F> {
         self.running.as_ref()?.timeline()
     }
 
-    /// Capture device: the mode it runs in (`None` while the pipeline is down).
-    pub(crate) fn capture_mode(&self) -> Option<CaptureMode> {
-        self.running.as_ref()?.capture_mode().cloned()
+    /// What the running pipeline reports (`None` while it is down).
+    pub(crate) fn info(&self) -> Option<PipelineInfo> {
+        let running = self.running.as_ref()?;
+        Some(PipelineInfo {
+            mode: running.capture_mode().cloned(),
+            converting: running.converting(),
+        })
     }
 
     /// Starts, watches and restarts the pipeline; reports losses through `emit`.
@@ -135,7 +148,7 @@ pub struct IoRuntime {
     thread: Option<JoinHandle<()>>,
     gstreamer: Result<(), String>,
     devices: DeviceList,
-    modes: Modes,
+    infos: Infos,
 }
 
 impl IoRuntime {
@@ -156,7 +169,7 @@ impl IoRuntime {
         }
         let stop = Arc::new(AtomicBool::new(false));
         let devices = DeviceList::default();
-        let modes = Modes::default();
+        let infos = Infos::default();
         let worker = Worker {
             port,
             gstreamer: gstreamer.clone(),
@@ -165,7 +178,7 @@ impl IoRuntime {
             devices: devices.clone(),
             monitor: None,
             devices_at: Instant::now(),
-            modes: Arc::clone(&modes),
+            infos: Arc::clone(&infos),
         };
         let thread_stop = Arc::clone(&stop);
         let thread = std::thread::Builder::new()
@@ -176,7 +189,7 @@ impl IoRuntime {
             thread: Some(thread),
             gstreamer,
             devices,
-            modes,
+            infos,
         })
     }
 
@@ -191,13 +204,14 @@ impl IoRuntime {
         self.devices.infos()
     }
 
-    /// The mode a capture input was opened in (`None` while it is not running).
-    pub fn capture_mode(&self, input: InputId) -> Option<CaptureMode> {
-        self.modes
+    /// What the pipeline of `input` reports: capture mode, conversion (`None` while it is
+    /// not running, or for an input without a pipeline).
+    pub fn pipeline_info(&self, input: InputId) -> Option<PipelineInfo> {
+        self.infos
             .load()
             .iter()
             .find(|(id, _)| *id == input)
-            .map(|(_, m)| m.clone())
+            .map(|(_, i)| i.clone())
     }
 }
 
@@ -220,7 +234,7 @@ struct Worker {
     devices: DeviceList,
     monitor: Option<Monitor>,
     devices_at: Instant,
-    modes: Modes,
+    infos: Infos,
 }
 
 impl Worker {
@@ -293,13 +307,13 @@ impl Worker {
         if all != *self.port.timelines.load() {
             self.port.timelines.store(all);
         }
-        let modes: Vec<(InputId, CaptureMode)> = self
+        let infos: Vec<(InputId, PipelineInfo)> = self
             .pipelines
             .iter()
-            .filter_map(|p| p.capture_mode().map(|m| (p.input, m)))
+            .filter_map(|p| p.info().map(|i| (p.input, i)))
             .collect();
-        if modes != **self.modes.load() {
-            self.modes.store(Arc::new(modes));
+        if infos != **self.infos.load() {
+            self.infos.store(Arc::new(infos));
         }
     }
 
@@ -464,7 +478,7 @@ mod tests {
         assert_eq!(losses.len(), 2, "{losses:?}");
         assert_eq!(losses[1].0, 2);
         assert!(losses[1].1.contains("is not connected"), "{losses:?}");
-        assert!(slot.capture_mode().is_some());
+        assert!(slot.info().and_then(|i| i.mode).is_some());
     }
 
     #[test]

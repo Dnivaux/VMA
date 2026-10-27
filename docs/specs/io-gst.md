@@ -149,8 +149,9 @@ le compositeur.
   bruts envoyés tels quels d'abord, puis les autres bruts, puis MJPEG) ; élément créé par
   `Device::create_element`. Pipeline : `<périphérique> ! capsfilter (mode) [! decodebin] !
   videoconvert ! appsink sync=false`, *watchdog* actif (silence = perte, comme les autres
-  sources live). Le mode choisi est journalisé et publié (`IoRuntime::capture_mode(input)`) ;
-  son affichage dans l'UI vient avec l'étape 8c.
+  sources live). Le mode choisi est journalisé et publié avec la conversion
+  (`IoRuntime::pipeline_info(input)` → `PipelineInfo { mode, converting }`), affichés par
+  l'UI (survol des vignettes, Statistiques).
 - Les caps autres que `video/x-raw` et `image/jpeg` (caméras H.264…) sont ignorées en Phase 1.
 - **Tests sans caméra** (CI et machine de dev n'en ont pas) : une fausse caméra (sous-classe de
   `gst::Device` dans les tests) annonce des caps de webcam et joue `videotestsrc`, brut ou via
@@ -167,7 +168,7 @@ le compositeur.
 | Fichier absent ou illisible → signal perdu | `pipeline::tests::missing_or_unreadable_file_is_lost` | CI |
 | Erreur forcée du pipeline → `SignalLost`, puis reconnexion → `Live` (A8) | `pipeline::tests::errors_end_of_stream_and_silence_are_losses` (`identity error-after`, EOS, `valve` fermée), `runtime::tests::lost_pipeline_is_reported_and_reconnected`, `failing_start_counts_attempts_with_backoff` | CI |
 | Débrancher / rebrancher la webcam pendant le Program | checklist `docs/manual-tests/phase1-inputs.md` | manuel |
-| GStreamer absent → l'application démarre, inputs capture / fichier désactivés avec message | `runtime::tests::without_gstreamer_images_still_work` (message dans l'UI : étape 8, avec l'ajout d'input) | CI |
+| GStreamer absent → l'application démarre, inputs capture / fichier désactivés avec message | `runtime::tests::without_gstreamer_images_still_work` ; message dans l'UI : `vma-ui` `switcher::without_gstreamer_capture_and_video_are_disabled` | CI |
 | Image fixe au Program (fit), image absente = signal perdu, retrait = feed détaché | `tests/runtime.rs` (3 tests, moteur réel) | CI |
 | Mode de capture choisi selon les règles ci-dessus | `mode::tests` (6 tests sur des caps de webcam, de caméra virtuelle à plages, H.264 ignoré) | CI |
 | Périphérique ouvert dans le mode choisi ; MJPEG décodé sans conversion, brut tel quel | `pipeline::tests::capture_opens_the_chosen_mode` (fausse caméra) | CI |

@@ -298,5 +298,5 @@ fn capture_of_a_missing_device_is_a_lost_signal() {
         status(&rig, id),
         Some(InputStatus::SignalLost { attempts: 1, .. })
     )));
-    assert_eq!(rig.io.capture_mode(id), None);
+    assert_eq!(rig.io.pipeline_info(id), None);
 }

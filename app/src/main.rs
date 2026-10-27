@@ -84,9 +84,9 @@ fn main() -> anyhow::Result<ExitCode> {
 }
 
 struct App<'a> {
+    /// Owns the engine and `vma-io` (dropped after the engine: its requests channel closes
+    /// first).
     ui: MainUi,
-    /// `vma-io`, dropped after the engine (inside `ui`): its requests channel closes first.
-    _io: Option<vma_io_gst::IoRuntime>,
     render_stats: Arc<RenderStats>,
     ui_probe: Arc<soak::UiProbe>,
     device_lost: &'a OnceLock<String>,
@@ -182,12 +182,43 @@ impl<'a> App<'a> {
         }
 
         Ok(Self {
-            ui: MainUi::new(engine, readers, textures, adapter),
-            _io: io,
+            ui: MainUi::new(engine, readers, textures, adapter, Box::new(Io(io))),
             render_stats,
             ui_probe,
             device_lost,
         })
+    }
+}
+
+/// `vma-io` as the UI sees it (the UI does not depend on GStreamer).
+#[derive(Debug)]
+struct Io(Option<vma_io_gst::IoRuntime>);
+
+impl vma_ui::IoStatus for Io {
+    fn unavailable(&self) -> Option<String> {
+        match &self.0 {
+            None => Some("le thread d'entrées n'a pas démarré (voir le journal)".into()),
+            Some(io) => io.gstreamer_error().map(str::to_owned),
+        }
+    }
+
+    fn devices(&self) -> Vec<vma_ui::CaptureChoice> {
+        self.0
+            .iter()
+            .flat_map(|io| io.devices())
+            .map(|d| vma_ui::CaptureChoice {
+                id: d.id,
+                name: d.name,
+            })
+            .collect()
+    }
+
+    fn capture_mode(&self, input: vma_core::InputId) -> Option<String> {
+        Some(self.0.as_ref()?.pipeline_info(input)?.mode?.to_string())
+    }
+
+    fn converting(&self, input: vma_core::InputId) -> Option<bool> {
+        Some(self.0.as_ref()?.pipeline_info(input)?.converting)
     }
 }
 

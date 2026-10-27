@@ -54,6 +54,7 @@ gstreamer-app = "0.25"                                       # MIT OR Apache-2.0
 gstreamer-video = "0.25"                                     # MIT OR Apache-2.0
 serde = { version = "1.0", features = ["derive"] }           # MIT OR Apache-2.0
 serde_json = "1.0"                                           # MIT OR Apache-2.0
+rfd = "0.17"                                                 # MIT (sélecteur de fichier natif ; Linux : portail XDG via zbus, pas de GTK ; Windows : API Win32)
 
 [workspace.lints.rust]
 unsafe_code = "deny"
