@@ -461,7 +461,7 @@ fn report(options: &SoakOptions, soak: &SoakContext, run: &Run<'_>) -> (String, 
     );
     let _ = writeln!(
         s,
-        "| Rendu CPU moyen · max | {} · {} |",
+        "| Rendu CPU : moyenne glissante (≈ 1 s, fin du run) · max du run | {} · {} |",
         ms(r.avg_cpu),
         ms(r.max_cpu)
     );
