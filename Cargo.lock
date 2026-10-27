@@ -1398,6 +1398,8 @@ dependencies = [
  "num-traits",
  "png",
  "tiff",
+ "zune-core",
+ "zune-jpeg",
 ]
 
 [[package]]
@@ -3286,6 +3288,11 @@ dependencies = [
 [[package]]
 name = "vma-io-gst"
 version = "0.0.1"
+dependencies = [
+ "image",
+ "thiserror 2.0.21",
+ "vma-core",
+]
 
 [[package]]
 name = "vma-io-html"

@@ -47,7 +47,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] } # MIT
 tracing-appender = "0.2"                                     # MIT
 bytemuck = { version = "1.25", features = ["derive"] }       # MIT OR Apache-2.0 OR Zlib
 pollster = "1.0"                                             # MIT OR Apache-2.0
-image = { version = "0.25", default-features = false, features = ["png"] } # MIT OR Apache-2.0
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] } # MIT OR Apache-2.0 (PNG: png, MIT OR Apache-2.0 ; JPEG: zune-jpeg, MIT OR Apache-2.0 OR Zlib)
 serde = { version = "1.0", features = ["derive"] }           # MIT OR Apache-2.0
 serde_json = "1.0"                                           # MIT OR Apache-2.0
 
