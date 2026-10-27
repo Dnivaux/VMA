@@ -9,7 +9,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use vma_core::{ColorInfo, InputId};
-use vma_engine::{InputSpec, IoEvent, IoEventSender, IoPort, IoRequest};
+use vma_engine::{InputSpec, IoEvent, IoEventSender, IoPort, IoRequest, Timeline};
 
 use crate::IoError;
 use crate::feeds::{Feeds, VideoFormat};
@@ -19,6 +19,8 @@ use crate::supervisor::retry_delay;
 
 /// How often `vma-io` checks its pipelines (bus, watchdog, retries) without requests.
 const POLL: Duration = Duration::from_millis(20);
+/// How often the position of the video files is published (4 times a second).
+const TIMELINE_PERIOD: Duration = Duration::from_millis(250);
 
 /// One input backed by a pipeline: running, or waiting to be retried.
 #[derive(Debug)]
@@ -30,11 +32,12 @@ pub(crate) struct PipelineSlot<F: Feeds> {
     /// Consecutive failed attempts (reset once pictures flow again).
     attempts: u32,
     retry_at: Instant,
+    /// Video file: what the operator asked for, applied again after a reconnection.
+    playing: bool,
+    looping: bool,
 }
 
 impl<F: Feeds> PipelineSlot<F> {
-    // Created for capture and file inputs (step 8); exercised by the tests until then.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn new(input: InputId, recipe: Recipe, feeds: F, now: Instant) -> Self {
         Self {
             input,
@@ -43,12 +46,41 @@ impl<F: Feeds> PipelineSlot<F> {
             running: None,
             attempts: 0,
             retry_at: now,
+            playing: false,
+            looping: false,
         }
+    }
+
+    /// Video file: play or pause (kept for the next pipeline if it is down).
+    pub(crate) fn set_playing(&mut self, playing: bool) {
+        self.playing = playing;
+        if let Some(running) = &mut self.running {
+            running.set_playing(playing);
+        }
+    }
+
+    /// Video file: seek (lost if the pipeline is down: a new one starts at 0).
+    pub(crate) fn seek(&mut self, ms: u64) {
+        if let Some(running) = &mut self.running {
+            running.seek(ms);
+        }
+    }
+
+    pub(crate) fn set_looping(&mut self, looping: bool) {
+        self.looping = looping;
+        if let Some(running) = &self.running {
+            running.set_looping(looping);
+        }
+    }
+
+    /// Video file: where it is (`None` for a live source or while the pipeline is down).
+    pub(crate) fn timeline(&self) -> Option<Timeline> {
+        self.running.as_ref()?.timeline()
     }
 
     /// Starts, watches and restarts the pipeline; reports losses through `emit`.
     pub(crate) fn tick(&mut self, now: Instant, emit: &mut impl FnMut(IoEvent)) {
-        match &self.running {
+        match &mut self.running {
             Some(running) => match running.poll(now) {
                 Some(reason) => {
                     self.running = None;
@@ -59,7 +91,11 @@ impl<F: Feeds> PipelineSlot<F> {
             },
             None if now >= self.retry_at => {
                 match GstInput::start(self.input, &self.recipe, self.feeds.clone()) {
-                    Ok(running) => self.running = Some(running),
+                    Ok(mut running) => {
+                        running.set_looping(self.looping);
+                        running.set_playing(self.playing);
+                        self.running = Some(running);
+                    }
                     Err(e) => self.lost(now, e.to_string(), emit),
                 }
             }
@@ -107,6 +143,7 @@ impl IoRuntime {
             port,
             gstreamer: gstreamer.clone(),
             pipelines: Vec::new(),
+            timelines_at: Instant::now(),
         };
         let thread_stop = Arc::clone(&stop);
         let thread = std::thread::Builder::new()
@@ -140,6 +177,7 @@ struct Worker {
     port: IoPort,
     gstreamer: Result<(), String>,
     pipelines: Vec<PipelineSlot<vma_engine::FeedRegistry>>,
+    timelines_at: Instant,
 }
 
 impl Worker {
@@ -155,6 +193,10 @@ impl Worker {
             for slot in &mut self.pipelines {
                 slot.tick(now, &mut |e| send(events, e));
             }
+            if now >= self.timelines_at {
+                self.timelines_at = now + TIMELINE_PERIOD;
+                self.publish_timelines();
+            }
         }
         // Pipelines stop here, on `vma-io`.
         self.pipelines.clear();
@@ -164,8 +206,36 @@ impl Worker {
     fn handle(&mut self, request: IoRequest) {
         match request {
             IoRequest::Open { input, spec } => self.open(input, &spec),
-            IoRequest::Close { input } => self.pipelines.retain(|p| p.input != input),
-            other => tracing::debug!(request = ?other, "io request not handled yet (step 8)"),
+            IoRequest::Close { input } => {
+                self.pipelines.retain(|p| p.input != input);
+                self.publish_timelines();
+            }
+            IoRequest::Play { input } => self.with(input, |s| s.set_playing(true)),
+            IoRequest::Pause { input } => self.with(input, |s| s.set_playing(false)),
+            IoRequest::Seek { input, ms } => self.with(input, |s| s.seek(ms)),
+            IoRequest::SetLoop { input, enabled } => self.with(input, |s| s.set_looping(enabled)),
+        }
+    }
+
+    fn with(
+        &mut self,
+        input: InputId,
+        f: impl FnOnce(&mut PipelineSlot<vma_engine::FeedRegistry>),
+    ) {
+        match self.pipelines.iter_mut().find(|p| p.input == input) {
+            Some(slot) => f(slot),
+            None => tracing::debug!(%input, "playback request for an input without a pipeline"),
+        }
+    }
+
+    fn publish_timelines(&self) {
+        let all: Vec<(InputId, Timeline)> = self
+            .pipelines
+            .iter()
+            .filter_map(|p| p.timeline().map(|t| (p.input, t)))
+            .collect();
+        if all != *self.port.timelines.load() {
+            self.port.timelines.store(all);
         }
     }
 
@@ -187,10 +257,20 @@ impl Worker {
                     lost(e.to_string());
                 }
             }
-            InputSpec::Capture { .. } | InputSpec::File { .. } => match &self.gstreamer {
-                Err(e) => lost(IoError::GstreamerUnavailable(e.clone()).to_string()),
-                Ok(()) => lost("capture and file inputs arrive at step 8".into()),
-            },
+            InputSpec::Capture { .. } | InputSpec::File { .. } if self.gstreamer.is_err() => {
+                let e = self.gstreamer.clone().err().unwrap_or_default();
+                lost(IoError::GstreamerUnavailable(e).to_string());
+            }
+            InputSpec::File { path } => {
+                tracing::info!(%input, path = %path.display(), "opening video file");
+                self.pipelines.push(PipelineSlot::new(
+                    input,
+                    Recipe::file(path.clone()),
+                    self.port.feeds.clone(),
+                    Instant::now(),
+                ));
+            }
+            InputSpec::Capture { .. } => lost("capture inputs arrive at step 8b".into()),
             InputSpec::Color { .. } | InputSpec::TestSource { .. } => {}
         }
     }

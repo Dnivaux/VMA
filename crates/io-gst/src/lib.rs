@@ -3,9 +3,10 @@
 //!
 //! - [`still`]: still images (PNG, JPEG), decoded once to RGBA — no pipeline.
 //! - [`IoRuntime`]: the `vma-io` thread. It executes the requests of `vma-control` (open,
-//!   close…), runs one pipeline per input, reports lost signals and reconnects.
+//!   close, play, pause, seek, loop), runs one pipeline per input, reports lost signals and
+//!   reconnects, and publishes the position of the video files.
 //!
-//! Capture devices and video files land at step 8 of the Phase 1 plan (see `ROADMAP.md`).
+//! Capture devices land at step 8b of the Phase 1 plan (see `ROADMAP.md`).
 
 mod feeds;
 mod pipeline;

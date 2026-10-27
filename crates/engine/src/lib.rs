@@ -15,6 +15,7 @@ mod sequencer;
 mod sources;
 mod state;
 mod stats;
+mod timeline;
 mod triple;
 
 pub use command::{
@@ -35,3 +36,4 @@ pub use state::{
     Playback, Rejection, SourceFormat, State, TransitionState,
 };
 pub use stats::{RenderStats, RenderStatsSnapshot};
+pub use timeline::{Timeline, Timelines};

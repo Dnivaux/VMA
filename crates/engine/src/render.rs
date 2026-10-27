@@ -10,6 +10,7 @@ use crate::sequencer::{Composition, RenderFeedback, Sequencer};
 use crate::sources::{RenderSource, SOURCE_CAPACITY, SourceTable};
 use crate::state::{Format, State};
 use crate::stats::RenderStats;
+use crate::timeline::Timelines;
 use crate::triple::{Consumer, Producer, TripleIndices, triple};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
@@ -117,6 +118,7 @@ pub struct RenderEngine {
     state: StateReader,
     feeds: FeedRegistry,
     input_stats: InputStatsReader,
+    timelines: Timelines,
     io_port: Option<IoPort>,
 }
 
@@ -127,6 +129,8 @@ pub struct IoPort {
     pub requests: IoRequests,
     pub events: IoEventSender,
     pub feeds: FeedRegistry,
+    /// Where `vma-io` publishes the position of the video files.
+    pub timelines: Timelines,
 }
 
 /// The single consumer of one output's frames (typically the UI).
@@ -206,6 +210,7 @@ impl RenderEngine {
         );
         controller.set_io(io_tx);
         let input_stats = controller.input_stats();
+        let timelines = Timelines::default();
         let (commands, command_rx) = command_channel();
         let control_thread = control::spawn(
             controller,
@@ -265,10 +270,12 @@ impl RenderEngine {
                 state,
                 feeds: feeds.clone(),
                 input_stats,
+                timelines: timelines.clone(),
                 io_port: Some(IoPort {
                     requests: io_requests,
                     events: io_events,
                     feeds,
+                    timelines,
                 }),
             },
             Readers {
@@ -303,6 +310,11 @@ impl RenderEngine {
     /// Per-input statistics of the picture feeds (clonable).
     pub fn input_stats(&self) -> InputStatsReader {
         self.input_stats.clone()
+    }
+
+    /// Position and duration of the video files (clonable).
+    pub fn timelines(&self) -> Timelines {
+        self.timelines.clone()
     }
 
     pub fn control_stats(&self) -> Arc<ControlStats> {

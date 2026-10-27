@@ -39,7 +39,7 @@ choisi est affiché dans l'UI.
 Commandes `Play`, `Pause`, `Restart`, `SetPosition`, `SetLoop` (spec `commands`) exécutées sur
 `vma-io` : pause = pipeline en `PAUSED` (l'image courante reste affichée), lecture = `PLAYING`,
 redémarrage et position = seek précis. Position et durée lues 4 fois par seconde sur `vma-io`
-et publiées dans l'état. À l'ouverture, une vidéo est en pause sur sa première image (elle
+et publiées à côté de l'état (`Timelines`, voir « Mise en œuvre (étape 8a) »). À l'ouverture, une vidéo est en pause sur sa première image (elle
 démarre avec une transition si l'auto-lecture est active, ou par `Play`).
 
 ## Rééchantillonnage sur l'horloge maître
@@ -98,13 +98,45 @@ le compositeur.
   (spec `commands.md`). Le critère **A9** (fichier en boucle) passe à l'étape 8 avec
   l'input fichier.
 
+## Mise en œuvre (étape 8a, 2026-10-27) : fichiers vidéo
+- **Pipeline** : `uridecodebin` (chemin rendu absolu, puis URI) ; le premier flux vidéo va vers
+  `videoconvert ! appsink` (`sync=true`), tout autre flux (audio, 2ᵉ vidéo) vers un `fakesink`
+  cadencé par l'horloge (audio : Phase 3). Pas de *watchdog* : un fichier en pause ou fini se
+  tait sans être perdu ; une erreur du bus (fichier illisible, décodeur absent) ou un fichier
+  absent → `SignalLost`, puis reconnexion comme les autres inputs. Après une reconnexion, la
+  lecture et la boucle demandées sont réappliquées, la position repart de 0.
+- **Ouverture** : pipeline en `PAUSED` ; l'image de *preroll* (callback `new-preroll` de
+  l'appsink) est poussée dans le feed : l'input est live, en pause sur sa première image. Au
+  premier `ASYNC_DONE`, `vma-io` fait le premier seek de segment (à 0, ou à une position
+  demandée avant), puis passe en `PLAYING` si `Play` a déjà été demandé. Une image de preroll
+  n'est pas poussée deux fois (même PTS au passage en lecture, ou nouveau preroll au même
+  endroit).
+- **Boucle** : tous les seeks sont des seeks de *segment* (`SEGMENT | ACCURATE`, `FLUSH` sauf
+  pour la boucle). À la fin, `SEGMENT_DONE` est traité dans le *sync handler* du bus : avec
+  Loop, seek non-flush à 0 lancé aussitôt sur un thread de GStreamer (`call_async`), donc la
+  boucle suivante est mise en file derrière les dernières images de la précédente ; sans Loop,
+  rien ne vient plus et le feed garde la dernière image. « Fin atteinte » (`ended`) est
+  déclarée quand plus aucune image n'arrive depuis `max(100 ms, 3 périodes)` après
+  `SEGMENT_DONE` (les images encore en file sont montrées d'abord). `Play` après la fin repart
+  du début.
+- **N° d'image source** d'un fichier : son temps de flux (PTS ramené au segment) en images,
+  arrondi (Matroska stocke les temps à la milliseconde) ; il repart de 0 à chaque boucle.
+- **Position et durée** : `query_position` / `query_duration` 4 fois par seconde, publiées
+  dans `Timelines` (moteur : `IoPort::timelines` en écriture, `RenderEngine::timelines()` en
+  lecture) avec `ended`. Écart à la spec d'origine (« publiées dans l'état ») : dans l'état
+  versionné, la position aurait changé la version et rempli le journal 4 fois par seconde et
+  par vidéo ; ce qui est commandé (lecture, boucle) reste dans l'état.
+- Les fichiers de test sont générés par les tests : MJPEG (`jpegenc`) + Vorbis dans du
+  Matroska, des plugins `-base` / `-good` présents en CI sur les deux OS.
+
 ## Critères d'acceptation
 | Critère | Test | Où |
 |---|---|---|
 | `videotestsrc` 1080p50 → images publiées dans l'ordre, au bon rythme (± 2 %) | `pipeline::tests::live_test_source_delivers_in_order_at_its_rate` (± 1 image/s) | CI |
 | Chaque format accepté arrive sans `videoconvert` ; un format non listé passe par lui | `pipeline::tests::accepted_formats_arrive_without_conversion` (Y444 converti) | CI |
-| Fichier en boucle : ≥ 3 boucles, n° d'image continu modulo la durée, 0 image noire (A9) | fichier MKV généré par le test | CI |
-| Lecture / pause / redémarrage / position ; fin sans Loop = dernière image tenue (A20) | idem | CI |
+| Fichier en boucle : ≥ 3 boucles, n° d'image continu modulo la durée, 0 image noire (A9) | `pipeline::tests::looping_file_has_no_gap` (MKV généré, 25 i/s : écart max entre images 40,2 ms en local, seuil 100 ms) | CI |
+| Lecture / pause / redémarrage / position ; fin sans Loop = dernière image tenue (A20) | `pipeline::tests::file_playback_controls` ; de bout en bout (commandes → `vma-control` → `vma-io` → rendu) : `tests/runtime.rs::video_file_follows_the_playback_commands` | CI |
+| Fichier absent ou illisible → signal perdu | `pipeline::tests::missing_or_unreadable_file_is_lost` | CI |
 | Erreur forcée du pipeline → `SignalLost`, puis reconnexion → `Live` (A8) | `pipeline::tests::errors_end_of_stream_and_silence_are_losses` (`identity error-after`, EOS, `valve` fermée), `runtime::tests::lost_pipeline_is_reported_and_reconnected`, `failing_start_counts_attempts_with_backoff` | CI |
 | Débrancher / rebrancher la webcam pendant le Program | checklist `docs/manual-tests/phase1-inputs.md` | manuel |
 | GStreamer absent → l'application démarre, inputs capture / fichier désactivés avec message | `runtime::tests::without_gstreamer_images_still_work` (message dans l'UI : étape 8, avec l'ajout d'input) | CI |

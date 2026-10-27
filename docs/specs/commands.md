@@ -67,7 +67,10 @@ API native).
 | `auto_play` | démarrer à l'antenne : oui ; redémarrer : non ; pause en sortie d'antenne : oui (à confirmer) |
 | `mix_domain` | `Gamma` (défaut) / `Linear` |
 
-Par input vidéo : `playing`, `looping` (défaut : non), position. `status` d'un input : `Starting` → `Live { resolution, rate, format }` → `SignalLost { since,
+Par input vidéo : `playing`, `looping` (défaut : non). La position et la durée ne sont **pas**
+dans l'état versionné (elles changent en continu) : `vma-io` les publie 4 fois par seconde dans
+`Timelines` (`RenderEngine::timelines()`, comme les statistiques), avec `ended` (fin atteinte
+sans Loop). `status` d'un input : `Starting` → `Live { resolution, rate, format }` → `SignalLost { since,
 attempts }` → (reconnexion) `Starting`…
 
 ## Comportement

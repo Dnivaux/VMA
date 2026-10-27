@@ -1,5 +1,5 @@
 //! `vma-io` with the real engine on a GPU (a software adapter is enough): still images reach
-//! the Program, a missing one is a lost signal, inputs not available yet are reported lost.
+//! the Program, a missing one is a lost signal; a video file follows the playback commands.
 
 // Test code: panicking on failure is the intended behaviour.
 #![allow(
@@ -99,6 +99,37 @@ fn program_pixel(rig: &mut Rig, min_frame: u64, x: u32, y: u32) -> [u8; 4] {
     panic!("no Program frame at or after {min_frame}");
 }
 
+/// A 25 fps clip of `frames` pictures (64 × 36, MJPEG in Matroska), written with GStreamer.
+fn temp_clip(name: &str, frames: u32) -> PathBuf {
+    use gstreamer::prelude::*;
+    gstreamer::init().unwrap();
+    let path = std::env::temp_dir().join(format!("vma-io-{}-{name}.mkv", std::process::id()));
+    let pipeline = gstreamer::parse::launch(&format!(
+        "videotestsrc num-buffers={frames} \
+         ! video/x-raw,format=I420,width=64,height=36,framerate=25/1 \
+         ! jpegenc ! matroskamux ! filesink name=out"
+    ))
+    .unwrap()
+    .downcast::<gstreamer::Pipeline>()
+    .unwrap();
+    pipeline
+        .by_name("out")
+        .unwrap()
+        .set_property("location", path.to_str().unwrap());
+    pipeline.set_state(gstreamer::State::Playing).unwrap();
+    let message = pipeline
+        .bus()
+        .unwrap()
+        .timed_pop_filtered(
+            gstreamer::ClockTime::from_seconds(30),
+            &[gstreamer::MessageType::Eos, gstreamer::MessageType::Error],
+        )
+        .unwrap();
+    assert!(matches!(message.view(), gstreamer::MessageView::Eos(_)));
+    pipeline.set_state(gstreamer::State::Null).unwrap();
+    path
+}
+
 fn temp_png(name: &str, width: u32, height: u32, rgb: [u8; 3]) -> PathBuf {
     let path = std::env::temp_dir().join(format!("vma-io-{}-{name}.png", std::process::id()));
     image::RgbaImage::from_pixel(width, height, image::Rgba([rgb[0], rgb[1], rgb[2], 255]))
@@ -174,5 +205,79 @@ fn removing_an_image_input_detaches_its_feed() {
         .input_stats()
         .load()
         .is_empty()));
+    let _ = std::fs::remove_file(path);
+}
+
+/// A video file through `vma-control` and `vma-io`: live and paused on its first picture,
+/// then `Play`, `Pause`, `SetPosition` and `SetLoop` reach the pipeline; the timeline is
+/// published.
+#[test]
+fn video_file_follows_the_playback_commands() {
+    let rig = rig();
+    let path = temp_clip("commands", 50);
+    let id = add(&rig, InputSpec::File { path: path.clone() });
+    let send = |command| rig.engine.commands().send(Source::Script, command).unwrap();
+    let timelines = rig.engine.timelines();
+    assert!(
+        wait_for(Duration::from_secs(5), || matches!(
+            status(&rig, id),
+            Some(InputStatus::Live { source: Some(s) })
+                if s.resolution == Resolution::new(64, 36).unwrap()
+                    && s.rate == Some(FrameRate::new(25, 1).unwrap())
+        ) && timelines
+            .get(id)
+            .is_some_and(|t| t.duration_ms.is_some())),
+        "status: {:?}",
+        status(&rig, id)
+    );
+    let t = timelines.get(id).unwrap();
+    assert!(t.duration_ms.unwrap().abs_diff(2000) <= 40, "{t:?}");
+    let stats = || rig.engine.input_stats().get(id).unwrap().snapshot();
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(stats().received, 1, "paused on its first picture");
+
+    send(Command::Play { input: id });
+    assert!(wait_for(Duration::from_secs(3), || stats()
+        .last_source_frame
+        >= 10));
+    send(Command::Pause { input: id });
+    std::thread::sleep(Duration::from_millis(150));
+    let paused = stats().received;
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(stats().received, paused, "paused");
+
+    send(Command::SetPosition {
+        input: id,
+        ms: 1000,
+    });
+    assert!(wait_for(Duration::from_secs(3), || stats()
+        .last_source_frame
+        == 25));
+    assert!(wait_for(Duration::from_secs(1), || timelines
+        .get(id)
+        .is_some_and(|t| t.position_ms.abs_diff(1000) <= 40)));
+
+    // Loop: from 1 s to the end (frame 49), then back to the start.
+    send(Command::SetLoop {
+        input: id,
+        enabled: true,
+    });
+    send(Command::Play { input: id });
+    assert!(wait_for(Duration::from_secs(3), || stats()
+        .last_source_frame
+        >= 45));
+    assert!(wait_for(Duration::from_secs(3), || stats()
+        .last_source_frame
+        < 10));
+    assert!(matches!(status(&rig, id), Some(InputStatus::Live { .. })));
+    let playback = rig
+        .engine
+        .state()
+        .load()
+        .input(id)
+        .unwrap()
+        .playback
+        .unwrap();
+    assert!(playback.playing && playback.looping);
     let _ = std::fs::remove_file(path);
 }
