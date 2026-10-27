@@ -35,5 +35,5 @@ pub use state::{
     Ending, Event, Format, InputState, InputStatus, IoRequest, MAX_INPUTS, MAX_NAME_CHARS,
     Playback, Rejection, SourceFormat, State, TransitionState,
 };
-pub use stats::{RenderStats, RenderStatsSnapshot};
+pub use stats::{RenderCpuSummary, RenderStats, RenderStatsSnapshot};
 pub use timeline::{Timeline, Timelines};

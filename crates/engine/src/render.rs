@@ -9,7 +9,7 @@ use crate::plan::plan_channel;
 use crate::sequencer::{Composition, RenderFeedback, Sequencer};
 use crate::sources::{RenderSource, SOURCE_CAPACITY, SourceTable};
 use crate::state::{Format, State};
-use crate::stats::RenderStats;
+use crate::stats::{RenderStats, TickTimes};
 use crate::timeline::Timelines;
 use crate::triple::{Consumer, Producer, TripleIndices, triple};
 use std::sync::Arc;
@@ -494,17 +494,24 @@ impl RenderWorker {
             }
 
             // Non-blocking: fires completion callbacks of earlier submissions.
+            let polled = Instant::now();
             if let Err(e) = self.device.poll(wgpu::PollType::Poll) {
                 tracing::error!(error = %e, "GPU poll failed");
             }
+            let poll = polled.elapsed();
             if self.stats.gpu_in_flight() >= MAX_GPU_IN_FLIGHT {
                 self.stats.record_gpu_drop();
                 tracing::warn!(index = tick.index, "GPU backpressure: frame repeated");
                 continue;
             }
 
-            self.render(&composition);
-            self.stats.record_frame(started.elapsed());
+            let (encode, submit) = self.render(&composition);
+            self.stats.record_frame(TickTimes {
+                total: started.elapsed(),
+                poll,
+                encode,
+                submit,
+            });
         }
         tracing::info!("render thread stopped");
     }
@@ -518,8 +525,9 @@ impl RenderWorker {
     }
 
     /// Renders Program, Preview and (every other tick) the thumbnails in one submission,
-    /// then publishes them.
-    fn render(&mut self, composition: &Composition) {
+    /// then publishes them. Returns the CPU time spent encoding, then submitting.
+    fn render(&mut self, composition: &Composition) -> (Duration, Duration) {
+        let encoding = Instant::now();
         let frame = composition.frame;
         let program = Mix {
             from: self.source(composition.from, frame),
@@ -572,16 +580,20 @@ impl RenderWorker {
             }
         }
 
+        let commands = encoder.finish();
+        let submitting = Instant::now();
         self.stats.gpu_submitted();
-        self.queue.submit([encoder.finish()]);
+        self.queue.submit([commands]);
         let stats = Arc::clone(&self.stats);
         self.queue
             .on_submitted_work_done(move || stats.gpu_completed());
+        let times = (submitting - encoding, submitting.elapsed());
 
         publish(&mut self.program, frame);
         publish(&mut self.preview, frame);
         if with_thumbnails {
             publish(&mut self.thumbs, frame);
         }
+        times
     }
 }

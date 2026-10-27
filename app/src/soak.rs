@@ -461,12 +461,6 @@ fn report(options: &SoakOptions, soak: &SoakContext, run: &Run<'_>) -> (String, 
     );
     let _ = writeln!(
         s,
-        "| Rendu CPU : moyenne glissante (≈ 1 s, fin du run) · max du run | {} · {} |",
-        ms(r.avg_cpu),
-        ms(r.max_cpu)
-    );
-    let _ = writeln!(
-        s,
         "| Retard au réveil p50 · p99 · p99,9 · max | {} · {} · {} · {} |",
         ms(c.wake.p50),
         ms(c.wake.p99),
@@ -478,6 +472,29 @@ fn report(options: &SoakOptions, soak: &SoakContext, run: &Run<'_>) -> (String, 
         "\nPercentiles : borne haute de leur classe d'histogramme (≈ 6 %), sur {} réveils.\n",
         c.wake.count
     );
+
+    let cpu = soak.render.cpu_summary();
+    let _ = writeln!(
+        s,
+        "### Temps CPU de rendu par tick\nThread de rendu, hors exécution GPU ; budget d'un tick : {}. Le tick complet compte aussi le séquenceur et la prise des images des inputs.\n\n| Phase | p50 | p99 | p99,9 | max |\n|---|---|---|---|---|",
+        ms(soak.config.rate.frame_duration())
+    );
+    for (phase, l) in [
+        ("**Tick complet**", cpu.total),
+        ("`device.poll`", cpu.poll),
+        ("Encodage (uniforms compris)", cpu.encode),
+        ("`queue.submit`", cpu.submit),
+    ] {
+        let _ = writeln!(
+            s,
+            "| {phase} | {} | {} | {} | {} |",
+            ms(l.p50),
+            ms(l.p99),
+            ms(l.p999),
+            ms(l.max)
+        );
+    }
+    let _ = writeln!(s, "\nSur {} ticks rendus.\n", cpu.total.count);
 
     if !inputs.is_empty() {
         let period_ms = soak.config.rate.frame_duration().as_secs_f64() * 1000.0;

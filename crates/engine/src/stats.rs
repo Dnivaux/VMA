@@ -1,6 +1,7 @@
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
+use vma_clock::{LatencyHistogram, LatencySummary};
 
 /// Lock-free render-thread statistics (complements [`vma_clock::ClockStats`]).
 #[derive(Debug, Default)]
@@ -11,6 +12,7 @@ pub struct RenderStats {
     last_cpu_ns: AtomicU64,
     max_cpu_ns: AtomicU64,
     avg_cpu_ns: AtomicU64,
+    cpu: PhaseHistograms,
     measured_fps_bits: AtomicU64,
     gpu_errors: AtomicU64,
     device_lost: AtomicBool,
@@ -40,9 +42,43 @@ pub struct RenderStatsSnapshot {
     pub device_lost_ticks: u64,
 }
 
+/// CPU time of one rendered tick, per phase (render thread, not GPU execution time).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct TickTimes {
+    /// Whole tick, from the clock wake-up to the publication of the outputs.
+    pub total: Duration,
+    /// `device.poll` (completion callbacks of earlier submissions).
+    pub poll: Duration,
+    /// Command encoding, uniform uploads included.
+    pub encode: Duration,
+    /// `queue.submit`.
+    pub submit: Duration,
+}
+
+#[derive(Debug, Default)]
+struct PhaseHistograms {
+    total: LatencyHistogram,
+    poll: LatencyHistogram,
+    encode: LatencyHistogram,
+    submit: LatencyHistogram,
+}
+
+/// Distribution of the CPU time of the rendered ticks, per phase, since start-up.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RenderCpuSummary {
+    pub total: LatencySummary,
+    pub poll: LatencySummary,
+    pub encode: LatencySummary,
+    pub submit: LatencySummary,
+}
+
 impl RenderStats {
-    pub(crate) fn record_frame(&self, cpu: Duration) {
-        let ns = u64::try_from(cpu.as_nanos()).unwrap_or(u64::MAX);
+    pub(crate) fn record_frame(&self, times: TickTimes) {
+        self.cpu.total.record(times.total);
+        self.cpu.poll.record(times.poll);
+        self.cpu.encode.record(times.encode);
+        self.cpu.submit.record(times.submit);
+        let ns = u64::try_from(times.total.as_nanos()).unwrap_or(u64::MAX);
         self.frames_rendered.fetch_add(1, Ordering::Relaxed);
         self.last_cpu_ns.store(ns, Ordering::Relaxed);
         self.max_cpu_ns.fetch_max(ns, Ordering::Relaxed);
@@ -101,6 +137,17 @@ impl RenderStats {
         self.device_lost_reason.get().map(String::as_str)
     }
 
+    /// Percentiles of the CPU time per tick and per phase. Walks every histogram bucket:
+    /// meant for reports, not for every UI frame.
+    pub fn cpu_summary(&self) -> RenderCpuSummary {
+        RenderCpuSummary {
+            total: self.cpu.total.snapshot(),
+            poll: self.cpu.poll.snapshot(),
+            encode: self.cpu.encode.snapshot(),
+            submit: self.cpu.submit.snapshot(),
+        }
+    }
+
     pub fn snapshot(&self) -> RenderStatsSnapshot {
         RenderStatsSnapshot {
             frames_rendered: self.frames_rendered.load(Ordering::Relaxed),
@@ -114,5 +161,32 @@ impl RenderStats {
             device_lost: self.device_lost.load(Ordering::Acquire),
             device_lost_ticks: self.device_lost_ticks.load(Ordering::Relaxed),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tick_times_feed_one_histogram_per_phase() {
+        let stats = RenderStats::default();
+        let ms = Duration::from_millis;
+        for total in [2, 2, 3, 11] {
+            stats.record_frame(TickTimes {
+                total: ms(total),
+                poll: ms(0),
+                encode: ms(1),
+                submit: ms(total - 1),
+            });
+        }
+        let cpu = stats.cpu_summary();
+        assert_eq!(cpu.total.count, 4);
+        assert_eq!(cpu.total.max, ms(11));
+        assert!(cpu.total.p50 >= ms(2) && cpu.total.p50 < ms(3));
+        assert_eq!(cpu.submit.max, ms(10));
+        assert_eq!(cpu.encode.max, ms(1));
+        assert_eq!(cpu.poll.max, Duration::ZERO);
+        assert_eq!(stats.snapshot().max_cpu, ms(11));
     }
 }

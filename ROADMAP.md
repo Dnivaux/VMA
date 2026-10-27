@@ -53,12 +53,16 @@ titres HTML + natifs, multi-cadence dès la Phase 1, macOS plus tard).
   égale ou très proche du maître, en phase avec lui, alterne parfois image sautée / image
   répétée (A6 : 107 + 107 sur 6 000 ticks pour 50 → 50 ; 29 + 26 pour 30 → 29,97, contre ≈ 4
   attendues). Évolution prévue par `io-gst.md` : sélection par PTS avec une image de latence.
-- *(Phase 1, étape 10)* Temps CPU de rendu par tick avec des inputs uploadés : max 10,8 ms
-  en A1 (4 × 1080p50), contre 2,8 ms sans input en Phase 0 ; budget tenu, marge réduite
-  (surtout à 60p). Cause supposée : verrous internes de wgpu partagés entre les `write_texture`
-  des threads GStreamer et la soumission du rendu. À mesurer (histogramme du temps de rendu au
-  lieu d'une moyenne glissante) et, si confirmé, à traiter (uploads regroupés sur un thread,
-  ou tampons de transfert) avant les sorties de la Phase 2.
+- *(Phase 1, étape 10)* **Contention du thread de rendu sur la `Queue` wgpu** avec des inputs
+  uploadés. Mesuré par histogramme (rapport de soak, temps CPU par tick et par phase), 1080p50 :
+  tick complet p50 0,09 ms sans input, mais **p50 7,9 ms, p99 10,5 ms avec 4 × 1080p50**
+  (encodage et `queue.submit` à parts égales). Le thread de rendu ne consomme pourtant que
+  ≈ 1,4 ms de CPU par tick (`schedstat`) : il est bloqué, probablement derrière les
+  `write_texture` des threads GStreamer — [`tests/soak/reports/2026-10-27-phase1-render-cpu-4-inputs.md`](tests/soak/reports/2026-10-27-phase1-render-cpu-4-inputs.md).
+  Budget tenu (0 image manquée), mais la marge fond à 60p ou avec plus d'inputs. Piste : sortir
+  les uploads de la `Queue` partagée côté producteurs (tampons de transfert mappés remplis par
+  GStreamer, copie enregistrée par le thread de rendu dans son encodeur) → amendement de
+  l'ADR 0004, à traiter avant les sorties de la Phase 2.
 - **Soak hostile Windows non passé** : le risque principal non vérifié est le gel du thread UI
   pendant la boucle modale de déplacement / redimensionnement de Windows, combiné à la `Queue`
   partagée (contention possible sur les verrous internes de wgpu au moment du `present`).
