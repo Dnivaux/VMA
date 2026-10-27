@@ -76,8 +76,10 @@ simple bilinéaire en Phase 1 (crénelage possible) ; mipmaps ou filtre plus lar
   rendu 86 µs en moyenne.
 - **Vignettes (étape 4)** : `thumbnails::ThumbnailPainter` dessine chaque input dans sa
   cellule d'un atlas `Rgba8Unorm` de 8 × 8 cellules de 320 × 180 (2560 × 1440), en une passe :
-  viewport par cellule, couleur unie par la *blend constant* (aucun buffer par input), mire par
-  son pipeline. Pas de *clear* de l'atlas (coûteux en rendu logiciel) : le lecteur ne regarde
+  viewport par cellule, couleur unie lue dans un uniform unique de 64 couleurs (une par
+  cellule, écrit une fois par atlas, indexé par l'instance du draw ; aucun buffer par input),
+  mire par son pipeline. *(Première version par la blend constant abandonnée le 2026-10-27 :
+  lavapipe / Mesa 25.2 la restitue fausse, rouge lu `[255, 255, 0, 0]`.)* Pas de *clear* de l'atlas (coûteux en rendu logiciel) : le lecteur ne regarde
   que les cellules annoncées. **Tous** les inputs sont redessinés un tick sur deux (plutôt que
   répartis sur les ticks : un atlas publié doit être complet ; à revoir avec les inputs vidéo
   si la charge l'exige). Test : `golden_mix::thumbnail_atlas_cells` (mire en vignette = golden).
