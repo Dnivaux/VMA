@@ -37,6 +37,9 @@ VMA_SOAK_SECS=60 cargo test --release -p vma-engine --test render_loop -- --igno
 # Soak dans l'application réelle (rapport Markdown, code 2 si images manquées/répétées) :
 cargo run --release -- --soak 600 --report tests/soak/reports/$(date +%F)-x.md
 cargo run --release -- --soak 600 --hostile --report …   # + agressions fenêtre (checklist docs/manual-tests/)
+# Cadence / résolution maître, sources synthétiques GStreamer (cadences réparties en boucle) :
+cargo run --release -- --rate 59.94 --resolution 720p --inputs 4 --input-rates 59.94,25,29.97,60
+tests/soak/a6-rates.sh                                    # A6 : un soak de 2 min par cadence maître
 # Journal des commandes : logs/commands-AAAA-MM-JJ.jsonl par défaut (--journal-dir, --no-journal)
 
 # Regénérer les golden frames après un changement visuel VOULU (puis relire le PNG) :

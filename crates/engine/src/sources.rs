@@ -52,7 +52,10 @@ fn generated_source(spec: &InputSpec) -> Option<SourceKey> {
     match spec {
         InputSpec::Color { color } => Some(SourceKey::Color(*color)),
         InputSpec::TestSource { .. } => Some(SourceKey::TestPattern),
-        InputSpec::Capture { .. } | InputSpec::File { .. } | InputSpec::Image { .. } => None,
+        InputSpec::Capture { .. }
+        | InputSpec::File { .. }
+        | InputSpec::Image { .. }
+        | InputSpec::Synthetic { .. } => None,
     }
 }
 

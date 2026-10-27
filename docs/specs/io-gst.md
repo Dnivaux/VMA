@@ -10,7 +10,7 @@
 | Fichier vidéo | `uridecodebin` → vidéo → caps → appsink ; audio vers `fakesink` (Phase 3) | lecture / pause, redémarrage, position ; **Loop** (désactivé par défaut) : boucle sans trou par seek de segment, puis seek non-flush à 0 sur `SEGMENT_DONE` ; sans Loop, la dernière image reste affichée à la fin |
 | Image fixe | décodée une fois par `image` (PNG, JPEG) sur `vma-io`, uploadée une fois | pas de pipeline |
 | Couleur unie | aucune ressource : couleur passée au shader | — |
-| Source de test | `videotestsrc is-live=true pattern=…` à la cadence / résolution demandées | CI, soaks, tests de cadence |
+| Source de test (`InputSpec::Synthetic`, étape 9) | `videotestsrc is-live=true pattern=ball`, NV12, à la cadence / résolution demandées | CI, soaks (`--inputs`), tests de cadence |
 
 **Formats acceptés à l'appsink** (pas de conversion CPU) : `NV12`, `I420`, `YUY2`, `UYVY`,
 `RGBA`, `BGRA`. Tout autre format passe par `videoconvert` vers `NV12` (compté dans les stats).

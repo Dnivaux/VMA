@@ -300,3 +300,45 @@ fn capture_of_a_missing_device_is_a_lost_signal() {
     )));
     assert_eq!(rig.io.pipeline_info(id), None);
 }
+
+/// A synthetic source (GStreamer `videotestsrc`) at 25 fps into a 50 fps master: live at
+/// its own rate, every picture shown (none skipped), each one repeated on the next tick.
+#[test]
+fn synthetic_source_is_resampled_to_the_master_rate() {
+    let rig = rig();
+    let rate = FrameRate::FPS_25;
+    let id = add(
+        &rig,
+        InputSpec::Synthetic {
+            rate,
+            resolution: Resolution::new(320, 180).unwrap(),
+        },
+    );
+    assert!(
+        wait_for(Duration::from_secs(5), || matches!(
+            status(&rig, id),
+            Some(InputStatus::Live { source: Some(s) })
+                if s.rate == Some(rate) && s.pixel == PixelFormat::Nv12
+        )),
+        "status: {:?}",
+        status(&rig, id)
+    );
+    let stats = || rig.engine.input_stats().get(id).unwrap().snapshot();
+    std::thread::sleep(Duration::from_millis(500));
+    let (a, t0) = (stats(), Instant::now());
+    std::thread::sleep(Duration::from_secs(2));
+    let (b, secs) = (stats(), t0.elapsed().as_secs_f64());
+    let received = (b.received - a.received) as f64 / secs;
+    eprintln!(
+        "{received:.2} pictures/s, {} skipped, {} repeated",
+        b.skipped,
+        b.repeated - a.repeated
+    );
+    assert!((received - 25.0).abs() <= 1.0, "{received:.2} pictures/s");
+    assert_eq!(b.skipped, a.skipped, "a slower source loses nothing");
+    let (shown, repeated) = (b.shown - a.shown, b.repeated - a.repeated);
+    assert!(
+        shown.abs_diff(repeated) <= 3,
+        "shown {shown}, repeated {repeated}"
+    );
+}

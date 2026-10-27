@@ -134,8 +134,7 @@ impl Shared {
 #[derive(Debug, Clone)]
 pub(crate) enum Media {
     /// `gst-launch` syntax of the source part, up to (excluded) the conversion and the sink
-    /// (test sources).
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// (synthetic sources).
     Launch(String),
     /// A video file, with a timeline: `uridecodebin`, the first video stream to the sink,
     /// every other stream to a `fakesink` (audio: Phase 3).
@@ -170,6 +169,22 @@ impl Recipe {
             media: Media::File(path),
             sync: true,
             watchdog: false,
+        }
+    }
+
+    /// A synthetic live source: `videotestsrc` at `rate` and `resolution`, in NV12.
+    pub(crate) fn synthetic(rate: FrameRate, resolution: Resolution) -> Self {
+        Self {
+            media: Media::Launch(format!(
+                "videotestsrc is-live=true pattern=ball \
+                 ! video/x-raw,format=NV12,width={},height={},framerate={}/{}",
+                resolution.width(),
+                resolution.height(),
+                rate.num(),
+                rate.den()
+            )),
+            sync: false,
+            watchdog: true,
         }
     }
 

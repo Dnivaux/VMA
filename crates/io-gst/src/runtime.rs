@@ -335,7 +335,9 @@ impl Worker {
                     lost(e.to_string());
                 }
             }
-            InputSpec::Capture { .. } | InputSpec::File { .. } if self.gstreamer.is_err() => {
+            InputSpec::Capture { .. } | InputSpec::File { .. } | InputSpec::Synthetic { .. }
+                if self.gstreamer.is_err() =>
+            {
                 let e = self.gstreamer.clone().err().unwrap_or_default();
                 lost(IoError::GstreamerUnavailable(e).to_string());
             }
@@ -344,6 +346,14 @@ impl Worker {
                 self.pipelines.push(PipelineSlot::new(
                     input,
                     Recipe::file(path.clone()),
+                    self.port.feeds.clone(),
+                    Instant::now(),
+                ));
+            }
+            InputSpec::Synthetic { rate, resolution } => {
+                self.pipelines.push(PipelineSlot::new(
+                    input,
+                    Recipe::synthetic(*rate, *resolution),
                     self.port.feeds.clone(),
                     Instant::now(),
                 ));

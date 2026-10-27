@@ -40,6 +40,7 @@ pub enum InputSpec {
     Image { path: PathBuf },
     Color { color: Rgb8 },
     TestSource { rate: FrameRate, resolution: Resolution }, // tests, soaks : la mire du compositeur (générée, pas de pipeline)
+    Synthetic { rate: FrameRate, resolution: Resolution },  // soaks, cadences : videotestsrc live (étape 9), tout le chemin d'un input
 }
 
 pub struct CommandSender { /* clonable */ }

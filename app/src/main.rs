@@ -32,7 +32,11 @@ fn main() -> anyhow::Result<ExitCode> {
         .with_writer(log_writer)
         .init();
 
-    let mut config = EngineConfig::default();
+    let mut config = EngineConfig {
+        rate: options.rate,
+        resolution: options.resolution,
+        ..EngineConfig::default()
+    };
     if let Some(margin) = options.spin_margin {
         config.spin_margin = margin;
     }
@@ -60,6 +64,7 @@ fn main() -> anyhow::Result<ExitCode> {
                 cc,
                 config,
                 journal,
+                &options.inputs,
                 options.soak.clone(),
                 &device_lost,
                 &soak_handle,
@@ -97,6 +102,7 @@ impl<'a> App<'a> {
         cc: &eframe::CreationContext<'_>,
         config: EngineConfig,
         journal: Journal,
+        inputs: &[cli::Synthetic],
         soak_options: Option<cli::SoakOptions>,
         device_lost: &'a OnceLock<String>,
         soak_handle: &OnceLock<soak::SoakHandle>,
@@ -130,19 +136,26 @@ impl<'a> App<'a> {
                     None
                 }
             });
-        // A soak measures the render loop: give it a moving picture on air. A normal session
-        // starts empty, like the reference.
-        if soak_options.is_some() {
+        // Synthetic sources asked for on the command line (soaks, rate tests). Without them a
+        // soak still needs a moving picture on air: the test pattern. A normal session starts
+        // empty, like the reference.
+        let script = |spec| {
             engine.commands().send(
                 vma_engine::Source::Script,
-                vma_engine::Command::AddInput {
-                    spec: vma_engine::InputSpec::TestSource {
-                        rate: config.rate,
-                        resolution: config.resolution,
-                    },
-                    name: None,
-                },
-            )?;
+                vma_engine::Command::AddInput { spec, name: None },
+            )
+        };
+        for input in inputs {
+            script(vma_engine::InputSpec::Synthetic {
+                rate: input.rate,
+                resolution: input.resolution,
+            })?;
+        }
+        if soak_options.is_some() && inputs.is_empty() {
+            script(vma_engine::InputSpec::TestSource {
+                rate: config.rate,
+                resolution: config.resolution,
+            })?;
         }
 
         let textures = {
@@ -175,6 +188,11 @@ impl<'a> App<'a> {
                     clock: engine.clock_stats(),
                     render: Arc::clone(&render_stats),
                     ui: Arc::clone(&ui_probe),
+                    state: engine.state(),
+                    input_stats: engine.input_stats(),
+                    commands: engine.commands(),
+                    // Mix the sources on air while the soak runs (Fade, then Cut, …).
+                    transitions: inputs.len() >= 2,
                 },
             )?;
             // Only ever set here, once.

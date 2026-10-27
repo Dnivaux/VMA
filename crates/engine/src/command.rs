@@ -113,6 +113,13 @@ pub enum InputSpec {
         rate: FrameRate,
         resolution: Resolution,
     },
+    /// Synthetic *external* source (soaks, rate tests): GStreamer `videotestsrc`, live, at its
+    /// own rate and size, in NV12. Unlike [`Self::TestSource`] its pictures take the whole
+    /// input path (pipeline, upload, resampling to the master rate).
+    Synthetic {
+        rate: FrameRate,
+        resolution: Resolution,
+    },
 }
 
 impl InputSpec {
@@ -122,7 +129,7 @@ impl InputSpec {
             Self::File { .. } => InputKind::File,
             Self::Image { .. } => InputKind::Image,
             Self::Color { .. } => InputKind::Color,
-            Self::TestSource { .. } => InputKind::TestSource,
+            Self::TestSource { .. } | Self::Synthetic { .. } => InputKind::TestSource,
         }
     }
 
@@ -144,6 +151,7 @@ impl InputSpec {
             Self::Image { path } => file_stem(path).unwrap_or_else(|| "Image".into()),
             Self::Color { .. } => "Couleur".into(),
             Self::TestSource { .. } => "Mire".into(),
+            Self::Synthetic { rate, resolution } => format!("Synthétique {resolution} {rate}"),
         }
     }
 }
