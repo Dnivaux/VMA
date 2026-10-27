@@ -52,5 +52,19 @@ Cocher chaque case ; noter tout ce qui surprend sous « Remarques ».
 - [ ] Après la session : `logs/commands-AAAA-MM-JJ.jsonl` contient une ligne par action
       (`"source":"ui"`), et des lignes `"source":"render"` pour les fondus.
 
+## Étape 8 — capture (à passer avec l'étape 8c : ajout d'input dans l'UI)
+Il faut une webcam USB (et, sous Windows, la même checklist).
+- [ ] « + Ajouter → Capture » : la webcam est listée **une seule fois** (pas de doublon
+      PipeWire sous Linux) ; l'ajouter : l'image arrive en moins de 2 s.
+- [ ] Le mode choisi (résolution, cadence, YUY2 / MJPEG) est affiché et cohérent avec la
+      cadence maître (journal : ligne `capture mode`).
+- [ ] Mouvement fluide, pas de saccade visible ; « Images manquées » reste à **0**.
+- [ ] **Débrancher** la webcam alors qu'elle est au Program : l'input passe en « signal perdu »
+      (noir) en moins d'une seconde, le Program continue (horloge, autres inputs).
+- [ ] La **rebrancher** (même port) : elle revient seule en quelques secondes, sans rien faire.
+- [ ] La rebrancher sur **un autre port** : noter le comportement (l'identifiant suit le port :
+      elle est vue comme un autre périphérique).
+- [ ] Windows : mêmes cases avec Media Foundation.
+
 ### Remarques
 …

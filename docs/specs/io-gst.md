@@ -129,6 +129,34 @@ le compositeur.
 - Les fichiers de test sont générés par les tests : MJPEG (`jpegenc`) + Vorbis dans du
   Matroska, des plugins `-base` / `-good` présents en CI sur les deux OS.
 
+## Mise en œuvre (étape 8b, 2026-10-27) : capture
+- **Liste des périphériques** (`devices.rs`) : un `gst::DeviceMonitor` (classe `Video/Source`,
+  `show-all` pour voir V4L2 même derrière PipeWire) tourne sur `vma-io` tant que le runtime
+  vit ; la liste est relue toutes les secondes (les fournisseurs suivent eux-mêmes le
+  branchement à chaud) et publiée sans verrou : `IoRuntime::devices()` → `CaptureDevice { id,
+  name }`. Une seule API par OS (`device.api`) : `v4l2` sous Linux (les vues `pipewire` et
+  `libcamera` des mêmes caméras sont masquées), `mediafoundation` sous Windows. Sans
+  fournisseur (ou sans GStreamer) : liste vide, erreur journalisée.
+- **Identifiant stable** (`DeviceId`) : `<api>:<clé>`, la clé étant le premier champ présent
+  parmi `device.bus_path` (chemin du port USB / PCI : stable au rebranchement sur le même
+  port, même si `/dev/videoN` change), `device.path`, `device.id`, `device.serial`. Deux
+  périphériques de même clé (deux nœuds de capture sur un port) : `#2`, `#3`… dans l'ordre des
+  clés.
+- **Ouverture** (à chaque démarrage et reconnexion) : le périphérique est cherché par son
+  identifiant dans la liste courante (absent → « not connected » : signal perdu, nouvelle
+  tentative selon le *backoff*, donc reconnu dès qu'il revient) ; mode choisi dans ses caps
+  (`mode.rs`, règles de « Mode de capture » ci-dessus : en cas d'égalité de cadence, formats
+  bruts envoyés tels quels d'abord, puis les autres bruts, puis MJPEG) ; élément créé par
+  `Device::create_element`. Pipeline : `<périphérique> ! capsfilter (mode) [! decodebin] !
+  videoconvert ! appsink sync=false`, *watchdog* actif (silence = perte, comme les autres
+  sources live). Le mode choisi est journalisé et publié (`IoRuntime::capture_mode(input)`) ;
+  son affichage dans l'UI vient avec l'étape 8c.
+- Les caps autres que `video/x-raw` et `image/jpeg` (caméras H.264…) sont ignorées en Phase 1.
+- **Tests sans caméra** (CI et machine de dev n'en ont pas) : une fausse caméra (sous-classe de
+  `gst::Device` dans les tests) annonce des caps de webcam et joue `videotestsrc`, brut ou via
+  `jpegenc`. La capture réelle (V4L2, Media Foundation, débranchement) est dans la checklist
+  manuelle.
+
 ## Critères d'acceptation
 | Critère | Test | Où |
 |---|---|---|
@@ -141,4 +169,8 @@ le compositeur.
 | Débrancher / rebrancher la webcam pendant le Program | checklist `docs/manual-tests/phase1-inputs.md` | manuel |
 | GStreamer absent → l'application démarre, inputs capture / fichier désactivés avec message | `runtime::tests::without_gstreamer_images_still_work` (message dans l'UI : étape 8, avec l'ajout d'input) | CI |
 | Image fixe au Program (fit), image absente = signal perdu, retrait = feed détaché | `tests/runtime.rs` (3 tests, moteur réel) | CI |
-| Mode de capture choisi selon les règles ci-dessus | test unitaire sur des listes de caps | CI |
+| Mode de capture choisi selon les règles ci-dessus | `mode::tests` (6 tests sur des caps de webcam, de caméra virtuelle à plages, H.264 ignoré) | CI |
+| Périphérique ouvert dans le mode choisi ; MJPEG décodé sans conversion, brut tel quel | `pipeline::tests::capture_opens_the_chosen_mode` (fausse caméra) | CI |
+| Identifiant stable, une API par OS (doublons PipeWire masqués) | `devices::tests` (3 tests) | CI |
+| Caméra débranchée → signal perdu, « not connected » tant qu'elle est absente, reconnue par son identifiant au retour (nouveau feed) | `runtime::tests::unplugged_camera_comes_back_by_its_identifier` ; moteur réel : `tests/runtime.rs::capture_of_a_missing_device_is_a_lost_signal` | CI |
+| Vraie webcam (V4L2, Media Foundation), débranchement / rebranchement, mode affiché | checklist `docs/manual-tests/phase1-inputs.md` (avec l'UI de l'étape 8c) | manuel |

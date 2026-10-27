@@ -27,10 +27,12 @@ use gstreamer_video as gst_video;
 use gstreamer_video::prelude::*;
 use vma_compositor::Plane;
 use vma_core::{ColorInfo, FrameRate, InputId, Matrix, PixelFormat, Range, Resolution};
-use vma_engine::Timeline;
+use vma_engine::{DeviceId, Timeline};
 
 use crate::IoError;
+use crate::devices::DeviceList;
 use crate::feeds::{Feeds, PictureOut, VideoFormat};
+use crate::mode::{self, CaptureMode, Encoding};
 
 /// A source that has not produced its first picture after this long is lost.
 pub(crate) const STARTUP_TIMEOUT: Duration = Duration::from_secs(5);
@@ -129,19 +131,30 @@ impl Shared {
 }
 
 /// Where the pictures of a pipeline come from.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub(crate) enum Media {
-    /// `gst-launch` syntax of the source part, up to (excluded) the conversion and the sink.
-    // Built for capture devices (step 8b); exercised by the tests until then.
+    /// `gst-launch` syntax of the source part, up to (excluded) the conversion and the sink
+    /// (test sources).
     #[cfg_attr(not(test), allow(dead_code))]
     Launch(String),
     /// A video file, with a timeline: `uridecodebin`, the first video stream to the sink,
     /// every other stream to a `fakesink` (audio: Phase 3).
     File(PathBuf),
+    /// A capture device, looked up by its stable identifier at every (re)start.
+    Capture(Capture),
+}
+
+/// A capture device to open in the mode closest to the master format.
+#[derive(Debug, Clone)]
+pub(crate) struct Capture {
+    pub(crate) device: DeviceId,
+    pub(crate) devices: DeviceList,
+    pub(crate) resolution: Resolution,
+    pub(crate) rate: FrameRate,
 }
 
 /// How a pipeline is built and supervised.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub(crate) struct Recipe {
     pub(crate) media: Media,
     /// `true`: the appsink paces by the clock (files); `false`: as fast as pictures come.
@@ -157,6 +170,15 @@ impl Recipe {
             media: Media::File(path),
             sync: true,
             watchdog: false,
+        }
+    }
+
+    /// A capture device: live (lost when silent), pictures taken as they come.
+    pub(crate) fn capture(capture: Capture) -> Self {
+        Self {
+            media: Media::Capture(capture),
+            sync: false,
+            watchdog: true,
         }
     }
 
@@ -195,6 +217,8 @@ pub(crate) struct GstInput {
     watchdog: bool,
     /// `Some` for a video file.
     player: Option<Player>,
+    /// `Some` for a capture device: the mode it was opened in.
+    mode: Option<CaptureMode>,
 }
 
 impl GstInput {
@@ -204,9 +228,17 @@ impl GstInput {
         recipe: &Recipe,
         feeds: F,
     ) -> Result<Self, IoError> {
+        let mut mode = None;
         let (pipeline, convert, sink) = match &recipe.media {
             Media::Launch(source) => launch_pipeline(source)?,
             Media::File(path) => file_pipeline(path)?,
+            Media::Capture(capture) => {
+                let (source, chosen) = open_device(capture)?;
+                let parts = capture_pipeline(source, &chosen)?;
+                tracing::info!(%input, device = %capture.device.0, mode = %chosen, "capture mode");
+                mode = Some(chosen);
+                parts
+            }
         };
         sink.set_caps(Some(
             &gst_video::VideoCapsBuilder::new()
@@ -279,7 +311,13 @@ impl GstInput {
                 playing: false,
                 ended: false,
             }),
+            mode,
         })
+    }
+
+    /// The mode a capture device was opened in.
+    pub(crate) fn capture_mode(&self) -> Option<&CaptureMode> {
+        self.mode.as_ref()
     }
 
     /// `Some(reason)` once the input is lost: bus error, end of a live stream, or silence.
@@ -454,6 +492,13 @@ fn file_pipeline(path: &Path) -> Result<Parts, IoError> {
         .map_err(|e| pipeline_error(&e))?;
     convert.link(&sink).map_err(|e| pipeline_error(&e))?;
 
+    route_decoded(&decode, &pipeline, &convert);
+    Ok((pipeline, convert, sink))
+}
+
+/// Links the pads `decode` creates: the first video stream to `convert`, any other stream
+/// (audio: Phase 3, or another video stream) to a `fakesink`.
+fn route_decoded(decode: &gst::Element, pipeline: &gst::Pipeline, convert: &gst::Element) {
     let weak_pipeline = pipeline.downgrade();
     let weak_convert = convert.downgrade();
     decode.connect_pad_added(move |_, pad| {
@@ -474,10 +519,57 @@ fn file_pipeline(path: &Path) -> Result<Parts, IoError> {
                     tracing::warn!(error = %e, "cannot link the video stream");
                 }
             }
-            // Audio (Phase 3), or another video stream: decoded and dropped.
             _ => discard(&pipeline, pad),
         }
     });
+}
+
+/// The source element of a connected device and the mode to open it in.
+fn open_device(capture: &Capture) -> Result<(gst::Element, CaptureMode), IoError> {
+    let device = capture
+        .devices
+        .find(&capture.device)
+        .ok_or_else(|| IoError::Pipeline(format!("{} is not connected", capture.device.0)))?;
+    let caps = device.caps().unwrap_or_else(gst::Caps::new_empty);
+    let modes = mode::modes(&caps, capture.resolution, capture.rate);
+    let chosen = mode::choose(&modes, capture.resolution, capture.rate)
+        .ok_or_else(|| IoError::Pipeline(format!("no usable mode in {caps}")))?;
+    let source = device
+        .create_element(None)
+        .map_err(|e| IoError::Pipeline(e.to_string()))?;
+    Ok((source, chosen))
+}
+
+/// `<device> ! <mode caps> [! decodebin] ! videoconvert ! appsink`: MJPEG is decoded by
+/// whatever `decodebin` finds (`jpegdec`, or a hardware decoder).
+pub(crate) fn capture_pipeline(source: gst::Element, mode: &CaptureMode) -> Result<Parts, IoError> {
+    let pipeline_error = |e: &dyn std::fmt::Display| IoError::Pipeline(e.to_string());
+    let filter = gst::ElementFactory::make("capsfilter")
+        .property("caps", mode.caps())
+        .build()
+        .map_err(|e| pipeline_error(&e))?;
+    let convert = gst::ElementFactory::make("videoconvert")
+        .name("vma_convert")
+        .build()
+        .map_err(|e| pipeline_error(&e))?;
+    let sink = gst_app::AppSink::builder().name("vma_sink").build();
+    let pipeline = gst::Pipeline::new();
+    pipeline
+        .add_many([&source, &filter, &convert, sink.upcast_ref()])
+        .map_err(|e| pipeline_error(&e))?;
+    source.link(&filter).map_err(|e| pipeline_error(&e))?;
+    convert.link(&sink).map_err(|e| pipeline_error(&e))?;
+    match mode.encoding {
+        Encoding::Raw(_) => filter.link(&convert).map_err(|e| pipeline_error(&e))?,
+        Encoding::Jpeg => {
+            let decode = gst::ElementFactory::make("decodebin")
+                .build()
+                .map_err(|e| pipeline_error(&e))?;
+            pipeline.add(&decode).map_err(|e| pipeline_error(&e))?;
+            filter.link(&decode).map_err(|e| pipeline_error(&e))?;
+            route_decoded(&decode, &pipeline, &convert);
+        }
+    }
     Ok((pipeline, convert, sink))
 }
 
@@ -1136,6 +1228,156 @@ pub(crate) mod tests {
         eprintln!("{reason:?}");
         drop(input);
         let _ = std::fs::remove_file(junk);
+    }
+
+    /// A capture device that is not a camera: its element is a `gst-launch` bin (CI runners
+    /// have no camera). Lists `caps` like a real device.
+    mod fake_camera {
+        use std::sync::{LazyLock, Mutex};
+
+        use gstreamer as gst;
+        use gstreamer::glib;
+        use gstreamer::prelude::*;
+        use gstreamer::subclass::prelude::*;
+
+        static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
+            gst::DebugCategory::new("vmafakecamera", gst::DebugColorFlags::empty(), None)
+        });
+
+        #[derive(Debug, Default)]
+        pub struct Imp {
+            pub(super) launch: Mutex<String>,
+        }
+
+        #[glib::object_subclass]
+        impl ObjectSubclass for Imp {
+            const NAME: &'static str = "VmaFakeCamera";
+            type Type = FakeCamera;
+            type ParentType = gst::Device;
+        }
+
+        impl ObjectImpl for Imp {}
+        impl GstObjectImpl for Imp {}
+
+        impl DeviceImpl for Imp {
+            fn create_element(&self, _: Option<&str>) -> Result<gst::Element, gst::LoggableError> {
+                let launch = self.launch.lock().unwrap().clone();
+                gst::parse::bin_from_description(&launch, true)
+                    .map(|bin| bin.upcast())
+                    .map_err(|e| gst::LoggableError::new(*CAT, glib::bool_error!("{e}")))
+            }
+        }
+
+        glib::wrapper! {
+            pub struct FakeCamera(ObjectSubclass<Imp>) @extends gst::Device, gst::Object;
+        }
+    }
+
+    /// A fake capture device of the kept API: `launch` is what it plays, `caps` what it
+    /// announces.
+    pub(crate) fn fake_camera(key: &str, launch: &str, caps: &str) -> crate::devices::Found {
+        use gstreamer::subclass::prelude::ObjectSubclassIsExt;
+        use std::str::FromStr;
+        init();
+        let mut props = gst::Structure::new_empty("properties");
+        props.set("device.api", crate::devices::API);
+        props.set("device.path", key);
+        let camera: fake_camera::FakeCamera = gst::glib::Object::builder()
+            .property("display-name", "Caméra de test")
+            .property("device-class", "Video/Source")
+            .property("caps", gst::Caps::from_str(caps).unwrap())
+            .property("properties", props)
+            .build();
+        *camera.imp().launch.lock().unwrap() = launch.into();
+        let device: gst::Device = camera.upcast();
+        let key = crate::devices::identify(&device.properties().unwrap()).unwrap();
+        crate::devices::keep(std::iter::once((key, device)))
+            .pop()
+            .unwrap()
+    }
+
+    /// Webcam-like caps: YUY2 too slow at 720p, MJPEG fast enough.
+    pub(crate) const WEBCAM_CAPS: &str = "\
+        video/x-raw, format=YUY2, width=1280, height=720, framerate=10/1; \
+        video/x-raw, format=YUY2, width=640, height=360, framerate=30/1; \
+        image/jpeg, width=1280, height=720, framerate=30/1; \
+        image/jpeg, width=640, height=360, framerate=30/1";
+
+    /// Plays what the mode asks for: raw from `videotestsrc`, MJPEG through `jpegenc`.
+    pub(crate) const WEBCAM_LAUNCH: &str =
+        "videotestsrc is-live=true ! jpegenc ! capsfilter caps=image/jpeg";
+
+    pub(crate) fn capture_recipe(id: &str, devices: &DeviceList, resolution: Resolution) -> Recipe {
+        Recipe::capture(Capture {
+            device: DeviceId(id.into()),
+            devices: devices.clone(),
+            resolution,
+            rate: FrameRate::FPS_25,
+        })
+    }
+
+    /// The device's mode is chosen from its caps and the master format; MJPEG is decoded
+    /// (by `decodebin`) and arrives as I420 without conversion; raw arrives as is.
+    #[test]
+    fn capture_opens_the_chosen_mode() {
+        let mjpeg = fake_camera("/dev/video7", WEBCAM_LAUNCH, WEBCAM_CAPS);
+        let raw = fake_camera("/dev/video8", "videotestsrc is-live=true", WEBCAM_CAPS);
+        let devices = DeviceList::default();
+        devices.set(vec![mjpeg.clone(), raw.clone()]);
+        for (found, resolution, encoding, pixel) in [
+            (
+                &mjpeg,
+                Resolution::HD_720,
+                Encoding::Jpeg,
+                PixelFormat::I420,
+            ),
+            (
+                &raw,
+                Resolution::new(640, 360).unwrap(),
+                Encoding::Raw("YUY2".into()),
+                PixelFormat::Yuy2,
+            ),
+        ] {
+            let feeds = FakeFeeds::default();
+            let mut input = GstInput::start(
+                InputId(1),
+                &capture_recipe(&found.info.id.0, &devices, resolution),
+                feeds.clone(),
+            )
+            .unwrap();
+            let mode = input.capture_mode().unwrap().clone();
+            assert_eq!(
+                (mode.encoding.clone(), mode.resolution),
+                (encoding, resolution)
+            );
+            assert_eq!(mode.rate, FrameRate::new(30, 1).unwrap());
+            assert!(wait_until(Duration::from_secs(5), || input.pictures() >= 10));
+            assert_eq!(input.poll(Instant::now()), None);
+            let format = feeds.last().lock().unwrap().format.unwrap();
+            assert_eq!(
+                (format.pixel, format.resolution),
+                (pixel, resolution),
+                "{mode}"
+            );
+            assert!(!input.converting(), "{mode}");
+        }
+    }
+
+    /// An unknown (or unplugged) device fails to start: lost, then retried.
+    #[test]
+    fn a_device_that_is_not_connected_fails_to_start() {
+        init();
+        let e = GstInput::start(
+            InputId(1),
+            &capture_recipe(
+                "v4l2:/dev/nothing",
+                &DeviceList::default(),
+                Resolution::HD_1080,
+            ),
+            FakeFeeds::default(),
+        )
+        .unwrap_err();
+        assert!(e.to_string().contains("is not connected"), "{e}");
     }
 
     #[test]

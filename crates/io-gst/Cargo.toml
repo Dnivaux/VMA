@@ -11,6 +11,7 @@ publish.workspace = true
 vma-core.workspace = true
 vma-engine.workspace = true
 vma-compositor.workspace = true
+arc-swap.workspace = true
 image.workspace = true
 thiserror.workspace = true
 tracing.workspace = true

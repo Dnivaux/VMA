@@ -131,6 +131,8 @@ pub struct IoPort {
     pub feeds: FeedRegistry,
     /// Where `vma-io` publishes the position of the video files.
     pub timelines: Timelines,
+    /// Master format: capture devices are opened in the mode closest to it.
+    pub format: Format,
 }
 
 /// The single consumer of one output's frames (typically the UI).
@@ -276,6 +278,10 @@ impl RenderEngine {
                     events: io_events,
                     feeds,
                     timelines,
+                    format: Format {
+                        rate: config.rate,
+                        resolution: config.resolution,
+                    },
                 }),
             },
             Readers {

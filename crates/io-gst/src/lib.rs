@@ -6,15 +6,20 @@
 //!   close, play, pause, seek, loop), runs one pipeline per input, reports lost signals and
 //!   reconnects, and publishes the position of the video files.
 //!
-//! Capture devices land at step 8b of the Phase 1 plan (see `ROADMAP.md`).
+//! - Capture devices: listed by a device monitor ([`IoRuntime::devices`]), opened in the mode
+//!   closest to the master format ([`CaptureMode`]).
 
+mod devices;
 mod feeds;
+mod mode;
 mod pipeline;
 mod runtime;
 pub mod still;
 mod supervisor;
 
+pub use devices::CaptureDevice;
 pub use feeds::{Feeds, PictureOut, VideoFormat};
+pub use mode::{CaptureMode, Encoding};
 pub use runtime::IoRuntime;
 
 /// Errors of `io-gst`.

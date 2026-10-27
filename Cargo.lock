@@ -3610,6 +3610,7 @@ dependencies = [
 name = "vma-io-gst"
 version = "0.0.1"
 dependencies = [
+ "arc-swap",
  "crossbeam-channel",
  "gstreamer",
  "gstreamer-app",

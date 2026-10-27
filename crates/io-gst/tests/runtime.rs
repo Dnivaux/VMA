@@ -24,7 +24,7 @@ struct Rig {
     program: FrameReader,
     device: wgpu::Device,
     queue: wgpu::Queue,
-    _io: IoRuntime,
+    io: IoRuntime,
 }
 
 fn rig() -> Rig {
@@ -47,7 +47,7 @@ fn rig() -> Rig {
         program: readers.program,
         device: gpu.device,
         queue: gpu.queue,
-        _io: io,
+        io,
     }
 }
 
@@ -280,4 +280,23 @@ fn video_file_follows_the_playback_commands() {
         .unwrap();
     assert!(playback.playing && playback.looping);
     let _ = std::fs::remove_file(path);
+}
+
+/// A capture input whose device is not connected is a lost signal (retried in the
+/// background); the device list is readable at any time (empty on a machine without camera).
+#[test]
+fn capture_of_a_missing_device_is_a_lost_signal() {
+    let rig = rig();
+    eprintln!("devices: {:?}", rig.io.devices());
+    let id = add(
+        &rig,
+        InputSpec::Capture {
+            device: vma_engine::DeviceId("v4l2:/dev/vma-missing".into()),
+        },
+    );
+    assert!(wait_for(Duration::from_secs(5), || matches!(
+        status(&rig, id),
+        Some(InputStatus::SignalLost { attempts: 1, .. })
+    )));
+    assert_eq!(rig.io.capture_mode(id), None);
 }

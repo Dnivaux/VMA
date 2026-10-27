@@ -5,6 +5,8 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+
+use arc_swap::ArcSwap;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -12,8 +14,10 @@ use vma_core::{ColorInfo, InputId};
 use vma_engine::{InputSpec, IoEvent, IoEventSender, IoPort, IoRequest, Timeline};
 
 use crate::IoError;
+use crate::devices::{CaptureDevice, DeviceList, Monitor};
 use crate::feeds::{Feeds, VideoFormat};
-use crate::pipeline::{GstInput, Recipe};
+use crate::mode::CaptureMode;
+use crate::pipeline::{Capture, GstInput, Recipe};
 use crate::still::{self, StillImage};
 use crate::supervisor::retry_delay;
 
@@ -21,6 +25,11 @@ use crate::supervisor::retry_delay;
 const POLL: Duration = Duration::from_millis(20);
 /// How often the position of the video files is published (4 times a second).
 const TIMELINE_PERIOD: Duration = Duration::from_millis(250);
+/// How often the list of capture devices is read again.
+const DEVICES_PERIOD: Duration = Duration::from_secs(1);
+
+/// Mode of every open capture device.
+type Modes = Arc<ArcSwap<Vec<(InputId, CaptureMode)>>>;
 
 /// One input backed by a pipeline: running, or waiting to be retried.
 #[derive(Debug)]
@@ -78,6 +87,11 @@ impl<F: Feeds> PipelineSlot<F> {
         self.running.as_ref()?.timeline()
     }
 
+    /// Capture device: the mode it runs in (`None` while the pipeline is down).
+    pub(crate) fn capture_mode(&self) -> Option<CaptureMode> {
+        self.running.as_ref()?.capture_mode().cloned()
+    }
+
     /// Starts, watches and restarts the pipeline; reports losses through `emit`.
     pub(crate) fn tick(&mut self, now: Instant, emit: &mut impl FnMut(IoEvent)) {
         match &mut self.running {
@@ -120,6 +134,8 @@ pub struct IoRuntime {
     stop: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
     gstreamer: Result<(), String>,
+    devices: DeviceList,
+    modes: Modes,
 }
 
 impl IoRuntime {
@@ -139,11 +155,17 @@ impl IoRuntime {
             tracing::error!(error = %e, "GStreamer unavailable: capture and file inputs disabled");
         }
         let stop = Arc::new(AtomicBool::new(false));
+        let devices = DeviceList::default();
+        let modes = Modes::default();
         let worker = Worker {
             port,
             gstreamer: gstreamer.clone(),
             pipelines: Vec::new(),
             timelines_at: Instant::now(),
+            devices: devices.clone(),
+            monitor: None,
+            devices_at: Instant::now(),
+            modes: Arc::clone(&modes),
         };
         let thread_stop = Arc::clone(&stop);
         let thread = std::thread::Builder::new()
@@ -153,12 +175,29 @@ impl IoRuntime {
             stop,
             thread: Some(thread),
             gstreamer,
+            devices,
+            modes,
         })
     }
 
     /// Why GStreamer could not be initialised, if it could not.
     pub fn gstreamer_error(&self) -> Option<&str> {
         self.gstreamer.as_ref().err().map(String::as_str)
+    }
+
+    /// The capture devices connected now (empty without GStreamer). Cheap: the list is kept
+    /// up to date by `vma-io`.
+    pub fn devices(&self) -> Vec<CaptureDevice> {
+        self.devices.infos()
+    }
+
+    /// The mode a capture input was opened in (`None` while it is not running).
+    pub fn capture_mode(&self, input: InputId) -> Option<CaptureMode> {
+        self.modes
+            .load()
+            .iter()
+            .find(|(id, _)| *id == input)
+            .map(|(_, m)| m.clone())
     }
 }
 
@@ -178,10 +217,20 @@ struct Worker {
     gstreamer: Result<(), String>,
     pipelines: Vec<PipelineSlot<vma_engine::FeedRegistry>>,
     timelines_at: Instant,
+    devices: DeviceList,
+    monitor: Option<Monitor>,
+    devices_at: Instant,
+    modes: Modes,
 }
 
 impl Worker {
     fn run(mut self, stop: &AtomicBool) {
+        if self.gstreamer.is_ok() {
+            match Monitor::start(self.devices.clone()) {
+                Ok(monitor) => self.monitor = Some(monitor),
+                Err(e) => tracing::error!(error = %e, "no device monitor: no capture device"),
+            }
+        }
         while !stop.load(Ordering::Acquire) {
             match self.port.requests.recv_timeout(POLL) {
                 Ok(Some(request)) => self.handle(request),
@@ -197,9 +246,16 @@ impl Worker {
                 self.timelines_at = now + TIMELINE_PERIOD;
                 self.publish_timelines();
             }
+            if now >= self.devices_at {
+                self.devices_at = now + DEVICES_PERIOD;
+                if let Some(monitor) = &self.monitor {
+                    monitor.refresh();
+                }
+            }
         }
-        // Pipelines stop here, on `vma-io`.
+        // Pipelines and the monitor stop here, on `vma-io`.
         self.pipelines.clear();
+        self.monitor = None;
         tracing::info!("io thread stopped");
     }
 
@@ -237,6 +293,14 @@ impl Worker {
         if all != *self.port.timelines.load() {
             self.port.timelines.store(all);
         }
+        let modes: Vec<(InputId, CaptureMode)> = self
+            .pipelines
+            .iter()
+            .filter_map(|p| p.capture_mode().map(|m| (p.input, m)))
+            .collect();
+        if modes != **self.modes.load() {
+            self.modes.store(Arc::new(modes));
+        }
     }
 
     fn open(&mut self, input: InputId, spec: &InputSpec) {
@@ -270,7 +334,21 @@ impl Worker {
                     Instant::now(),
                 ));
             }
-            InputSpec::Capture { .. } => lost("capture inputs arrive at step 8b".into()),
+            InputSpec::Capture { device } => {
+                tracing::info!(%input, device = %device.0, "opening capture device");
+                let capture = Capture {
+                    device: device.clone(),
+                    devices: self.devices.clone(),
+                    resolution: self.port.format.resolution,
+                    rate: self.port.format.rate,
+                };
+                self.pipelines.push(PipelineSlot::new(
+                    input,
+                    Recipe::capture(capture),
+                    self.port.feeds.clone(),
+                    Instant::now(),
+                ));
+            }
             InputSpec::Color { .. } | InputSpec::TestSource { .. } => {}
         }
     }
@@ -338,6 +416,55 @@ mod tests {
         assert_eq!(feeds.count(), 2);
         let gap = losses[1].0 - losses[0].0;
         assert!(gap >= retry_delay(1), "retried after {gap:?}");
+    }
+
+    /// A camera unplugged (its pipeline fails, it leaves the device list) is retried with
+    /// "not connected" until it is plugged back, recognised by its identifier, and live again
+    /// through a new feed.
+    #[test]
+    fn unplugged_camera_comes_back_by_its_identifier() {
+        use crate::devices::DeviceList;
+        use crate::pipeline::tests::{WEBCAM_CAPS, capture_recipe, fake_camera};
+        let camera = fake_camera(
+            "/dev/video3",
+            "videotestsrc is-live=true ! identity error-after=15 ! jpegenc ! capsfilter caps=image/jpeg",
+            WEBCAM_CAPS,
+        );
+        let devices = DeviceList::default();
+        devices.set(vec![camera.clone()]);
+        let feeds = FakeFeeds::default();
+        let mut slot = PipelineSlot::new(
+            InputId(6),
+            capture_recipe(&camera.info.id.0, &devices, vma_core::Resolution::HD_720),
+            feeds.clone(),
+            Instant::now(),
+        );
+        let start = Instant::now();
+        let mut losses: Vec<(u32, String)> = Vec::new();
+        while feeds.count() < 2 && start.elapsed() < Duration::from_secs(10) {
+            slot.tick(Instant::now(), &mut |e| match e {
+                IoEvent::SignalLost {
+                    attempts, reason, ..
+                } => losses.push((attempts, reason)),
+            });
+            match losses.len() {
+                // First loss (the "unplug"): the camera disappears.
+                1 => devices.set(Vec::new()),
+                // Retried while it is away, then it comes back.
+                2 => devices.set(vec![camera.clone()]),
+                _ => {}
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(
+            feeds.count(),
+            2,
+            "live again through a new feed: {losses:?}"
+        );
+        assert_eq!(losses.len(), 2, "{losses:?}");
+        assert_eq!(losses[1].0, 2);
+        assert!(losses[1].1.contains("is not connected"), "{losses:?}");
+        assert!(slot.capture_mode().is_some());
     }
 
     #[test]
