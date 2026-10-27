@@ -3,7 +3,9 @@
 //!
 //! Phase 1 sources are drawn straight at thumbnail size: solid colours through one pipeline
 //! reading the cell's colour from a single uniform array (one buffer for the whole atlas, not
-//! one per input), the test pattern through its own pipeline with the cell as viewport. Scaled video sources join with the upload path.
+//! one per input), the test pattern through its own pipeline with the cell as viewport,
+//! frames converted to display light then fitted into the cell over a black fill (the
+//! frame's own passes, see `frame.rs`).
 
 use bytemuck::Zeroable;
 use vma_core::{Resolution, Rgb8};
@@ -31,6 +33,12 @@ pub fn cell_rect(cell: usize) -> Option<(u32, u32, u32, u32)> {
         THUMBNAIL_WIDTH,
         THUMBNAIL_HEIGHT,
     ))
+}
+
+/// Size of one thumbnail, as a [`Resolution`].
+pub fn thumbnail_resolution() -> Resolution {
+    // Constant, valid dimensions.
+    Resolution::new(THUMBNAIL_WIDTH, THUMBNAIL_HEIGHT).unwrap_or_default()
 }
 
 /// Size of a thumbnail atlas.
@@ -137,25 +145,30 @@ impl ThumbnailPainter {
     /// Records one atlas: each `(cell, source)` is drawn; other cells keep their previous
     /// content (the reader only looks at the cells it is told about). `frame` animates
     /// test-pattern cells. No allocation.
-    pub fn encode(
+    pub fn encode<'a>(
         &self,
         queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
         atlas: &wgpu::TextureView,
         frame: u64,
-        cells: impl Iterator<Item = (usize, Source)> + Clone,
+        cells: impl Iterator<Item = (usize, Source<'a>)> + Clone,
     ) {
         let mut colors = CellColors::zeroed();
         let mut any_pattern = false;
         for (cell, source) in cells.clone() {
             let solid = match source {
-                Source::Black => Rgb8::BLACK,
+                // Frames are fitted over black.
+                Source::Black | Source::Frame(_) => Rgb8::BLACK,
                 Source::Color(c) => c,
                 Source::TestPattern { .. } => {
                     any_pattern = true;
                     continue;
                 }
             };
+            if let Source::Frame(input) = source {
+                // Before the atlas pass, which samples the result.
+                input.encode_linear(encoder);
+            }
             if let Some(slot) = colors.0.get_mut(cell) {
                 *slot = [solid.r, solid.g, solid.b, 255].map(|v| f32::from(v) / 255.0);
             }
@@ -196,6 +209,9 @@ impl ThumbnailPainter {
             pass.set_pipeline(&self.solid);
             pass.set_bind_group(0, &self.colors_bind_group, &[]);
             pass.draw(0..3, cell..cell + 1);
+            if let Source::Frame(input) = source {
+                input.draw_thumbnail(&mut pass, (x, y), thumbnail_resolution());
+            }
         }
     }
 }

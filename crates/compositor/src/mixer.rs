@@ -1,5 +1,5 @@
 //! Program composition (spec `compositor.md`, Phase 1): each tick renders up to two sources
-//! into `Rgba16Float` layers, mixes them into the `Rgba16Float` Program target, then converts
+//! (solid colour, test pattern, [`InputFrame`]) into `Rgba16Float` layers, mixes them into the `Rgba16Float` Program target, then converts
 //! it to [`PROGRAM_FORMAT`] for the UI.
 //!
 //! Every GPU object is created in [`Mixer::new`]; [`Mixer::encode`] only records commands and
@@ -7,14 +7,14 @@
 
 use vma_core::{Resolution, Rgb8};
 
-use crate::{PROGRAM_FORMAT, RenderTarget, TestPattern};
+use crate::{InputFrame, PROGRAM_FORMAT, RenderTarget, TestPattern};
 
 /// Format of the internal layers and of the Program target before output (ADR 0005).
 pub const INTERNAL_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 
 /// What fills a layer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Source {
+#[derive(Debug, Clone, Copy)]
+pub enum Source<'a> {
     Black,
     /// Solid colour, R'G'B' 8 bits.
     Color(Rgb8),
@@ -22,6 +22,8 @@ pub enum Source {
     TestPattern {
         frame: u64,
     },
+    /// A picture of an input, converted and, if its size differs, fitted (letterbox black).
+    Frame(&'a InputFrame),
 }
 
 /// Where a mix is computed.
@@ -35,17 +37,17 @@ pub enum MixSpace {
 }
 
 /// One composition: `from` mixed towards `to` by `mix` (0 = `from` alone, 1 = `to` alone).
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Mix {
-    pub from: Source,
-    pub to: Source,
+#[derive(Debug, Clone, Copy)]
+pub struct Mix<'a> {
+    pub from: Source<'a>,
+    pub to: Source<'a>,
     pub mix: f32,
     pub space: MixSpace,
 }
 
-impl Mix {
+impl<'a> Mix<'a> {
     /// `source` alone.
-    pub fn single(source: Source) -> Self {
+    pub fn single(source: Source<'a>) -> Self {
         Self {
             from: source,
             to: Source::Black,
@@ -180,7 +182,7 @@ impl Mixer {
         &self,
         queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
-        frame: &Mix,
+        frame: &Mix<'_>,
         out: &wgpu::TextureView,
     ) {
         let Mix {
@@ -229,12 +231,16 @@ impl Mixer {
         &self,
         queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
-        source: Source,
+        source: Source<'_>,
         layer: &wgpu::TextureView,
     ) {
         let clear = match source {
             Source::TestPattern { frame } => {
                 self.pattern.encode(queue, encoder, layer, frame);
+                return;
+            }
+            Source::Frame(input) => {
+                input.encode_layer(encoder, layer, self.program.resolution());
                 return;
             }
             Source::Black => wgpu::Color::BLACK,

@@ -343,7 +343,7 @@ fn install_gpu_handlers(device: &wgpu::Device, stats: &Arc<RenderStats>) {
     });
 }
 
-fn render_source_to_compositor(source: RenderSource, frame: u64) -> Source {
+fn render_source_to_compositor(source: RenderSource, frame: u64) -> Source<'static> {
     match source {
         RenderSource::Color(c) => Source::Color(c),
         RenderSource::TestPattern => Source::TestPattern { frame },
@@ -428,7 +428,7 @@ impl RenderWorker {
         tracing::info!("render thread stopped");
     }
 
-    fn source(&self, input: Option<InputId>, frame: u64) -> Source {
+    fn source(&self, input: Option<InputId>, frame: u64) -> Source<'_> {
         match input.and_then(|id| self.sources.get(id)) {
             Some(source) => render_source_to_compositor(source, frame),
             // No input, or one without pictures yet: black.

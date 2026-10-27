@@ -83,6 +83,23 @@ simple bilinéaire en Phase 1 (crénelage possible) ; mipmaps ou filtre plus lar
   que les cellules annoncées. **Tous** les inputs sont redessinés un tick sur deux (plutôt que
   répartis sur les ticks : un atlas publié doit être complet ; à revoir avec les inputs vidéo
   si la charge l'exige). Test : `golden_mix::thumbnail_atlas_cells` (mire en vignette = golden).
+- **Frames CPU (étape 5, 2026-10-27)** : `InputFrame` (module `frame`) = une texture par plan
+  (NV12 = `R8` + `Rg8`, I420 = 3 × `R8`, YUY2 / UYVY = `Rgba8` de demi-largeur, RGBA / BGRA =
+  `Rgba8` / `Bgra8`) + une texture `Rgba16Float` à la taille native (lumière d'affichage) ;
+  `write` (plans avec *stride*, validés avant tout upload : erreur typée `FrameError`) et
+  `write_packed`. Pipelines et layouts partagés dans `FramePipelines` (créé une fois, cloné à
+  coût nul). `Source::Frame(&InputFrame)` dans le `Mixer` et les vignettes.
+  - Même taille que la cible : passe directe planes → R'G'B' dans le calque.
+  - Sinon : planes → lumière d'affichage (constante de pipeline `LINEARIZE`), puis
+    échantillonnage bilinéaire dans le rectangle `fit_rect` (viewport, pixels entiers, arrondi
+    au plus proche, pixels carrés), ré-encodage ; bandes noires par le *clear* du calque (ou
+    le fond noir de la cellule de vignette).
+  - Chroma 4:2:0 / 4:2:2 : échantillon co-situé (au plus proche), pas d'interpolation — à
+    revoir si les contours colorés se voient sur de la vraie vidéo.
+  - RGB : colorimétrie ignorée (toujours pleine plage). Valeurs hors 0–1 après matrice :
+    écrêtées.
+  - Pas de déduplication : une frame visible dans le Program, la Preview et les vignettes est
+    convertie pour chacune (coût GPU faible à 4 inputs ; à revoir si besoin).
 - Le golden « Fade 50 % mire ↔ couleur » est **analytique** (moyenne du golden de la mire et de
   la couleur), plutôt qu'un nouveau PNG `fade50.png`.
 
@@ -97,7 +114,9 @@ simple bilinéaire en Phase 1 (crénelage possible) ; mipmaps ou filtre plus lar
 | Mire via le `Mixer` = golden Phase 0, PSNR ≥ 45 dB | `golden_mix::test_pattern_through_the_float_chain_matches_the_phase_0_golden` | CI |
 | Vignette d'une mire = mire réduite (PSNR ≥ 35 dB contre une réduction de référence) ; vignette noire en signal perdu | golden | CI |
 | Fade 50 % mire ↔ couleur : PSNR ≥ 45 dB contre l'image de référence | `golden_mix::fade_50_percent_pattern_to_color` (référence analytique) | CI |
-| YUV → RGB : barres 75 % synthétiques en NV12, I420, YUY2, UYVY, 601 / 709, limitée / pleine → R'G'B' attendu ±1 (A7) | golden analytique, 24 combinaisons | CI |
-| Sans changement de taille, passe d'entrée sans perte : RGBA → RGBA bit-exact | golden | CI |
-| Fit : source 4:3 dans un Program 16:9 → bandes noires de la bonne largeur, ±1 px | golden | CI |
-| Mise à l'échelle linéaire : damier noir / blanc 1 px réduit de moitié → gris 191 ±1 (`255 × 0,5^(1/2,4)` : moitié de la luminance), et non 128 | golden analytique | CI |
+| YUV → RGB : barres 75 % synthétiques en NV12, I420, YUY2, UYVY, 601 / 709, limitée / pleine → R'G'B' attendu ±1 (A7) | `golden_frame::ycbcr_bars_decode_for_every_format_matrix_and_range` (24 combinaisons, RGBA / BGRA compris ; ±1 contre la référence CPU **et** contre les barres idéales 191 / 0) | CI |
+| Sans changement de taille, passe d'entrée sans perte : RGBA → RGBA bit-exact | `golden_frame::rgb_at_program_size_is_bit_exact` (RGBA et BGRA) | CI |
+| Fit : source 4:3 dans un Program 16:9 → bandes noires de la bonne largeur, ±1 px | `golden_frame::four_by_three_is_pillarboxed`, `frame_thumbnail_is_fitted_in_its_cell` | CI |
+| Mise à l'échelle linéaire : damier noir / blanc 1 px réduit de moitié → gris 191 ±1 (`255 × 0,5^(1/2,4)` : moitié de la luminance), et non 128 | `golden_frame::halved_checkerboard_is_191_not_128` | CI |
+| Tailles impaires : dernière colonne et dernière ligne présentes (chroma arrondie au supérieur) | `golden_frame::odd_sized_frames_are_complete` | CI |
+| Upload invalide (nombre de plans, *stride*, taille) refusé sans erreur GPU ni panique | `golden_frame::bad_uploads_are_refused` | CI |
