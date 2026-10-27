@@ -551,7 +551,13 @@ pub(crate) mod tests {
         }));
         let after = stalled.elapsed();
         eprintln!("silence detected after {after:?}: {reason:?}");
-        assert!(after >= MIN_SILENCE && after < MIN_SILENCE * 3, "{after:?}");
+        // Counted from the last picture, which arrived up to one period (20 ms) before the
+        // valve closed.
+        let period = Duration::from_millis(20);
+        assert!(
+            after + period >= MIN_SILENCE && after < MIN_SILENCE * 3,
+            "{after:?}"
+        );
     }
 
     #[test]

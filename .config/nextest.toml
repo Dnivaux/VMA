@@ -4,3 +4,10 @@ slow-timeout = { period = "60s", terminate-after = 5 }
 [profile.ci]
 fail-fast = false
 failure-output = "immediate-final"
+
+# Tests that measure real time (missed clock ticks, picture rates, silence detection) run
+# alone: on 2-core CI runners, the GStreamer 1080p50 and GPU tests running beside them can
+# delay a tick or a picture by more than a frame period.
+[[profile.default.overrides]]
+filter = 'test(hot_add_and_remove_without_missed_frames) | test(live_test_source_delivers_in_order_at_its_rate) | test(errors_end_of_stream_and_silence_are_losses) | test(lost_pipeline_is_reported_and_reconnected)'
+threads-required = "num-test-threads"
