@@ -1,6 +1,7 @@
 # ADR 0004 — Entrées GStreamer et dépendances de la Phase 1
 
-- **Statut** : accepté (mainteneur, 2026-10-26)
+- **Statut** : accepté (mainteneur, 2026-10-26) ; **amendement 1 proposé le 2026-10-28, à
+  valider** (upload hors de la `Queue` partagée, en fin de document)
 - **Date** : 2026-10-26
 - **Contexte** : BRIEF §5 (upload GPU), §6 (stack), §2.6 (licences) ; spec
   [`docs/specs/io-gst.md`](../specs/io-gst.md)
@@ -27,7 +28,7 @@ sont relayés par un *sync handler* (sur les threads GStreamer, sans traitement 
 `vma-io`, qui en fait des événements pour `vma-control` (`Live`, `SignalLost`, …).
 
 ### Upload : sur le thread de streaming, dans un triple buffer de textures
-Le callback `new-sample` de l'appsink (thread de streaming GStreamer) écrit les plans de l'image
+*(Remplacé par l'amendement 1 s'il est validé.)* Le callback `new-sample` de l'appsink (thread de streaming GStreamer) écrit les plans de l'image
 dans la texture « back » de l'input (`queue.write_texture`, même `Queue` que le rendu) puis
 publie. **Même invariant que le triple buffer Program (ADR 0001)**, avec le rendu comme
 consommateur : il ne change d'image qu'en début de tick, avant d'encoder. Le zero-copy
@@ -61,3 +62,100 @@ consommateur : il ne change d'image qu'en début de tick, avant d'encoder. Le ze
 - **Conversion systématique par `videoconvert` en RGBA** : coût CPU élevé à 4 × 1080p50 ; la
   conversion YUV → RGB se fait en shader (BRIEF §5), `videoconvert` ne sert que pour les
   formats non pris en charge.
+
+---
+
+## Amendement 1 — Upload hors de la `Queue` partagée (proposé le 2026-10-28, à valider)
+
+### Constat
+Rapports [`2026-10-27-phase1-render-cpu-0-input.md`](../../tests/soak/reports/2026-10-27-phase1-render-cpu-0-input.md)
+et [`…-4-inputs.md`](../../tests/soak/reports/2026-10-27-phase1-render-cpu-4-inputs.md), puis
+6 soaks de 30 s du 2026-10-28 (1080p50, 4 sources synthétiques 1080p50 NV12, RTX 5090, Vulkan) :
+
+| Configuration | Tick complet p50 | p99 | max |
+|---|---|---|---|
+| Sans input (2026-10-27) | 0,09 ms | 0,16 ms | 0,49 ms |
+| 4 inputs, `write_texture` actuel, 3 runs | 0,17 · 7,1 · 7,3 ms | 5,8 · 9,4 · 10,0 ms | 9,9 · 9,6 · 11,0 ms |
+| 4 inputs, essai `write_buffer_with` (copie hors verrou, voir plus bas), 3 runs | 2,6 · 2,9 · 2,2 ms | 4,7 · 5,0 · 5,2 ms | 7,3 · 6,6 · 6,6 ms |
+
+- Le thread de rendu **attend** : il ne consomme que ≈ 1,4 ms de CPU par tick (`schedstat`).
+- **Cause identifiée** dans le code de wgpu-core 30.0.1 (`device/queue.rs`) : `Queue::write_texture`
+  prend le mutex `pending_writes` **avant** d'allouer le tampon de transfert et d'y copier
+  l'image (≈ 3 Mo en 1080p NV12), et le garde jusqu'à la fin. `queue.submit` et
+  `queue.write_buffer` (uniforms, pendant l'encodage) prennent ce même mutex : le rendu attend
+  derrière la copie de chaque producteur.
+- Le résultat est **bimodal** d'un run à l'autre (p50 0,17 ms ou ≈ 7 ms) : des sources 50p
+  sont en phase avec le maître 50p, et le décalage de phase tiré au démarrage décide si les
+  copies tombent ou non sur le tick. Un soak unique peut donc passer à côté.
+- Budget tenu aujourd'hui (0 image manquée en A1), mais la marge (20 ms à 50p, 16,7 ms à 60p)
+  fond avec la résolution (4K = × 4 par image) et le nombre d'inputs, et la Phase 2 ajoute les
+  readbacks des sorties sur la même `Queue`.
+
+### Décision proposée : tampons de transfert mappés en permanence, copie enregistrée par le rendu
+1. Chaque emplacement du triple buffer d'un input (`InputFrame`) reçoit, en plus de ses
+   textures, **un tampon de transfert** `MAP_WRITE | COPY_SRC` (mémoire visible de l'hôte),
+   lignes alignées sur `COPY_BYTES_PER_ROW_ALIGNMENT` (256 octets), créé mappé
+   (`mapped_at_creation`) hors du thread de rendu.
+2. **Producteur** (thread de streaming GStreamer, chargeur d'image, source de test) : copie les
+   plans dans le tampon **mappé** de son emplacement arrière (`memcpy` ligne par ligne, aucun
+   verrou de wgpu tenu), `unmap()` (chemin sans verrou de la `Queue`, vérifié dans
+   `resource.rs`), marque l'emplacement « à copier », publie. **Il n'appelle plus la `Queue`.**
+3. **Thread de rendu**, en début de tick, pour chaque input qui a pris une image nouvelle
+   marquée « à copier » : `encoder.copy_buffer_to_texture` (un par plan) dans **son propre
+   encodeur**, avant les passes de conversion ; après `queue.submit`, `map_async(Write)` sur ces
+   tampons. Le rappel (sur le thread qui fait `device.poll`, donc le rendu) ne fait que poser
+   un drapeau atomique « mappé ».
+4. Si une image arrive alors que le tampon de l'emplacement arrière n'est pas encore re-mappé
+   (GPU en retard d'au moins un tick), le producteur **ne bloque pas** : l'image est sautée et
+   comptée dans un nouveau compteur `upload_busy` des statistiques de l'input (affiché, et
+   vérifié à 0 dans les soaks).
+5. Les écritures ponctuelles hors cadence (création d'un `InputFrame`, couleur, uniforms
+   d'un input, image fixe chargée une fois) peuvent rester sur `queue.write_*`.
+
+Propriété des tampons, passée par atomiques : *mappé* (au producteur) → *rempli* (publié) →
+*copie soumise* (au rendu) → *mappé* (rappel de `map_async`). Le triple buffer d'indices et
+son invariant ne changent pas ; l'invariant de l'ADR 0001 (une seule `Queue`, exécution dans
+l'ordre de soumission) devient **plus simple** : seuls le rendu et l'UI soumettent, et les
+textures d'un input ne sont plus écrites que par le rendu, dans l'ordre de ses propres
+soumissions.
+
+### Coûts et limites
+- **Mémoire** : 3 tampons de transfert par input, en mémoire hôte mappée : ≈ 3,3 Mo chacun en
+  1080p NV12 (≈ 10 Mo par input), ≈ 12,4 Mo en 2160p. Les textures restent en VRAM comme
+  aujourd'hui.
+- **Une copie GPU de plus** (tampon → texture, faite aujourd'hui par wgpu de la même façon dans
+  ses `pending_writes`) : même travail GPU, simplement enregistré par nous.
+- **Allocation interne à wgpu sur le thread de rendu** : `map_async` met le rappel dans une
+  `Box` (une par image nouvelle et par input, ≈ 200 / s à 4 × 50p) et prend brièvement le verrou
+  du suivi de vie (`lock_life`), déjà pris par `submit` / `poll`. À ajouter à la dette
+  « allocations internes à wgpu » de l'ADR 0001.
+- **`unsafe`** : aucun (API publique de wgpu : `get_mapped_range_mut`, `unmap`, `map_async`).
+- Le `memcpy` GStreamer → tampon reste sur le thread du producteur (même coût CPU qu'aujourd'hui,
+  mais hors verrou). Supprimer cette copie (pool de tampons GStreamer alloué dans notre
+  mémoire mappée) ou passer au zero-copy (interop CUDA / Vulkan / D3D11) reste une
+  optimisation ultérieure, derrière le même découpage.
+
+### Critères d'acceptation de l'amendement
+- 4 × 1080p50 en 1080p50 : **tick complet p99 ≤ 1 ms** et max ≤ 3 ms, sur **3 soaks de 2 min**
+  (pour couvrir les deux régimes de phase), `upload_busy` = 0, 0 image manquée / répétée.
+- Même mesure à 60p avec 4 sources 60p, et un run 4 × 2160p30 en 2160p30 (informatif, pour
+  la Phase 2).
+- Inchangés et verts : golden `golden_frame` (A7, chemin d'upload réel, plus seulement
+  `write_texture`), `hot_add_and_remove_without_missed_frames` (A12), `triple_buffer_gpu_stress`,
+  tests `io-gst`, en CI (lavapipe, WARP) et sur RTX 5090 + Intel ARL.
+- Un nouveau test : un producteur qui publie plus vite que le GPU ne rend les tampons →
+  images sautées comptées dans `upload_busy`, jamais de blocage ni d'image corrompue.
+
+### Alternatives examinées
+- **`queue.write_buffer_with` vers un tampon GPU par emplacement**, copie vers la texture par le
+  rendu : la copie se fait hors verrou, mais wgpu alloue un tampon de transfert à chaque image
+  et reprend `pending_writes` pour enregistrer la copie. **Essayé** (correctif jetable, non
+  commité) : p50 ÷ 3, mais p99 toujours ≈ 5 ms (tableau ci-dessus). Écarté au profit de la
+  décision proposée, qui ne touche plus du tout la `Queue` côté producteur.
+- **Upload sur le thread de rendu** (`write_texture` en début de tick) : déjà écarté (copie de
+  ≈ 3 Mo par input et par tick dans le chemin chaud).
+- **Un thread d'upload dédié** qui fait les `write_texture` : même mutex, même contention.
+- **Un second `Device`** pour les uploads : pas de partage de textures sans copie ni interop,
+  déjà écarté par l'ADR 0001.
+- **Zero-copy (interop)** : dépend de la plateforme et du décodeur, `unsafe`. C'est l'étape
+  suivante possible, pas un remplacement de celle-ci.

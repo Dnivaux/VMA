@@ -59,10 +59,11 @@ titres HTML + natifs, multi-cadence dès la Phase 1, macOS plus tard).
   (encodage et `queue.submit` à parts égales). Le thread de rendu ne consomme pourtant que
   ≈ 1,4 ms de CPU par tick (`schedstat`) : il est bloqué, probablement derrière les
   `write_texture` des threads GStreamer — [`tests/soak/reports/2026-10-27-phase1-render-cpu-4-inputs.md`](tests/soak/reports/2026-10-27-phase1-render-cpu-4-inputs.md).
-  Budget tenu (0 image manquée), mais la marge fond à 60p ou avec plus d'inputs. Piste : sortir
-  les uploads de la `Queue` partagée côté producteurs (tampons de transfert mappés remplis par
-  GStreamer, copie enregistrée par le thread de rendu dans son encodeur) → amendement de
-  l'ADR 0004, à traiter avant les sorties de la Phase 2.
+  Budget tenu (0 image manquée), mais la marge fond à 60p ou avec plus d'inputs. Cause
+  trouvée le 2026-10-28 : `write_texture` tient le mutex `pending_writes` de wgpu-core pendant
+  sa copie, et le résultat est bimodal selon la phase des sources (p50 0,17 ou ≈ 7 ms).
+  Correctif proposé : **amendement 1 de l'ADR 0004** (tampons de transfert mappés, copie
+  enregistrée par le rendu), **à valider**, à traiter avant les sorties de la Phase 2.
 - **Soak hostile Windows non passé** : le risque principal non vérifié est le gel du thread UI
   pendant la boucle modale de déplacement / redimensionnement de Windows, combiné à la `Queue`
   partagée (contention possible sur les verrous internes de wgpu au moment du `present`).
