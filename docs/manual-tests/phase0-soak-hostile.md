@@ -45,6 +45,12 @@ fait tourner sa propre boucle modale et le thread UI est gelé.
    cargo run --release -- --soak 600 --hostile `
      --report "tests/soak/reports/$(Get-Date -Format yyyy-MM-dd)-phase0-hostile-windows.md"
    ```
+   Ou, pour enchaîner avec le soak A1 de la Phase 1 (30 min sans toucher la machine, puis ce
+   soak hostile après une pause, un rapport chacun) :
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File tests\soak\phase1-windows.ps1
+   ```
+   (`-Only A1` ou `-Only A13` pour n'en lancer qu'un ; `$env:VMA_SOAK_SECS = 60` pour un essai court.)
 2. [ ] Pendant les 10 minutes, en plus des agressions automatiques :
    - [ ] **maintenir** la barre de titre et déplacer la fenêtre en continu pendant ≥ 30 s,
      plusieurs fois (boucle modale de déplacement) ;
