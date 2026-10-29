@@ -30,7 +30,7 @@ titres HTML + natifs, multi-cadence dès la Phase 1, macOS plus tard).
 | Mode soak dans l'app (`--soak`, `--hostile`, rapport Markdown, code de sortie) | ✅ (manuel) | Soak hostile Linux de 10 min ci-dessous |
 | **Acceptation : 10 min à 50 fps sans image manquée** | ✅ (manuel) | 600 s, 30 002 images, 0 manquée, 0 répétée — [`tests/soak/reports/2026-10-26-phase0-render-loop.md`](tests/soak/reports/2026-10-26-phase0-render-loop.md) |
 | **Acceptation : soak hostile 10 min, 0 image manquée — Linux** (amendement 3) | ✅ (manuel) | 600 s, 30 001 images, 0 manquée, 0 répétée, réveil p99 3 µs / max 1,4 ms, UI gelée jusqu'à 26,9 s sans effet sur le Program — [`tests/soak/reports/2026-10-26-phase0-hostile-linux.md`](tests/soak/reports/2026-10-26-phase0-hostile-linux.md) |
-| **Acceptation : soak hostile 10 min, 0 image manquée — Windows** | ⏸ | **Reporté** (2026-10-26, décision du mainteneur) : exige de redémarrer la machine de dev sous Windows. Devait passer au plus tard avec le soak d'acceptation de la Phase 1 sous Windows, **reporté à son tour le 2026-10-28** (décision du mainteneur) : nouvelle échéance à fixer à la revue de fin de Phase 1. Script prêt : `tests/soak/phase1-windows.ps1`. Couvert entre-temps : build, clippy et 32 tests sur Windows en CI (WARP). Checklist : [`docs/manual-tests/phase0-soak-hostile.md`](docs/manual-tests/phase0-soak-hostile.md) |
+| **Acceptation : soak hostile 10 min, 0 image manquée — Windows** | ⏸ | **Reporté** (2026-10-26, décision du mainteneur) : exige de redémarrer la machine de dev sous Windows. Devait passer au plus tard avec le soak d'acceptation de la Phase 1 sous Windows, **reporté à son tour le 2026-10-28**, puis **sans échéance le 2026-10-29** (décision du mainteneur : pas de test possible sous Windows pour l'instant). Script prêt : `tests/soak/phase1-windows.ps1`. Couvert entre-temps : build, clippy et 32 tests sur Windows en CI (WARP). Checklist : [`docs/manual-tests/phase0-soak-hostile.md`](docs/manual-tests/phase0-soak-hostile.md) |
 | **Acceptation : CI verte sur les 2 OS** | ✅ | Runs 40373180391 et [40378932947](https://github.com/Dnivaux/VMA/actions/runs/40378932947) (32 tests, Ubuntu + Windows) |
 | Doc : `CLAUDE.md`, ADR 0001 et 0002, specs `clock` / `compositor` / `engine`, `docs/dev-setup.md`, checklist soak hostile | ✅ | — |
 
@@ -68,7 +68,7 @@ titres HTML + natifs, multi-cadence dès la Phase 1, macOS plus tard).
   pendant la boucle modale de déplacement / redimensionnement de Windows, combiné à la `Queue`
   partagée (contention possible sur les verrous internes de wgpu au moment du `present`).
 
-## Phase 1 — Mélange de base · *implémentée, en attente de revue (soaks Windows reportés)*
+## Phase 1 — Mélange de base · *close sous Linux le 2026-10-29 ; Windows non vérifié (soaks reportés sans échéance)*
 Inputs GStreamer (webcam / capture, fichier en boucle, image, couleur), Preview + Program,
 Cut / Fade (mixage gamma par défaut, linéaire en option), couche `Command`, cibles internes
 `Rgba16Float` + YUV → RGB, **cadence maître réglable (25 / 29,97 / 30 / 50 / 59,94 / 60p) avec
@@ -96,16 +96,31 @@ défaut des 4 boutons et le sens de « forcer le fade à cut » (questions de su
 | 8b. `io-gst` : capture (`DeviceMonitor` : V4L2 / Media Foundation), identifiant stable, choix du mode, MJPEG décodé, reconnexion par identifiant | ✅ | `IoRuntime::devices()` (moniteur permanent sur `vma-io`, doublons PipeWire masqués), `capture_mode(input)` ; mode choisi selon `io-gst.md` (6 tests sur des caps de webcam) ; fausse caméra (sous-classe `gst::Device`) en CI : MJPEG → I420 et YUY2 sans conversion, débranchement → « not connected » → rebranchement reconnu par l'identifiant (nouveau feed) ; moteur réel : périphérique absent = signal perdu. **Pas de webcam sur la machine de dev ni en CI** : capture réelle (Linux et Windows) dans la checklist manuelle [`phase1-inputs.md`](docs/manual-tests/phase1-inputs.md), à passer avec l'UI de 8c. CI verte Ubuntu + Windows ([run 40527661856](https://github.com/Dnivaux/VMA/actions/runs/40527661856)) |
 | 8c. `ui` : ajout d'input (caméras, sélecteur de fichier `rfd`), contrôles vidéo sous Preview / Program, mode de capture et conversions affichés, message « GStreamer absent » | ✅ | `IoStatus` (l'UI ne dépend pas de GStreamer), sélecteur natif sur un thread à part (le Program continue), Lecture / Pause / Début / position, mode au survol des vignettes et dans les Statistiques. 3 nouveaux tests d'UI sans fenêtre (A11 : chaque contrôle émet la bonne `Command`, aucune avant le choix du fichier ; GStreamer absent) ; soak de l'appli 10 s : 0 manquée. **Contrôles vidéo** : fini pour la Phase 1. Checklist manuelle (vidéos, images, capture, sélecteur) à passer. CI verte Ubuntu + Windows ([run 40535348223](https://github.com/Dnivaux/VMA/actions/runs/40535348223)) |
 | 9. Multi-cadence de bout en bout : `--rate`, `--resolution`, sources synthétiques à toutes les cadences, soaks courts A6 | ✅ | `--rate` (les 6 cadences maîtres, ADR 0002), `--resolution`, `--inputs n --input-rates … --input-resolution` : `InputSpec::Synthetic` (`videotestsrc` live, tout le chemin d'un input ; `TestSource` reste la mire). Soak : transitions automatiques entre les sources (Fade 0,5 s / Cut toutes les 4 s), rapport par input (reçues / s contre la cadence nominale ±2 %, sautées, répétées, latence p50 / p99 / max, pertes de signal), verdict avec **A10** (latence p99 ≤ 2 images). Test de bout en bout 25 → 50 (`synthetic_source_is_resampled_to_the_master_rate`). Essais : 20 s 1080p50 avec 4 sources 50 / 25 / 29,97 / 60 et 8 s 720p59,94 : réussis. **A6 ✅ (manuel)** : 6 soaks de 2 min dans l'appli réelle (`tests/soak/a6-rates.sh`, RTX 5090, 4 sources 1080p par cadence maître : la cadence maître + 3 autres), **0 image manquée, 0 répétée, 0 perte de signal**, chaque source à sa cadence, latence p99 ≤ 33,4 ms (limite A10 : 2 images, soit 33,4 à 80 ms selon la cadence) — rapports [`tests/soak/reports/2026-10-27-phase1-a6-*.md`](tests/soak/reports/). CI verte Ubuntu + Windows ([run 40537943261](https://github.com/Dnivaux/VMA/actions/runs/40537943261), puis [40542670175](https://github.com/Dnivaux/VMA/actions/runs/40542670175)) |
-| 10. Soak d'acceptation A1 (Linux, puis Windows avec A13), rapport, arrêt pour revue | ✅ Linux · ⏸ Windows | **A1 Linux ✅ (manuel)** : 30 min dans l'appli réelle, 1080p50, 4 sources synthétiques 1080p50, 449 transitions : 90 001 ticks, **0 image manquée, 0 répétée, 0 perte de signal**, chaque source à 50,00 i/s, latence p99 ≤ 16,8 ms (**A10** : ≤ 2 images = 40 ms), vignettes actives (**A19**) ; temps CPU de rendu max 10,8 ms (voir dette) — [`tests/soak/reports/2026-10-27-phase1-a1-linux.md`](tests/soak/reports/2026-10-27-phase1-a1-linux.md). **A1 + A13 sous Windows : ⏸ reportés** (2026-10-28, décision du mainteneur ; redémarrage de la machine de dev nécessaire). Couvert entre-temps : build, clippy et tests sous Windows en CI (WARP, GStreamer installé), mais aucun soak sous Windows. Script prêt, jamais exécuté : `tests/soak/phase1-windows.ps1` (A1 puis A13, un rapport chacun). Échéance à fixer à la revue de fin de Phase 1 |
+| 10. Soak d'acceptation A1 (Linux, puis Windows avec A13), rapport, arrêt pour revue | ✅ Linux · ⏸ Windows | **A1 Linux ✅ (manuel)** : 30 min dans l'appli réelle, 1080p50, 4 sources synthétiques 1080p50, 449 transitions : 90 001 ticks, **0 image manquée, 0 répétée, 0 perte de signal**, chaque source à 50,00 i/s, latence p99 ≤ 16,8 ms (**A10** : ≤ 2 images = 40 ms), vignettes actives (**A19**) ; temps CPU de rendu max 10,8 ms (voir dette) — [`tests/soak/reports/2026-10-27-phase1-a1-linux.md`](tests/soak/reports/2026-10-27-phase1-a1-linux.md). **A1 + A13 sous Windows : ⏸ reportés** (2026-10-28, décision du mainteneur ; redémarrage de la machine de dev nécessaire). Couvert entre-temps : build, clippy et tests sous Windows en CI (WARP, GStreamer installé), mais aucun soak sous Windows. Script prêt, jamais exécuté : `tests/soak/phase1-windows.ps1` (A1 puis A13, un rapport chacun). **Sans échéance** depuis le 2026-10-29 (le mainteneur ne peut pas tester sous Windows) |
 
 ### Tests manuels non passés
 | Test | Raison |
 |---|---|
-| A1 sous Windows (`tests/soak/phase1-windows.ps1 -Only A1`) | ⏸ Reporté le 2026-10-28 (décision du mainteneur) : redémarrage sous Windows nécessaire |
-| A13 : soak hostile Windows (`tests/soak/phase1-windows.ps1 -Only A13`) | ⏸ Reporté depuis la Phase 0, à nouveau le 2026-10-28 (même raison) |
+| A1 sous Windows (`tests/soak/phase1-windows.ps1 -Only A1`) | ⏸ Reporté le 2026-10-28, sans échéance depuis le 2026-10-29 (décision du mainteneur) : pas de test possible sous Windows |
+| A13 : soak hostile Windows (`tests/soak/phase1-windows.ps1 -Only A13`) | ⏸ Reporté depuis la Phase 0, sans échéance depuis le 2026-10-29 (même raison) |
 | Checklist [`phase1-inputs.md`](docs/manual-tests/phase1-inputs.md) (vidéos, images, capture, sélecteur ; partie manuelle d'A8 : débrancher la webcam) | Pas encore passée ; pas de webcam sur la machine de dev (capture couverte en CI par une fausse caméra) |
 
-## Phase 2 — Sorties · ⬜
+**Revue de fin de Phase 1 (2026-10-29)** : le mainteneur passe à la Phase 2 sans pouvoir tester
+sous Windows. La Phase 1 est close sur la base des critères vérifiés sous Linux et de la CI
+Ubuntu + Windows ; **aucun soak n'a jamais tourné sous Windows** (A1, A13 et le soak hostile de
+la Phase 0 restent ⏸, script prêt). Restent aussi ouverts : la checklist `phase1-inputs.md` et
+les questions de suivi au partenaire (durées des 4 boutons, « forcer le fade à cut »).
+
+## Phase 2 — Sorties · ⬜ *spec proposée, en attente de validation*
+Enregistrement (NVENC, MKV / MP4), streaming RTMP(S) vers 1 à 3 destinations, SRT caller /
+listener, sortie plein écran, FTB (reporté de la Phase 1).
+
+**Spec et plan proposés le 2026-10-29, à valider** : [`docs/specs/phase-2.md`](docs/specs/phase-2.md)
+(critères B1–B16, plan en 10 étapes, questions Q1–Q6), ADR 0006 (sorties) proposé, amendement 1
+de l'ADR 0004 toujours à valider (étape 1 proposée). Observation de la référence à faire :
+[`docs/manual-tests/observation-reference-phase2.md`](docs/manual-tests/observation-reference-phase2.md).
+Sous Windows, les critères manuels (B1, B2, B12) seront ⏸ tant qu'aucun test n'y est possible.
+
 ## Phase 3 — Réseau et audio · ⬜
 ## Phase 4 — Habillage · ⬜
 ## Phase 5 — Contrôle et monitoring · ⬜
