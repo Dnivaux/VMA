@@ -124,7 +124,7 @@ Sous Windows, les critères manuels (B1, B2, B12) seront ⏸ tant qu'aucun test 
 
 | Étape (plan §9) | État | Preuve |
 |---|---|---|
-| 1. Amendement 1 de l'ADR 0004 : tampons de transfert mappés, copie enregistrée par le rendu, `upload_busy` | ⬜ | — |
+| 1. Amendement 1 de l'ADR 0004 : tampons de transfert mappés, copie enregistrée par le rendu, `upload_busy` | 🟡 | Implémenté : le producteur n'appelle plus la `Queue`. Tests : golden `golden_frame` par le vrai chemin + tampon occupé, `busy_transfer_buffer_drops_the_picture`, `flooding_producer_never_tears_nor_misses`, A12 et `triple_buffer_gpu_stress` verts (RTX 5090, Intel ARL), 174 tests en local. Soaks de 2 min : 0 manquée, 0 répétée, `upload_busy` = 0 ; tick p99 0,49 ms en 1080p60 et 0,89 ms en 2160p30, mais **3,4 à 3,8 ms en 1080p50 avec des sources en phase** (critère ≤ 1 ms non tenu, contre 10 ms avant) : écritures en rafale dans la mémoire ReBAR, détail dans l'ADR 0004 (« Résultats »). **Décision du mainteneur attendue** sur le critère. CI à passer |
 
 ## Phase 3 — Réseau et audio · ⬜
 ## Phase 4 — Habillage · ⬜

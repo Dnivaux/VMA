@@ -89,8 +89,8 @@ pub(crate) fn show(
 }
 
 /// One line per input with a picture feed (spec `ui.md`, « Statistiques »): state, source
-/// format, capture mode, conversion, pictures received per second, repeated, skipped,
-/// arrival → tick latency.
+/// format, capture mode, conversion, pictures received per second, repeated, skipped, dropped
+/// with a busy transfer buffer (shown only when non-zero), arrival → tick latency.
 fn inputs(ui: &mut egui::Ui, engine: &RenderEngine, io: &dyn IoStatus) {
     let state = engine.state().load();
     let feeds = engine.input_stats().load();
@@ -153,6 +153,9 @@ fn inputs(ui: &mut egui::Ui, engine: &RenderEngine, io: &dyn IoStatus) {
                     "  reçues / répétées / sautées",
                     format!("{rate:.1}/s · {} · {}", s.repeated, s.skipped),
                 );
+                if s.upload_busy > 0 {
+                    row(ui, "  upload occupé (GPU)", s.upload_busy.to_string());
+                }
                 row(
                     ui,
                     "  latence p50 / p99 / max",

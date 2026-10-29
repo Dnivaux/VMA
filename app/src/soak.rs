@@ -322,6 +322,7 @@ struct InputLine {
     received_per_s: f64,
     skipped: u64,
     repeated: u64,
+    upload_busy: u64,
     latency: [Duration; 3],
     losses: u64,
     rate_ok: bool,
@@ -358,6 +359,7 @@ fn input_lines(soak: &SoakContext, run: &Run<'_>) -> Vec<InputLine> {
                 received_per_s,
                 skipped: stats.skipped,
                 repeated: stats.repeated,
+                upload_busy: stats.upload_busy,
                 latency: [l.p50, l.p99, l.max],
                 losses: run
                     .losses
@@ -387,7 +389,7 @@ fn report(options: &SoakOptions, soak: &SoakContext, run: &Run<'_>) -> (String, 
     let inputs = input_lines(soak, run);
     let inputs_ok = inputs
         .iter()
-        .all(|i| i.losses == 0 && i.rate_ok && i.latency_ok);
+        .all(|i| i.losses == 0 && i.upload_busy == 0 && i.rate_ok && i.latency_ok);
     let passed =
         end == End::Completed && c.missed == 0 && r.gpu_dropped == 0 && !r.device_lost && inputs_ok;
     let mode = if options.hostile { "hostile" } else { "calme" };
@@ -410,7 +412,7 @@ fn report(options: &SoakOptions, soak: &SoakContext, run: &Run<'_>) -> (String, 
             (false, End::WindowClosed) => "❌ INTERROMPU (fenêtre fermée avant la fin)",
             (false, End::DeviceLost) => "❌ ÉCHEC (GPU perdu)",
             (false, End::Completed) if !inputs_ok =>
-                "❌ ÉCHEC (input perdu, hors cadence ou latence > 2 images)",
+                "❌ ÉCHEC (input perdu, hors cadence, upload en attente du GPU ou latence > 2 images)",
             (false, End::Completed) => "❌ ÉCHEC (images manquées ou répétées)",
         }
     );
@@ -500,7 +502,7 @@ fn report(options: &SoakOptions, soak: &SoakContext, run: &Run<'_>) -> (String, 
         let period_ms = soak.config.rate.frame_duration().as_secs_f64() * 1000.0;
         let _ = writeln!(
             s,
-            "## Inputs\n{} transitions automatiques (une toutes les {} s, Fade 0,5 s puis Cut). Latence : publication de l'image → tick qui la prend ; limite A10 : 2 images ({:.1} ms).\n\n| Input | Format | Reçues / s (nominal) | Sautées | Répétées | Latence p50 · p99 · max | Pertes de signal |\n|---|---|---|---|---|---|---|",
+            "## Inputs\n{} transitions automatiques (une toutes les {} s, Fade 0,5 s puis Cut). Latence : publication de l'image → tick qui la prend ; limite A10 : 2 images ({:.1} ms).\n\n| Input | Format | Reçues / s (nominal) | Sautées | Répétées | Upload occupé | Latence p50 · p99 · max | Pertes de signal |\n|---|---|---|---|---|---|---|---|",
             run.transitions,
             TRANSITION_STEPS * STEP.as_millis() as u64 / 1000,
             period_ms * MAX_LATENCY_FRAMES,
@@ -509,7 +511,7 @@ fn report(options: &SoakOptions, soak: &SoakContext, run: &Run<'_>) -> (String, 
             let mark = |ok: bool| if ok { "" } else { " ❌" };
             let _ = writeln!(
                 s,
-                "| {} | {} | {:.2}{}{} | {} | {} | {} · {}{} · {} | {}{} |",
+                "| {} | {} | {:.2}{}{} | {} | {} | {}{} | {} · {}{} · {} | {}{} |",
                 i.name,
                 i.status,
                 i.received_per_s,
@@ -517,6 +519,8 @@ fn report(options: &SoakOptions, soak: &SoakContext, run: &Run<'_>) -> (String, 
                 mark(i.rate_ok),
                 i.skipped,
                 i.repeated,
+                i.upload_busy,
+                mark(i.upload_busy == 0),
                 ms(i.latency[0]),
                 ms(i.latency[1]),
                 mark(i.latency_ok),
@@ -527,7 +531,7 @@ fn report(options: &SoakOptions, soak: &SoakContext, run: &Run<'_>) -> (String, 
         }
         let _ = writeln!(
             s,
-            "\nSautées : images remplacées avant d'être prises (source plus rapide que le maître) ; répétées : ticks sans image nouvelle (source plus lente). Les deux sont attendues quand les cadences diffèrent.\n"
+            "\nSautées : images remplacées avant d'être prises (source plus rapide que le maître) ; répétées : ticks sans image nouvelle (source plus lente). Les deux sont attendues quand les cadences diffèrent. Upload occupé : images perdues parce que le tampon de transfert de leur emplacement était encore utilisé par le GPU (ADR 0004, amendement 1) ; doit rester à 0.\n"
         );
     }
 

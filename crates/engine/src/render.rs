@@ -472,13 +472,23 @@ impl RenderWorker {
             // their timing. Plan first, then the sources it may reference (see `sources.rs`).
             let composition = self.sequencer.tick(tick.index, &self.feedback);
             self.sources.drain();
+            // Non-blocking: fires completion callbacks of earlier submissions. Before the
+            // feeds advance, so the transfer buffers copied last tick are mapped again by the
+            // time their slots go back to the producers (no `upload_busy`). A lost device
+            // accepts no more work.
+            let lost = self.stats.is_device_lost();
+            let polled = Instant::now();
+            if !lost && let Err(e) = self.device.poll(wgpu::PollType::Poll) {
+                tracing::error!(error = %e, "GPU poll failed");
+            }
+            let poll = polled.elapsed();
             // Every feed takes its latest picture once per tick, rendered or not, so the
             // per-input statistics count master ticks.
             self.sources.advance(started);
 
-            // A lost device accepts no more work: keep the clock (and the stats) running,
-            // render nothing. Recovery is the application's job (ADR 0001, « Perte du GPU »).
-            if self.stats.is_device_lost() {
+            // Lost device: keep the clock (and the stats) running, render nothing. Recovery
+            // is the application's job (ADR 0001, « Perte du GPU »).
+            if lost {
                 self.stats.record_device_lost_tick();
                 continue;
             }
@@ -493,12 +503,6 @@ impl RenderWorker {
                 window_ticks = 0;
             }
 
-            // Non-blocking: fires completion callbacks of earlier submissions.
-            let polled = Instant::now();
-            if let Err(e) = self.device.poll(wgpu::PollType::Poll) {
-                tracing::error!(error = %e, "GPU poll failed");
-            }
-            let poll = polled.elapsed();
             if self.stats.gpu_in_flight() >= MAX_GPU_IN_FLIGHT {
                 self.stats.record_gpu_drop();
                 tracing::warn!(index = tick.index, "GPU backpressure: frame repeated");
@@ -528,6 +532,13 @@ impl RenderWorker {
     /// then publishes them. Returns the CPU time spent encoding, then submitting.
     fn render(&mut self, composition: &Composition) -> (Duration, Duration) {
         let encoding = Instant::now();
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("tick"),
+            });
+        // Pictures taken since the last rendered tick, before the passes that draw them.
+        self.sources.encode_uploads(&mut encoder);
         let frame = composition.frame;
         let program = Mix {
             from: self.source(composition.from, frame),
@@ -541,11 +552,6 @@ impl RenderWorker {
         let preview = Mix::single(self.source(composition.preview, frame));
         let with_thumbnails = frame.is_multiple_of(2);
 
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("tick"),
-            });
         for ((mixer, out), mix) in self
             .mixers
             .iter()

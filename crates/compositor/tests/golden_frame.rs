@@ -1,6 +1,7 @@
 //! Golden tests of CPU frames (`InputFrame`, spec `compositor.md`, Phase 1, passes 1 and 2):
 //! Y'CbCr → R'G'B' for every format, matrix and range (A7), lossless RGB at the Program size,
-//! fit with black bars, scaling in linear light, frames in thumbnails, refused uploads.
+//! fit with black bars, scaling in linear light, frames in thumbnails, refused uploads, and
+//! the transfer buffer of the upload path (ADR 0004, amendment 1).
 //!
 //! Expected values are analytic (computed on the CPU from the same definitions). Needs a GPU
 //! adapter (software is enough); fails without one.
@@ -59,6 +60,24 @@ impl Rig {
             res(w, h),
             color,
         )
+    }
+
+    /// Uploads a packed picture by the real path: staged, copied by an encoder, then waits
+    /// until the transfer buffer is mapped again.
+    fn upload(&self, frame: &InputFrame, data: &[u8]) {
+        frame.stage_packed(data).unwrap();
+        self.copy(frame);
+    }
+
+    /// Records and submits the copy of the staged picture, then waits for the GPU.
+    fn copy(&self, frame: &InputFrame) {
+        let mut encoder = self.gpu.device.create_command_encoder(&Default::default());
+        frame.encode_upload(&mut encoder);
+        self.gpu.queue.submit([encoder.finish()]);
+        self.gpu
+            .device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .unwrap();
     }
 
     /// The Program (`Rgba8Unorm`, `W` × `H`) showing `frame` alone.
@@ -226,9 +245,7 @@ fn ycbcr_bars_decode_for_every_format_matrix_and_range() {
                 }
             };
             let frame = rig.frame(format, W, H, color);
-            frame
-                .write_packed(&rig.gpu.queue, &pack(format, W, H, ycc))
-                .unwrap();
+            rig.upload(&frame, &pack(format, W, H, ycc));
             let img = rig.render(&frame);
             for (x, y) in (0..W).flat_map(|x| [0, H / 2, H - 1].map(|y| (x, y))) {
                 let got = px(&img, W, x, y);
@@ -269,9 +286,7 @@ fn rgb_at_program_size_is_bit_exact() {
     };
     for format in [PixelFormat::Rgba, PixelFormat::Bgra] {
         let frame = rig.frame(format, W, H, ColorInfo::RGB_FULL);
-        frame
-            .write_packed(&rig.gpu.queue, &pack(format, W, H, code))
-            .unwrap();
+        rig.upload(&frame, &pack(format, W, H, code));
         let img = rig.render(&frame);
         for y in 0..H {
             for x in 0..W {
@@ -288,12 +303,10 @@ fn rgb_at_program_size_is_bit_exact() {
 fn four_by_three_is_pillarboxed() {
     let rig = Rig::new();
     let frame = rig.frame(PixelFormat::Rgba, 640, 480, ColorInfo::RGB_FULL);
-    frame
-        .write_packed(
-            &rig.gpu.queue,
-            &pack(PixelFormat::Rgba, 640, 480, |_, _| [255, 255, 255]),
-        )
-        .unwrap();
+    rig.upload(
+        &frame,
+        &pack(PixelFormat::Rgba, 640, 480, |_, _| [255, 255, 255]),
+    );
     let img = rig.render(&frame);
     for y in [0, H / 2, H - 1] {
         for x in 0..W {
@@ -314,12 +327,7 @@ fn halved_checkerboard_is_191_not_128() {
     let rig = Rig::new();
     let frame = rig.frame(PixelFormat::Rgba, W * 2, H * 2, ColorInfo::RGB_FULL);
     let checker = |x: u32, y: u32| [if (x + y).is_multiple_of(2) { 255 } else { 0 }; 3];
-    frame
-        .write_packed(
-            &rig.gpu.queue,
-            &pack(PixelFormat::Rgba, W * 2, H * 2, checker),
-        )
-        .unwrap();
+    rig.upload(&frame, &pack(PixelFormat::Rgba, W * 2, H * 2, checker));
     let img = rig.render(&frame);
     let want = (255.0 * 0.5f64.powf(1.0 / 2.4)).round() as i16;
     assert_eq!(want, 191);
@@ -361,9 +369,7 @@ fn odd_sized_frames_are_complete() {
         PixelFormat::Uyvy,
     ] {
         let frame = rig.frame(format, w, h, color);
-        frame
-            .write_packed(&rig.gpu.queue, &pack(format, w, h, ycc))
-            .unwrap();
+        rig.upload(&frame, &pack(format, w, h, ycc));
         let mut encoder = rig.gpu.device.create_command_encoder(&Default::default());
         mixer.encode(
             &rig.gpu.queue,
@@ -400,12 +406,10 @@ fn frame_thumbnail_is_fitted_in_its_cell() {
     let atlas = thumbnails::new_atlas(&rig.gpu.device, "atlas");
     // 4:3 red → 240 × 180 inside the 320 × 180 cell, 40 px black on each side.
     let frame = rig.frame(PixelFormat::Rgba, 640, 480, ColorInfo::RGB_FULL);
-    frame
-        .write_packed(
-            &rig.gpu.queue,
-            &pack(PixelFormat::Rgba, 640, 480, |_, _| [255, 0, 0]),
-        )
-        .unwrap();
+    rig.upload(
+        &frame,
+        &pack(PixelFormat::Rgba, 640, 480, |_, _| [255, 0, 0]),
+    );
     let cells = [
         (10, Source::Frame(&frame)),
         (11, Source::Color(Rgb8::WHITE)),
@@ -445,13 +449,10 @@ fn bad_uploads_are_refused() {
     let y = [16u8; 8];
     let uv = [128u8; 4];
     assert_eq!(
-        frame.write(
-            &rig.gpu.queue,
-            &[Plane {
-                data: &y,
-                stride: 4
-            }]
-        ),
+        frame.stage(&[Plane {
+            data: &y,
+            stride: 4
+        }]),
         Err(FrameError::PlaneCount {
             format: PixelFormat::Nv12,
             expected: 2,
@@ -459,19 +460,16 @@ fn bad_uploads_are_refused() {
         })
     );
     assert_eq!(
-        frame.write(
-            &rig.gpu.queue,
-            &[
-                Plane {
-                    data: &y,
-                    stride: 3
-                },
-                Plane {
-                    data: &uv,
-                    stride: 4
-                }
-            ]
-        ),
+        frame.stage(&[
+            Plane {
+                data: &y,
+                stride: 3
+            },
+            Plane {
+                data: &uv,
+                stride: 4
+            }
+        ]),
         Err(FrameError::Stride {
             plane: 0,
             stride: 3,
@@ -479,42 +477,81 @@ fn bad_uploads_are_refused() {
         })
     );
     assert_eq!(
-        frame.write(
-            &rig.gpu.queue,
-            &[
-                Plane {
-                    data: &y[..7],
-                    stride: 4
-                },
-                Plane {
-                    data: &uv,
-                    stride: 4
-                }
-            ]
-        ),
+        frame.stage(&[
+            Plane {
+                data: &y[..7],
+                stride: 4
+            },
+            Plane {
+                data: &uv,
+                stride: 4
+            }
+        ]),
         Err(FrameError::Truncated {
             plane: 0,
             expected: 8,
             got: 7
         })
     );
-    assert!(frame.write_packed(&rig.gpu.queue, &[0; 11]).is_err());
+    assert!(frame.stage_packed(&[0; 11]).is_err());
     // Padded rows are accepted; the last row may stop at its last texel.
     let padded = [16u8; 8 + 4];
     assert_eq!(
-        frame.write(
-            &rig.gpu.queue,
-            &[
-                Plane {
-                    data: &padded[..12],
-                    stride: 8
-                },
-                Plane {
-                    data: &uv,
-                    stride: 4
-                }
-            ]
-        ),
+        frame.stage(&[
+            Plane {
+                data: &padded[..12],
+                stride: 8
+            },
+            Plane {
+                data: &uv,
+                stride: 4
+            }
+        ]),
         Ok(())
     );
+}
+
+/// ADR 0004, amendment 1: once its copy is submitted, the transfer buffer refuses a new
+/// picture (`Busy`, nothing written, no wait) until the GPU has run the copy; the picture
+/// shown is the one staged before, then the next one.
+#[test]
+fn transfer_buffer_is_busy_until_the_copy_has_run() {
+    let rig = Rig::new();
+    let frame = rig.frame(PixelFormat::Nv12, W, H, ColorInfo::BT709_LIMITED);
+    let color = ColorInfo::BT709_LIMITED;
+    let solid = |c: Rgb8| pack(PixelFormat::Nv12, W, H, move |_, _| encode_ycbcr(c, color));
+    let (green, blue) = (Rgb8::new(0, 191, 0), Rgb8::new(0, 0, 191));
+
+    frame.stage_packed(&solid(green)).unwrap();
+    let mut encoder = rig.gpu.device.create_command_encoder(&Default::default());
+    frame.encode_upload(&mut encoder);
+    assert_eq!(
+        frame.stage_packed(&solid(blue)),
+        Err(FrameError::Busy),
+        "recorded, not submitted"
+    );
+    rig.gpu.queue.submit([encoder.finish()]);
+    // Without a poll the mapping cannot have completed.
+    assert_eq!(frame.stage_packed(&solid(blue)), Err(FrameError::Busy));
+    rig.gpu
+        .device
+        .poll(wgpu::PollType::wait_indefinitely())
+        .unwrap();
+    let want = |c: Rgb8| decode_ycbcr(encode_ycbcr(c, color), color);
+    let check = |img: &[u8], c: Rgb8| {
+        let got = px(img, W, W / 2, H / 2);
+        for i in 0..3 {
+            assert!(
+                (i16::from(got[i]) - i16::from(want(c)[i])).abs() <= 1,
+                "{got:?}, want {:?}",
+                want(c)
+            );
+        }
+    };
+    check(&rig.render(&frame), green);
+
+    // Mapped again: the next picture is accepted and replaces the first one.
+    frame.stage_packed(&solid(blue)).unwrap();
+    rig.copy(&frame);
+    check(&rig.render(&frame), blue);
 }

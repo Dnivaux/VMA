@@ -51,9 +51,10 @@ zero-copy GPU (plus tard), NDI / SRT (Phase 3).
  └────────────────────────────────────────────────────────────────┘
                ▲ dernière image par input (triple buffer de textures, même invariant qu'ADR 0001)
  ┌─ threads GStreamer (un pipeline par input) ─┐
- │ appsink → upload `queue.write_texture`      │
+ │ appsink → tampon de transfert mappé (*)     │
  └─────────────────────────────────────────────┘
 ```
+(*) `queue.write_texture` jusqu'au 2026-10-29, remplacé par l'amendement 1 de l'ADR 0004.
 
 Règle temps réel conservée : le thread de rendu ne fait ni allocation applicative, ni verrou,
 ni I/O ; tout ce qui alloue (création de textures, pipelines, journal) vit sur `vma-control`

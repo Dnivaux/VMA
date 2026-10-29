@@ -4,9 +4,10 @@
 //! for those; any other format is converted (counted).
 //!
 //! The appsink callback runs on the GStreamer streaming thread: it maps the buffer and pushes
-//! its planes into the input's feed (`write_texture` there, ADR 0004), creating the feed when
-//! the format is first known or changes. Bus errors and end of stream reach [`GstInput::poll`]
-//! through a sync handler; a watchdog notices a source that stops sending.
+//! its planes into the input's feed (a mapped transfer buffer there, ADR 0004 amendment 1),
+//! creating the feed when the format is first known or changes. Bus errors and end of stream
+//! reach [`GstInput::poll`] through a sync handler; a watchdog notices a source that stops
+//! sending.
 //!
 //! A video file (`uridecodebin`, « Lecture des fichiers vidéo ») opens paused on its first
 //! picture. Every seek is a *segment* seek: at the end the pipeline posts `SEGMENT_DONE`

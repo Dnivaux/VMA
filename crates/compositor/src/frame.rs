@@ -2,16 +2,24 @@
 //!
 //! An [`InputFrame`] holds one picture of an input: one texture per plane (NV12 = Y `R8` +
 //! CbCr `Rg8`, I420 = 3 × `R8`, YUY2 / UYVY = `Rgba8` of half width, RGBA / BGRA = `Rgba8` /
-//! `Bgra8`), filled by [`InputFrame::write`], plus a native-size [`INTERNAL_FORMAT`] texture
-//! holding the frame in display light when it has to be scaled. Every GPU object is created
-//! by [`InputFrame::new`] (off the render thread); drawing only records passes.
+//! `Bgra8`), plus a native-size [`INTERNAL_FORMAT`] texture holding the frame in display light
+//! when it has to be scaled. Every GPU object is created by [`InputFrame::new`] (off the
+//! render thread); drawing only records passes.
+//!
+//! # Upload (ADR 0004, amendment 1)
+//! Each frame owns a host-visible **transfer buffer**, mapped while the CPU owns it. The
+//! producer copies a picture into it with [`InputFrame::stage`] (a plain `memcpy`, no lock of
+//! the shared `Queue`); the render thread later records the copy into the textures with
+//! [`InputFrame::encode_upload`], which unmaps the buffer and maps it again once that
+//! submission has run on the GPU. Until then [`InputFrame::stage`] refuses with
+//! [`FrameError::Busy`], without waiting.
 //!
 //! Drawing into a target of the frame's size converts straight to R'G'B' (no round trip
 //! through linear light). Any other size converts to display light at the native size, then
 //! samples it bilinearly into the [`fit_rect`] of the target and re-encodes; the caller
 //! leaves the letterbox black.
 
-use vma_core::{ColorInfo, PixelFormat, Resolution};
+use vma_core::{ColorInfo, PixelFormat, PlaneSize, Resolution};
 
 use crate::{INTERNAL_FORMAT, PROGRAM_FORMAT, RenderTarget};
 
@@ -42,7 +50,7 @@ pub struct Plane<'a> {
     pub stride: u32,
 }
 
-/// Errors of [`InputFrame::write`].
+/// Errors of [`InputFrame::stage`].
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum FrameError {
     #[error("{format} needs {expected} planes, got {got}")]
@@ -59,6 +67,8 @@ pub enum FrameError {
         expected: u64,
         got: usize,
     },
+    #[error("the transfer buffer is still in use by the GPU")]
+    Busy,
 }
 
 #[repr(C)]
@@ -246,12 +256,24 @@ fn plane_format(format: PixelFormat, bytes_per_texel: u32) -> wgpu::TextureForma
     }
 }
 
+/// One plane of an [`InputFrame`]: its texture, and where its rows sit in the transfer
+/// buffer (`bytes_per_row` is a multiple of `COPY_BYTES_PER_ROW_ALIGNMENT`).
+#[derive(Debug)]
+struct FramePlane {
+    texture: wgpu::Texture,
+    size: PlaneSize,
+    offset: u64,
+    bytes_per_row: u32,
+}
+
 /// One picture of an input on the GPU (see the module documentation).
 #[derive(Debug)]
 pub struct InputFrame {
     format: PixelFormat,
     resolution: Resolution,
-    planes: Vec<wgpu::Texture>,
+    planes: Vec<FramePlane>,
+    /// `MAP_WRITE | COPY_SRC`, mapped while the CPU owns it (module documentation).
+    staging: wgpu::Buffer,
     uniforms: wgpu::Buffer,
     convert_bind_group: wgpu::BindGroup,
     /// The frame in display light, at its native size (input of the scale pass).
@@ -261,8 +283,9 @@ pub struct InputFrame {
 }
 
 impl InputFrame {
-    /// Creates the textures of a `format` frame of `resolution`. RGB formats ignore `color`
-    /// (always full-range R'G'B'). Content is undefined until the first [`Self::write`].
+    /// Creates the textures and the (mapped) transfer buffer of a `format` frame of
+    /// `resolution`. RGB formats ignore `color` (always full-range R'G'B'). Content is
+    /// undefined until the first upload.
     pub fn new(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
@@ -272,10 +295,11 @@ impl InputFrame {
         color: ColorInfo,
     ) -> Self {
         let (w, h) = (resolution.width(), resolution.height());
-        let planes: Vec<wgpu::Texture> = (0..format.plane_count())
+        let mut offset = 0;
+        let planes: Vec<FramePlane> = (0..format.plane_count())
             .filter_map(|i| format.plane(i, w, h).map(|size| (i, size)))
             .map(|(i, size)| {
-                device.create_texture(&wgpu::TextureDescriptor {
+                let texture = device.create_texture(&wgpu::TextureDescriptor {
                     label: Some(&format!("frame.{format}.plane{i}")),
                     size: wgpu::Extent3d {
                         width: size.width,
@@ -288,12 +312,35 @@ impl InputFrame {
                     format: plane_format(format, size.bytes_per_texel),
                     usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
                     view_formats: &[],
-                })
+                });
+                // A row is at most 8192 × 4 bytes (resolution limit), far below u32::MAX.
+                let bytes_per_row = size
+                    .row_bytes()
+                    .next_multiple_of(u64::from(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT))
+                    as u32;
+                let plane = FramePlane {
+                    texture,
+                    size,
+                    offset,
+                    bytes_per_row,
+                };
+                offset += u64::from(bytes_per_row) * u64::from(size.height);
+                plane
             })
             .collect();
+        let staging = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some(&format!("frame.{format}.staging")),
+            // Every plane is a whole number of 256-byte rows: the size is aligned.
+            size: offset.max(u64::from(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)),
+            usage: wgpu::BufferUsages::MAP_WRITE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: true,
+        });
         let views: Vec<wgpu::TextureView> = planes
             .iter()
-            .map(|t| t.create_view(&wgpu::TextureViewDescriptor::default()))
+            .map(|p| {
+                p.texture
+                    .create_view(&wgpu::TextureViewDescriptor::default())
+            })
             .collect();
         let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("frame.uniforms"),
@@ -369,6 +416,7 @@ impl InputFrame {
             format,
             resolution,
             planes,
+            staging,
             uniforms,
             convert_bind_group,
             linear,
@@ -399,10 +447,11 @@ impl InputFrame {
         );
     }
 
-    /// Uploads one picture, one [`Plane`] per plane of the format. Validated first: a bad
-    /// buffer is refused without touching the textures.
-    pub fn write(&self, queue: &wgpu::Queue, planes: &[Plane<'_>]) -> Result<(), FrameError> {
-        let (w, h) = (self.resolution.width(), self.resolution.height());
+    /// Copies one picture, one [`Plane`] per plane of the format, into the transfer buffer
+    /// (producer thread; never touches the `Queue`, never waits). Validated first: a bad
+    /// buffer is refused without touching anything. [`FrameError::Busy`] while the GPU still
+    /// owns the buffer (see the module documentation).
+    pub fn stage(&self, planes: &[Plane<'_>]) -> Result<(), FrameError> {
         if planes.len() != self.planes.len() {
             return Err(FrameError::PlaneCount {
                 format: self.format,
@@ -410,12 +459,8 @@ impl InputFrame {
                 got: planes.len(),
             });
         }
-        let mut sizes = [None; 3];
-        for (i, plane) in planes.iter().enumerate() {
-            let Some(size) = self.format.plane(i, w, h) else {
-                continue;
-            };
-            let row = size.row_bytes();
+        for (i, (plane, gpu)) in planes.iter().zip(&self.planes).enumerate() {
+            let row = gpu.size.row_bytes();
             if u64::from(plane.stride) < row {
                 return Err(FrameError::Stride {
                     plane: i,
@@ -423,7 +468,7 @@ impl InputFrame {
                     row,
                 });
             }
-            let expected = u64::from(plane.stride) * u64::from(size.height - 1) + row;
+            let expected = u64::from(plane.stride) * u64::from(gpu.size.height - 1) + row;
             if (plane.data.len() as u64) < expected {
                 return Err(FrameError::Truncated {
                     plane: i,
@@ -431,54 +476,76 @@ impl InputFrame {
                     got: plane.data.len(),
                 });
             }
-            if let Some(slot) = sizes.get_mut(i) {
-                *slot = Some(size);
-            }
         }
-        for ((texture, plane), size) in self.planes.iter().zip(planes).zip(sizes) {
-            let Some(size) = size else { continue };
-            queue.write_texture(
-                texture.as_image_copy(),
-                plane.data,
-                wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(plane.stride),
-                    rows_per_image: None,
-                },
-                wgpu::Extent3d {
-                    width: size.width,
-                    height: size.height,
-                    depth_or_array_layers: 1,
-                },
-            );
+        let mut view = self
+            .staging
+            .get_mapped_range_mut(..)
+            .map_err(|_| FrameError::Busy)?;
+        let mut buffer = view.slice(..);
+        for (plane, gpu) in planes.iter().zip(&self.planes) {
+            // Validated above; the destination fits by construction (`new`).
+            let row = gpu.size.row_bytes() as usize;
+            let (stride, pitch) = (plane.stride as usize, gpu.bytes_per_row as usize);
+            let offset = gpu.offset as usize;
+            for y in 0..gpu.size.height as usize {
+                let (from, to) = (y * stride, offset + y * pitch);
+                if let Some(src) = plane.data.get(from..from + row) {
+                    buffer.slice(to..to + row).copy_from_slice(src);
+                }
+            }
         }
         Ok(())
     }
 
-    /// Uploads a tightly packed picture (planes one after the other, no row padding), e.g. a
-    /// decoded still image or a test frame.
-    pub fn write_packed(&self, queue: &wgpu::Queue, data: &[u8]) -> Result<(), FrameError> {
-        let (w, h) = (self.resolution.width(), self.resolution.height());
+    /// [`Self::stage`] for a tightly packed picture (planes one after the other, no row
+    /// padding), e.g. a decoded still image or a test frame.
+    pub fn stage_packed(&self, data: &[u8]) -> Result<(), FrameError> {
         let mut planes = [Plane {
             data: &[],
             stride: 0,
         }; 3];
         let mut rest = data;
-        for (i, slot) in planes.iter_mut().enumerate().take(self.planes.len()) {
-            let Some(size) = self.format.plane(i, w, h) else {
-                continue;
-            };
-            let take = usize::try_from(size.bytes())
+        for (slot, gpu) in planes.iter_mut().zip(&self.planes) {
+            let take = usize::try_from(gpu.size.bytes())
                 .unwrap_or(usize::MAX)
                 .min(rest.len());
             let (head, tail) = rest.split_at(take);
             *slot = Plane {
                 data: head,
-                stride: size.row_bytes() as u32,
+                stride: gpu.size.row_bytes() as u32,
             };
             rest = tail;
         }
-        self.write(queue, planes.get(..self.planes.len()).unwrap_or_default())
+        self.stage(planes.get(..self.planes.len()).unwrap_or_default())
+    }
+
+    /// Records the copy of the staged picture into the textures (render thread, before the
+    /// passes that draw this frame), and the mapping of the transfer buffer once this
+    /// submission has run. Call once per staged picture, with the buffer mapped (staged).
+    pub fn encode_upload(&self, encoder: &mut wgpu::CommandEncoder) {
+        self.staging.unmap();
+        for plane in &self.planes {
+            encoder.copy_buffer_to_texture(
+                wgpu::TexelCopyBufferInfo {
+                    buffer: &self.staging,
+                    layout: wgpu::TexelCopyBufferLayout {
+                        offset: plane.offset,
+                        bytes_per_row: Some(plane.bytes_per_row),
+                        rows_per_image: None,
+                    },
+                },
+                plane.texture.as_image_copy(),
+                wgpu::Extent3d {
+                    width: plane.size.width,
+                    height: plane.size.height,
+                    depth_or_array_layers: 1,
+                },
+            );
+        }
+        // The result needs no handling: a failed mapping (device lost, frame dropped first)
+        // leaves the buffer unmapped, so `stage` keeps answering `Busy`. The closure captures
+        // nothing, so boxing it does not allocate.
+        encoder.map_buffer_on_submit(&self.staging, wgpu::MapMode::Write, .., |_| {});
     }
 
     /// Records the passes drawing this frame into `target` (an [`INTERNAL_FORMAT`] layer of

@@ -5,16 +5,22 @@
 //! of indices, plus per-slot metadata and per-input statistics in atomics:
 //!
 //! - the **producer** ([`FrameSink`], owned by the thread that receives pictures: GStreamer
-//!   streaming thread, still-image loader, test source) uploads into its back slot and
-//!   publishes;
+//!   streaming thread, still-image loader, test source) copies the picture into the mapped
+//!   transfer buffer of its back slot ([`InputFrame::stage`]) and publishes;
 //! - the **render thread** ([`FeedReader`]) takes the latest published picture once per
 //!   master tick ([`FeedReader::advance`]): a slower source is repeated, a faster one has
 //!   pictures dropped (BRIEF §5). No allocation, no lock, no wait on either side.
 //!
-//! GPU safety is the invariant of `triple.rs`: the render thread swaps its front only at the
-//! start of a tick (after submitting the previous one), and both sides use the shared queue.
-//! A picture uploaded by `write_texture` before `publish` is copied by the queue before the
-//! next submission, hence before the first render submission that can see it.
+//! # GPU safety (ADR 0004, amendment 1)
+//! The producer never touches the `Queue` nor the textures. The render thread records the
+//! copy of a newly taken picture into its slot's textures ([`InputFrame::encode_upload`]) in
+//! the first rendered tick that holds it, before the passes that draw it; earlier reads of
+//! those textures were submitted earlier on the same queue, which runs them first. The
+//! transfer buffer belongs to the CPU while mapped and to the GPU from the copy until it is
+//! mapped again (wgpu enforces this exclusivity); a producer that finds its back slot still
+//! unmapped (GPU at least a tick late) drops the picture, counted in
+//! [`FeedStatsSnapshot::upload_busy`], instead of waiting. The swap of the front follows the
+//! invariant of `triple.rs`.
 //!
 //! The core ([`Feed`], [`Writer`], [`Reader`]) is generic over the slot payload so its
 //! resampling and accounting are tested in simulated time without a GPU.
@@ -38,6 +44,7 @@ pub struct FeedStats {
     skipped: AtomicU64,
     repeated: AtomicU64,
     shown: AtomicU64,
+    upload_busy: AtomicU64,
     last_source_frame: AtomicU64,
     latency: LatencyHistogram,
 }
@@ -53,6 +60,9 @@ pub struct FeedStatsSnapshot {
     pub repeated: u64,
     /// Ticks that took a new picture.
     pub shown: u64,
+    /// Pictures dropped by the producer because the transfer buffer of its slot was still in
+    /// use by the GPU (not published, not in `received`). 0 in normal operation.
+    pub upload_busy: u64,
     /// Source frame number of the latest picture taken by a tick.
     pub last_source_frame: u64,
     /// Arrival (publication) → tick that takes it.
@@ -66,6 +76,7 @@ impl FeedStats {
             skipped: self.skipped.load(Ordering::Relaxed),
             repeated: self.repeated.load(Ordering::Relaxed),
             shown: self.shown.load(Ordering::Relaxed),
+            upload_busy: self.upload_busy.load(Ordering::Relaxed),
             last_source_frame: self.last_source_frame.load(Ordering::Relaxed),
             latency: self.latency.snapshot(),
         }
@@ -102,6 +113,8 @@ pub(crate) struct Reader<T> {
     feed: Arc<Feed<T>>,
     consumer: Consumer,
     has_picture: bool,
+    /// The current picture still has to be copied into its slot's textures.
+    upload_pending: bool,
 }
 
 pub(crate) fn feed<T>(slots: [T; 3], stats: Arc<FeedStats>) -> (Writer<T>, Reader<T>) {
@@ -122,6 +135,7 @@ pub(crate) fn feed<T>(slots: [T; 3], stats: Arc<FeedStats>) -> (Writer<T>, Reade
             feed,
             consumer,
             has_picture: false,
+            upload_pending: false,
         },
     )
 }
@@ -164,6 +178,8 @@ impl<T> Reader<T> {
         let stats = &self.feed.stats;
         if self.consumer.update(&self.feed.indices) {
             self.has_picture = true;
+            // A picture taken over an earlier one never copied (tick not rendered) replaces it.
+            self.upload_pending = true;
             stats.shown.fetch_add(1, Ordering::Relaxed);
             if let Some(meta) = self.feed.meta.get(self.consumer.front()) {
                 let arrival = meta.arrival_ns.load(Ordering::Relaxed);
@@ -193,6 +209,16 @@ impl<T> Reader<T> {
         }
     }
 
+    /// The current picture if it has not been copied to its textures yet; then considered
+    /// copied (the caller records the copy in the submission it is building).
+    pub(crate) fn take_upload(&mut self) -> Option<&T> {
+        if std::mem::take(&mut self.upload_pending) {
+            self.current()
+        } else {
+            None
+        }
+    }
+
     /// Source frame number of [`Self::current`].
     #[cfg(test)]
     pub(crate) fn current_source_frame(&self) -> Option<u64> {
@@ -213,25 +239,41 @@ pub(crate) type FeedReader = Reader<InputFrame>;
 #[derive(Debug)]
 pub struct FrameSink {
     writer: Writer<InputFrame>,
-    queue: wgpu::Queue,
     source: SourceFormat,
 }
 
 impl FrameSink {
-    /// Uploads one picture (one [`Plane`] per plane of the format) and publishes it as
-    /// source frame `source_frame`. A refused buffer publishes nothing.
+    /// Stages one picture (one [`Plane`] per plane of the format) and publishes it as
+    /// source frame `source_frame`. A refused buffer publishes nothing. A picture that finds
+    /// its slot still in use by the GPU is dropped and counted (`upload_busy`): `Ok`, the
+    /// producer never waits.
     pub fn push(&mut self, planes: &[Plane<'_>], source_frame: u64) -> Result<(), FrameError> {
-        if let Some(frame) = self.writer.back() {
-            frame.write(&self.queue, planes)?;
-        }
-        self.writer.publish(source_frame);
-        Ok(())
+        self.publish_staged(|frame| frame.stage(planes), source_frame)
     }
 
     /// [`Self::push`] for a tightly packed picture.
     pub fn push_packed(&mut self, data: &[u8], source_frame: u64) -> Result<(), FrameError> {
+        self.publish_staged(|frame| frame.stage_packed(data), source_frame)
+    }
+
+    fn publish_staged(
+        &mut self,
+        stage: impl FnOnce(&InputFrame) -> Result<(), FrameError>,
+        source_frame: u64,
+    ) -> Result<(), FrameError> {
         if let Some(frame) = self.writer.back() {
-            frame.write_packed(&self.queue, data)?;
+            match stage(frame) {
+                Ok(()) => {}
+                Err(FrameError::Busy) => {
+                    self.writer
+                        .feed
+                        .stats
+                        .upload_busy
+                        .fetch_add(1, Ordering::Relaxed);
+                    return Ok(());
+                }
+                Err(e) => return Err(e),
+            }
         }
         self.writer.publish(source_frame);
         Ok(())
@@ -333,11 +375,7 @@ impl FeedRegistry {
                 crossbeam_channel::TrySendError::Full(_) => FeedError::Busy,
                 crossbeam_channel::TrySendError::Disconnected(_) => FeedError::Stopped,
             })?;
-        Ok(FrameSink {
-            writer,
-            queue: self.queue.clone(),
-            source,
-        })
+        Ok(FrameSink { writer, source })
     }
 }
 
@@ -455,6 +493,94 @@ mod tests {
         let s = stats.snapshot();
         assert_eq!((s.shown, s.last_source_frame), (1, 7));
         assert_eq!(s.latency.max, Duration::from_millis(1));
+    }
+
+    /// The copy is requested once per picture taken, and a picture taken while the previous
+    /// one was never copied (tick not rendered) is the one copied.
+    #[test]
+    fn each_new_picture_is_uploaded_once() {
+        let stats = Arc::new(FeedStats::default());
+        let (mut writer, mut reader) = feed([10, 11, 12], Arc::clone(&stats));
+        reader.advance_at(0);
+        assert_eq!(reader.take_upload(), None, "nothing published");
+        writer.publish_at(0, 0);
+        reader.advance_at(1);
+        let first = reader.current().copied();
+        assert_eq!(reader.take_upload().copied(), first);
+        assert_eq!(reader.take_upload(), None, "already copied");
+        reader.advance_at(2);
+        assert_eq!(reader.take_upload(), None, "repeated picture: no copy");
+        // Two pictures taken without a rendered tick in between: only the last is copied.
+        writer.publish_at(1, 2);
+        reader.advance_at(3);
+        writer.publish_at(2, 3);
+        reader.advance_at(4);
+        assert_eq!(reader.current_source_frame(), Some(2));
+        assert_eq!(reader.take_upload().copied(), reader.current().copied());
+        assert_eq!(reader.take_upload(), None);
+    }
+
+    /// ADR 0004, amendment 1: a producer that gets back a slot whose copy the GPU has not
+    /// run yet drops its picture, counted in `upload_busy`, without waiting or publishing;
+    /// once the GPU is done, pictures flow again.
+    #[test]
+    fn busy_transfer_buffer_drops_the_picture() {
+        let gpu = pollster::block_on(vma_compositor::headless::request_gpu())
+            .expect("GPU adapter required");
+        let pipelines = FramePipelines::new(&gpu.device);
+        let resolution = Resolution::new(64, 36).unwrap();
+        let slots = [0, 1, 2].map(|_| {
+            InputFrame::new(
+                &gpu.device,
+                &gpu.queue,
+                &pipelines,
+                PixelFormat::Rgba,
+                resolution,
+                ColorInfo::RGB_FULL,
+            )
+        });
+        let stats = Arc::new(FeedStats::default());
+        let (writer, mut reader) = feed(slots, Arc::clone(&stats));
+        let mut sink = FrameSink {
+            writer,
+            source: SourceFormat {
+                resolution,
+                rate: None,
+                pixel: PixelFormat::Rgba,
+            },
+        };
+        let picture = vec![128u8; 64 * 36 * 4];
+        // One rendered tick: the picture taken is copied, the submission is not polled.
+        let tick = |reader: &mut FeedReader| {
+            reader.advance(Instant::now());
+            let mut encoder = gpu.device.create_command_encoder(&Default::default());
+            if let Some(frame) = reader.take_upload() {
+                frame.encode_upload(&mut encoder);
+            }
+            gpu.queue.submit([encoder.finish()]);
+        };
+
+        sink.push_packed(&picture, 0).unwrap(); // slot A
+        tick(&mut reader); // A on the GPU
+        sink.push_packed(&picture, 1).unwrap(); // slot B
+        // B taken, A back to the middle. Not rendered: a submission would also complete
+        // A's mapping if the GPU is already done with it.
+        reader.advance(Instant::now());
+        sink.push_packed(&picture, 2).unwrap(); // slot C; the producer gets A back
+        let started = Instant::now();
+        sink.push_packed(&picture, 3).unwrap(); // A not mapped yet: dropped
+        assert!(started.elapsed() < Duration::from_millis(50), "push waited");
+        let s = stats.snapshot();
+        assert_eq!((s.received, s.upload_busy), (3, 1), "{s:?}");
+
+        gpu.device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .unwrap();
+        sink.push_packed(&picture, 4).unwrap();
+        tick(&mut reader);
+        let s = stats.snapshot();
+        assert_eq!((s.received, s.upload_busy), (4, 1), "{s:?}");
+        assert_eq!(reader.current_source_frame(), Some(4));
     }
 
     /// Real threads: the slot the reader holds never changes under it, pictures never go

@@ -27,9 +27,13 @@ choisi est affiché dans l'UI.
   YUY2 / UYVY = `Rgba8` de largeur w/2 ; RGBA / BGRA = `Rgba8` / `Bgra8`), créés quand les
   caps sont connues par `FeedRegistry::create` (appelé par `vma-io`, hors rendu) puis attachés
   par `vma-control` (spec `engine.md`, étape 6).
-- Callback `new-sample` (thread de streaming) : `write_texture` de chaque plan dans le slot
-  « back » (pas de copie intermédiaire côté application), métadonnées en atomiques (PTS source,
-  heure d'arrivée monotone, n° d'image source), puis publication (triple buffer d'indices).
+- Callback `new-sample` (thread de streaming) : copie de chaque plan dans le **tampon de
+  transfert mappé** du slot « back » (`InputFrame::stage`, aucun appel à la `Queue`, ADR 0004
+  amendement 1), métadonnées en atomiques (PTS source, heure d'arrivée monotone, n° d'image
+  source), puis publication (triple buffer d'indices). Le thread de rendu enregistre la copie
+  tampon → textures au premier tick rendu qui prend l'image, puis remappe le tampon. Un slot
+  dont le tampon n'est pas encore remappé (GPU en retard d'au moins un tick) : image sautée,
+  comptée dans `upload_busy` (Statistiques, rapports de soak, doit rester à 0).
 - `appsink` : `max-buffers=1`, `drop=true` ; `sync=true` pour un fichier (lecture à vitesse
   réelle), `sync=false` pour une capture ou une source live (latence minimale).
 - **Changement de caps** en cours de route (résolution, format) : nouvelles textures demandées

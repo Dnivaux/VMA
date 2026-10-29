@@ -760,3 +760,81 @@ fn hot_add_and_remove_without_missed_frames() {
     );
     assert_eq!(render.gpu_errors, 0);
 }
+
+/// ADR 0004, amendment 1: a producer pushing about 40 times faster than the master rate
+/// never shows a torn or foreign picture and costs the clock no frame; every picture pushed
+/// is published or counted as `upload_busy`, every one published is shown or skipped (at
+/// most one still waiting at the end).
+#[test]
+fn flooding_producer_never_tears_nor_misses() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    const PALETTE: [[u8; 3]; 4] = [[200, 0, 0], [0, 200, 0], [0, 0, 200], [200, 200, 0]];
+    let mut spawned = spawn(FrameRate::FPS_50, Resolution::new(320, 180).unwrap());
+    let feedback = spawned.engine.feedback();
+    let (id, sink) = add_fed_input(&spawned);
+    spawned
+        .engine
+        .commands()
+        .send(Source::Script, Command::CutDirect { input: id })
+        .unwrap();
+    assert!(wait_for(Duration::from_secs(2), || feedback.on_air()
+        == OnAir::Input(id)));
+    let missed_before = spawned.engine.clock_stats().snapshot().missed;
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let producer = {
+        let stop = Arc::clone(&stop);
+        let pictures: Vec<Vec<u8>> = PALETTE.iter().map(|&c| solid(c)).collect();
+        let mut sink = sink;
+        std::thread::spawn(move || {
+            let (mut pushed, mut slowest) = (0u64, Duration::ZERO);
+            while !stop.load(Ordering::Relaxed) {
+                let started = Instant::now();
+                sink.push_packed(&pictures[(pushed % 4) as usize], pushed)
+                    .unwrap();
+                slowest = slowest.max(started.elapsed());
+                pushed += 1;
+                std::thread::sleep(Duration::from_micros(500));
+            }
+            (pushed, slowest, sink)
+        })
+    };
+    let mut from = feedback.last_frame() + 2;
+    let mut colours = std::collections::BTreeSet::new();
+    for _ in 0..40 {
+        let (img, w) = read_frame(&mut spawned, Out::Program, from);
+        let first = pixel(&img, w, 0, 0);
+        assert!(
+            PALETTE.iter().any(|&[r, g, b]| first == [r, g, b, 255]),
+            "foreign picture {first:?}"
+        );
+        assert!(
+            img.as_chunks::<4>().0.iter().all(|p| *p == first),
+            "torn picture at frame {from}"
+        );
+        colours.insert(first);
+        from = spawned.reader.current_frame_index() + 1;
+    }
+    stop.store(true, Ordering::Relaxed);
+    let (pushed, slowest, sink) = producer.join().unwrap();
+    let s = sink.stats().snapshot();
+    let clock = spawned.engine.clock_stats().snapshot();
+    eprintln!(
+        "adapter: {}\npushed {pushed}, slowest push {slowest:?}\n{s:?}",
+        spawned.adapter
+    );
+    assert!(colours.len() > 1, "the picture never changed: {colours:?}");
+    assert_eq!(pushed, s.received + s.upload_busy, "{s:?}");
+    assert!(
+        s.received - (s.shown + s.skipped) <= 1,
+        "pictures unaccounted for: {s:?}"
+    );
+    assert!(
+        s.skipped > 0,
+        "the producer was not faster than the master: {s:?}"
+    );
+    assert_eq!(clock.missed - missed_before, 0, "missed frames");
+    assert_eq!(spawned.engine.render_stats().snapshot().gpu_errors, 0);
+}

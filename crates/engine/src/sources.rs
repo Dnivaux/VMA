@@ -229,6 +229,18 @@ impl SourceTable {
         }
     }
 
+    /// Records, into the tick's encoder and before any pass, the copy of every picture taken
+    /// since the last rendered tick into its textures (ADR 0004, amendment 1).
+    pub(crate) fn encode_uploads(&mut self, encoder: &mut wgpu::CommandEncoder) {
+        for entry in self.entries.iter_mut().flatten() {
+            if let (_, RenderSource::Feed(reader)) = entry
+                && let Some(frame) = reader.take_upload()
+            {
+                frame.encode_upload(encoder);
+            }
+        }
+    }
+
     /// Known inputs with their slot (stable while the input exists: also its thumbnail cell).
     pub(crate) fn iter(&self) -> impl Iterator<Item = (usize, InputId, &RenderSource)> + Clone {
         self.entries

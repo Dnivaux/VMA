@@ -95,7 +95,9 @@ Test : `render_loop::device_lost_stops_rendering_not_the_clock` (perte forcée p
 
 ## Limites connues (assumées en Phase 0)
 - **Allocations internes à wgpu** : `create_command_encoder`, `queue.submit` et le callback
-  `on_submitted_work_done` allouent à l'intérieur de wgpu. Aucune allocation *applicative* dans
+  `on_submitted_work_done` allouent à l'intérieur de wgpu, de même (ADR 0004, amendement 1)
+  `copy_buffer_to_texture` et `map_buffer_on_submit` pour chaque image nouvelle d'un input
+  (le rappel ne capture rien, mais wgpu le range dans une `Box` et un `Vec`). Aucune allocation *applicative* dans
   la boucle. À mesurer en Phase 1 (compteur d'allocations dans le soak). Les chemins
   exceptionnels (erreur GPU, perte du device) allouent pour journaliser.
 - **Verrous internes à wgpu** : la `Queue` est partagée avec l'UI ; wgpu-core sérialise les

@@ -146,6 +146,35 @@ soumissions.
 - Un nouveau test : un producteur qui publie plus vite que le GPU ne rend les tampons →
   images sautées comptées dans `upload_busy`, jamais de blocage ni d'image corrompue.
 
+### Résultats de l'implémentation (2026-10-29, RTX 5090, Vulkan)
+Soaks de 2 min dans l'application réelle, 4 sources synthétiques NV12 : **0 image manquée,
+0 répétée, `upload_busy` = 0** partout ; le thread de rendu ne se bloque plus (≈ 1 changement
+de contexte par tick, celui de l'horloge). Critère de temps : **tenu hors phase, pas en phase**.
+
+| Configuration | Tick p50 | p99 | max | Rapport |
+|---|---|---|---|---|
+| 1080p50, 4 × 1080p50, 3 runs | 1,57 · 1,38 · 1,44 ms | 3,67 · 3,80 · 3,41 ms | 6,0 · 9,4 · 7,4 ms | `2026-10-29-phase2-upload-1080p50-run{1,2,3}.md` |
+| 1080p60, 4 × 1080p60 | 0,23 ms | 0,49 ms | 2,2 ms | `…-1080p60.md` |
+| 2160p30, 4 × 2160p30 (informatif) | 0,28 ms | 0,89 ms | 2,4 ms | `…-2160p30.md` |
+
+Essais de 20 s (non commités) pour trouver la cause du cas 1080p50 :
+- maître et sources de cadences différentes (la phase glisse) : p50 ≈ 0,25 ms, p99 1,9 à 3 ms ;
+  50p / 50p : p50 1,1 ms ; 60p / 60p : p50 0,2 ms. Le coût apparaît quand les copies des
+  producteurs tombent pendant le tick ;
+- le thread de rendu **calcule** au lieu d'attendre (`schedstat` : ≈ 2 ms de CPU par tick,
+  attente active de l'horloge comprise) ; toutes ses phases (poll, encodage, submit) sont ≈ 5×
+  plus lentes ;
+- copie supprimée : p50 0,16 à 0,22 ms, p99 0,34 à 0,43 ms ; **même copie vers de la RAM
+  ordinaire** : p99 0,31 à 0,36 ms. La cause est la **destination** : wgpu-hal place tout tampon
+  `MAP_WRITE` en `CpuToGpu`, que gpu-allocator met de préférence en mémoire GPU visible de
+  l'hôte (ReBAR, 32 Go sur cette carte). 4 × 3,1 Mo écrits à travers le PCIe en rafale ralentissent
+  les écritures du pilote faites par le rendu (tampons de commandes, transferts de
+  `write_buffer`, dans la même mémoire).
+
+Ce placement n'est pas réglable par l'API sûre de wgpu. Pistes, plus tard : mémoire hôte
+importée (`VK_EXT_external_memory_host`, `unsafe`), zero-copy, ou étaler les copies dans le tick.
+Sous DX12, `MAP_WRITE` va dans le tas `UPLOAD` (RAM système) : comportement à mesurer sous Windows.
+
 ### Alternatives examinées
 - **`queue.write_buffer_with` vers un tampon GPU par emplacement**, copie vers la texture par le
   rendu : la copie se fait hors verrou, mais wgpu alloue un tampon de transfert à chaque image
