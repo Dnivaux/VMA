@@ -1,12 +1,12 @@
 # ADR 0006 — Sorties : étage de sortie, encodage, transport
 
-- **Statut** : **proposé** le 2026-10-29, à valider
+- **Statut** : **accepté** (mainteneur, 2026-10-29)
 - **Date** : 2026-10-29
 - **Contexte** : BRIEF §4 (Phase 2), §5 (architecture des sorties), §8 (budgets) ; ADR 0001
   (PTS = f(*n*), perte du GPU, encodeur de secours en CI), ADR 0004 et son amendement 1, ADR 0005
   (sorties en Y'CbCr 709 plage limitée) ; spec [`docs/specs/phase-2.md`](../specs/phase-2.md)
 
-## Décision proposée
+## Décision
 
 ### 1. Un étage de sortie unique, calculé une fois par tick
 Le thread de rendu ajoute à chaque tick, **seulement si au moins une sortie est active** :
@@ -94,7 +94,7 @@ retenu et la raison d'un repli sont visibles dans l'UI et les rapports. Réglage
 voir `phase-2.md` § 6.
 
 ### 7. Perte du GPU avec sorties actives (point différé de l'ADR 0001)
-**À trancher** (question Q4 de `phase-2.md`). Proposition pour la Phase 2 : l'horloge continuant
+**Retenu** (question Q4 de `phase-2.md`, 2026-10-29) : l'horloge continuant
 pendant une perte du device (ADR 0001), `vma-output` reçoit du rendu un signal « device perdu »
 et pousse à chaque tick une **image noire NV12 pré-allouée** (CPU) avec le PTS de *n* : les
 streams continuent, les enregistrements restent cohérents. Les sorties sont ensuite finalisées

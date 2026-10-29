@@ -1,9 +1,10 @@
 # Phase 2 — Sorties : spec d'ensemble et plan
 
-- **Statut** : **proposé** le 2026-10-29, à valider (questions § 7)
+- **Statut** : **validé** le 2026-10-29 (mainteneur : « oui pour tout », Q1–Q6 selon les
+  recommandations du § 7)
 - **Date** : 2026-10-29
 - **Références** : BRIEF §4 (Phase 2), §5, §8 ; ADR 0001 (PTS, perte du GPU, encodeur de
-  secours), ADR 0004 (+ amendement 1, à valider), ADR 0005 ; **ADR 0006 (sorties), proposé**
+  secours), ADR 0004 (+ amendement 1, accepté), ADR 0005 ; **ADR 0006 (sorties), accepté**
 - **Entrée en phase** : Phase 1 close le 2026-10-29 sous Linux ; soaks Windows (A1, A13)
   **reportés sans échéance** (le mainteneur ne peut pas tester sous Windows), voir `ROADMAP.md`
 
@@ -72,7 +73,7 @@ le réseau est requis (et listé dans `ROADMAP.md`).
 | B11 | **FTB** : fondu au noir des sorties de la durée réglée, retour par une seconde commande ; vue Program de l'UI inchangée ; golden à 0 / 50 / 100 % | `engine` + `compositor` | CI |
 | B12 | Plein écran sur un écran secondaire : Program (après FTB), 0 image manquée au rendu, l'UI reste utilisable ; checklist (Linux ; Windows ⏸) | checklist `docs/manual-tests/phase2-outputs.md` | manuel |
 | B13 | Toute action sur les sorties passe par `Command` et est journalisée ; **la clé de stream et la passphrase SRT n'apparaissent jamais** dans le journal, les logs ni les rapports | `engine` + `ui` | CI |
-| B14 | Perte du GPU avec sorties actives : comportement retenu en Q4 (proposition : noir aux PTS de *n*, puis finalisation propre) | `engine` (`Device::destroy`, comme en Phase 0) | CI |
+| B14 | Perte du GPU avec sorties actives : comportement retenu en Q4 : noir aux PTS de *n*, puis finalisation propre | `engine` (`Device::destroy`, comme en Phase 0) | CI |
 | B15 | Stats par sortie (état, encodeur, débit, images envoyées / perdues, file, reconnexions, durée, taille du fichier) dans le panneau et les rapports de soak | `ui` sans fenêtre + soak | CI + manuel |
 | B16 | CI verte Ubuntu + Windows | workflow | CI |
 
@@ -120,8 +121,8 @@ SetFadeToBlackDuration { ms: u32 },
 La résolution et la cadence des sorties sont celles du maître (pas de mise à l'échelle par
 sortie en Phase 2).
 
-## 7. Questions au mainteneur (à trancher avant de coder)
-Les recommandations sont en premier.
+## 7. Questions au mainteneur
+**Tranchées le 2026-10-29** : les six recommandations sont retenues.
 
 | # | Question | Recommandation |
 |---|---|---|

@@ -1,7 +1,7 @@
 # ADR 0004 — Entrées GStreamer et dépendances de la Phase 1
 
-- **Statut** : accepté (mainteneur, 2026-10-26) ; **amendement 1 proposé le 2026-10-28, à
-  valider** (upload hors de la `Queue` partagée, en fin de document)
+- **Statut** : accepté (mainteneur, 2026-10-26) ; **amendement 1 accepté le 2026-10-29**
+  (upload hors de la `Queue` partagée, en fin de document)
 - **Date** : 2026-10-26
 - **Contexte** : BRIEF §5 (upload GPU), §6 (stack), §2.6 (licences) ; spec
   [`docs/specs/io-gst.md`](../specs/io-gst.md)
@@ -28,7 +28,7 @@ sont relayés par un *sync handler* (sur les threads GStreamer, sans traitement 
 `vma-io`, qui en fait des événements pour `vma-control` (`Live`, `SignalLost`, …).
 
 ### Upload : sur le thread de streaming, dans un triple buffer de textures
-*(Remplacé par l'amendement 1 s'il est validé.)* Le callback `new-sample` de l'appsink (thread de streaming GStreamer) écrit les plans de l'image
+*(Remplacé par l'amendement 1.)* Le callback `new-sample` de l'appsink (thread de streaming GStreamer) écrit les plans de l'image
 dans la texture « back » de l'input (`queue.write_texture`, même `Queue` que le rendu) puis
 publie. **Même invariant que le triple buffer Program (ADR 0001)**, avec le rendu comme
 consommateur : il ne change d'image qu'en début de tick, avant d'encoder. Le zero-copy
@@ -65,7 +65,7 @@ consommateur : il ne change d'image qu'en début de tick, avant d'encoder. Le ze
 
 ---
 
-## Amendement 1 — Upload hors de la `Queue` partagée (proposé le 2026-10-28, à valider)
+## Amendement 1 — Upload hors de la `Queue` partagée (proposé le 2026-10-28, accepté le 2026-10-29)
 
 ### Constat
 Rapports [`2026-10-27-phase1-render-cpu-0-input.md`](../../tests/soak/reports/2026-10-27-phase1-render-cpu-0-input.md)
@@ -91,7 +91,7 @@ et [`…-4-inputs.md`](../../tests/soak/reports/2026-10-27-phase1-render-cpu-4-i
   fond avec la résolution (4K = × 4 par image) et le nombre d'inputs, et la Phase 2 ajoute les
   readbacks des sorties sur la même `Queue`.
 
-### Décision proposée : tampons de transfert mappés en permanence, copie enregistrée par le rendu
+### Décision : tampons de transfert mappés en permanence, copie enregistrée par le rendu
 1. Chaque emplacement du triple buffer d'un input (`InputFrame`) reçoit, en plus de ses
    textures, **un tampon de transfert** `MAP_WRITE | COPY_SRC` (mémoire visible de l'hôte),
    lignes alignées sur `COPY_BYTES_PER_ROW_ALIGNMENT` (256 octets), créé mappé
@@ -151,7 +151,7 @@ soumissions.
   rendu : la copie se fait hors verrou, mais wgpu alloue un tampon de transfert à chaque image
   et reprend `pending_writes` pour enregistrer la copie. **Essayé** (correctif jetable, non
   commité) : p50 ÷ 3, mais p99 toujours ≈ 5 ms (tableau ci-dessus). Écarté au profit de la
-  décision proposée, qui ne touche plus du tout la `Queue` côté producteur.
+  décision retenue, qui ne touche plus du tout la `Queue` côté producteur.
 - **Upload sur le thread de rendu** (`write_texture` en début de tick) : déjà écarté (copie de
   ≈ 3 Mo par input et par tick dans le chemin chaud).
 - **Un thread d'upload dédié** qui fait les `write_texture` : même mutex, même contention.

@@ -111,15 +111,20 @@ Ubuntu + Windows ; **aucun soak n'a jamais tourné sous Windows** (A1, A13 et le
 la Phase 0 restent ⏸, script prêt). Restent aussi ouverts : la checklist `phase1-inputs.md` et
 les questions de suivi au partenaire (durées des 4 boutons, « forcer le fade à cut »).
 
-## Phase 2 — Sorties · ⬜ *spec proposée, en attente de validation*
+## Phase 2 — Sorties · *en cours*
 Enregistrement (NVENC, MKV / MP4), streaming RTMP(S) vers 1 à 3 destinations, SRT caller /
 listener, sortie plein écran, FTB (reporté de la Phase 1).
 
-**Spec et plan proposés le 2026-10-29, à valider** : [`docs/specs/phase-2.md`](docs/specs/phase-2.md)
-(critères B1–B16, plan en 10 étapes, questions Q1–Q6), ADR 0006 (sorties) proposé, amendement 1
-de l'ADR 0004 toujours à valider (étape 1 proposée). Observation de la référence à faire :
+**Spec et plan validés le 2026-10-29** : [`docs/specs/phase-2.md`](docs/specs/phase-2.md)
+(critères B1–B16, plan en 10 étapes) ; Q1–Q6 tranchées selon les recommandations ; ADR 0006
+(sorties) et amendement 1 de l'ADR 0004 (upload hors de la `Queue` partagée, étape 1) acceptés.
+Observation de la référence à faire :
 [`docs/manual-tests/observation-reference-phase2.md`](docs/manual-tests/observation-reference-phase2.md).
 Sous Windows, les critères manuels (B1, B2, B12) seront ⏸ tant qu'aucun test n'y est possible.
+
+| Étape (plan §9) | État | Preuve |
+|---|---|---|
+| 1. Amendement 1 de l'ADR 0004 : tampons de transfert mappés, copie enregistrée par le rendu, `upload_busy` | ⬜ | — |
 
 ## Phase 3 — Réseau et audio · ⬜
 ## Phase 4 — Habillage · ⬜
