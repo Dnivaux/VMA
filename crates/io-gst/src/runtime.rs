@@ -317,7 +317,10 @@ impl Worker {
                 self.outputs
                     .start(output, run, &spec, &mut |e| send(events, e));
             }
-            IoRequest::StopOutput { output } => self.outputs.stop(output),
+            IoRequest::StopOutput { output } => {
+                let events = &self.port.events;
+                self.outputs.stop(output, &mut |e| send(events, e));
+            }
         }
     }
 

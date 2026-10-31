@@ -16,6 +16,9 @@ env:
   # the runner's GStreamer: Ubuntu packages libopenh264 (BSD-2) but not the plugin.
   GST_BAD_VERSION: "1.24.2"
   GST_BAD_SHA256: 448e32787bc82b586c6cb2f81c9a8ef404fea4f77f25566fe06e597a3f59136b
+  # RTMP test server (MIT, ADR 0006): downloaded, checked, run by the tests, never linked.
+  MEDIAMTX_VERSION: "v1.21.2"
+  MEDIAMTX_LINUX_SHA256: 121be6e00397e473a95d83c75f4fcd3819a6af3b0e1a50889cba43ab4fab6a27
 
 jobs:
   fmt:
@@ -136,10 +139,23 @@ jobs:
           # Loads it now: a missing symbol or library fails here, with the reason.
           GST_DEBUG=GST_PLUGIN_LOADING:4 gst-inspect-1.0 "$RUNNER_TEMP/gst-plugins/libgstopenh264.so" | head -20
           echo "GST_PLUGIN_PATH=$RUNNER_TEMP/gst-plugins" >> "$GITHUB_ENV"
-      - name: Output encoders present (openh264enc, avenc_aac)
+      - name: MediaMTX (Linux; RTMP tests, B7)
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/mediamtx" && cd "$RUNNER_TEMP/mediamtx"
+          f="mediamtx_${MEDIAMTX_VERSION}_linux_amd64.tar.gz"
+          curl -sSfLO "https://github.com/bluenviron/mediamtx/releases/download/$MEDIAMTX_VERSION/$f"
+          echo "$MEDIAMTX_LINUX_SHA256  $f" | sha256sum -c -
+          tar -xzf "$f" mediamtx
+          ./mediamtx --version
+          # Required: the streaming tests fail instead of being skipped if it goes missing.
+          echo "VMA_MEDIAMTX=$RUNNER_TEMP/mediamtx/mediamtx" >> "$GITHUB_ENV"
+          echo "VMA_REQUIRE_MEDIAMTX=1" >> "$GITHUB_ENV"
+      - name: Output elements present (encoders, muxers, RTMP)
         shell: bash
         run: |
-          for e in openh264enc avenc_aac matroskamux mp4mux; do
+          for e in openh264enc avenc_aac matroskamux mp4mux flvmux rtmp2sink rtmp2src; do
             gst-inspect-1.0 --exists "$e" && echo "$e: ok" || { echo "$e: missing"; exit 1; }
           done
       - uses: dtolnay/rust-toolchain@stable

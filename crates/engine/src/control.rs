@@ -149,6 +149,13 @@ pub enum IoEvent {
         /// The file of a recording.
         target: Option<String>,
     },
+    /// Run `run` of a stream lost its connection; attempt `attempt` follows.
+    OutputReconnecting {
+        output: OutputId,
+        run: u64,
+        attempt: u32,
+        reason: String,
+    },
     /// Run `run` of an output is finalised and stopped.
     OutputStopped { output: OutputId, run: u64 },
     /// Run `run` of an output could not start, or stopped on an error.
@@ -354,6 +361,20 @@ impl Controller {
                     run,
                     encoder,
                     target,
+                });
+            }
+            IoEvent::OutputReconnecting {
+                output,
+                run,
+                attempt,
+                reason,
+            } => {
+                tracing::warn!(%output, run, attempt, %reason, "output reconnecting");
+                self.event(Event::OutputReconnecting {
+                    output,
+                    run,
+                    attempt,
+                    reason,
                 });
             }
             IoEvent::OutputStopped { output, run } => {

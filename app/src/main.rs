@@ -259,6 +259,7 @@ impl vma_ui::IoStatus for Io {
             running_for: a.since.elapsed(),
             bytes: a.bytes,
             kbps: a.kbps,
+            reconnections: a.reconnections,
         })
     }
 

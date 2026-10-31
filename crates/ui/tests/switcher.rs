@@ -718,11 +718,12 @@ fn output_settings_start_stop_and_remove() {
 fn output_statistics_show_every_figure() {
     // B15 (UI side).
     let state = running(state(), true);
-    let mut failed = state.outputs[1].clone();
-    failed.status = OutputStatus::Failed {
+    let mut lost = state.outputs[1].clone();
+    lost.status = OutputStatus::Reconnecting {
+        attempt: 2,
         reason: "connection refused".into(),
     };
-    let outputs = [state.outputs[0].clone(), failed];
+    let outputs = [state.outputs[0].clone(), lost];
     let counters = vma_engine::OutputCountersSnapshot {
         delivered: 4321,
         dropped: 7,
@@ -732,6 +733,7 @@ fn output_statistics_show_every_figure() {
         running_for: std::time::Duration::from_secs(3723),
         bytes: Some(12_345_678),
         kbps: Some(40_000),
+        reconnections: 0,
     };
     let h = Harness::builder()
         .with_size(Vec2::new(400.0, 600.0))
@@ -740,8 +742,16 @@ fn output_statistics_show_every_figure() {
                 .iter()
                 .map(|o| vma_ui::OutputStatsRow {
                     output: o,
-                    counters: o.status.is_on().then_some(counters),
-                    activity: o.status.is_on().then_some(activity),
+                    counters: o.spec.is_recording().then_some(counters),
+                    activity: Some(if o.spec.is_recording() {
+                        activity
+                    } else {
+                        OutputActivity {
+                            running_for: std::time::Duration::from_secs(10),
+                            reconnections: 5,
+                            ..OutputActivity::default()
+                        }
+                    }),
                 })
                 .collect();
             vma_ui::output_stats(ui, &rows);
@@ -756,8 +766,9 @@ fn output_statistics_show_every_figure() {
         "4321",
         "7",
         "Stream 1",
-        "erreur",
+        "reconnexion (essai 2)",
         "connection refused",
+        "5",
     ] {
         assert!(h.query_by_label(text).is_some(), "« {text} » missing");
     }

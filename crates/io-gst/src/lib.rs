@@ -25,7 +25,9 @@ mod supervisor;
 pub use devices::CaptureDevice;
 pub use feeds::{Feeds, PictureOut, VideoFormat};
 pub use mode::{CaptureMode, Encoding};
-pub use output::{EncoderChoice, GstOutput, OutputFeed, OutputFormat, RecordSettings, Skipped};
+pub use output::{
+    EncoderChoice, GstOutput, OutputFeed, OutputFormat, RecordSettings, Skipped, StreamSettings,
+};
 pub use outputs::{OutputActivity, default_record_folder};
 pub use runtime::{IoRuntime, PipelineInfo};
 

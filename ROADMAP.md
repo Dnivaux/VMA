@@ -137,7 +137,7 @@ Sous Windows, les critères manuels (B1, B2, B12) seront ⏸ tant qu'aucun test 
 ### Tests ignorés / manuels (Phase 2)
 | Test | Raison |
 |---|---|
-| 11 tests de temps réel (`.config/nextest.toml`) | **En CI seulement, jusqu'à 2 reprises** (2026-10-31) : les runners partagés, Windows surtout, manquent de temps en temps un tick pour des raisons extérieures au test (runs 41219704416 et 41221878079, trois tests différents). Une reprise apparaît « FLAKY » dans le rapport nextest ; 3 échecs de suite restent un échec. Aucune reprise sur la machine de dev |
+| 13 tests de temps réel (`.config/nextest.toml`) | **En CI seulement, jusqu'à 2 reprises** (2026-10-31) : les runners partagés, Windows surtout, manquent de temps en temps un tick pour des raisons extérieures au test (runs 41219704416 et 41221878079, trois tests différents). Une reprise apparaît « FLAKY » dans le rapport nextest ; 3 échecs de suite restent un échec. Aucune reprise sur la machine de dev |
 | `vma-engine::outputs::output_stage_cost_1080p50` | Mesure en temps réel en 1080p50 (20 s), lancée à la main sur la machine de dev : `cargo test --release -p vma-engine --test outputs -- --ignored --nocapture` ; trop lourde pour les adaptateurs logiciels de la CI |
 
 ## Phase 3 — Réseau et audio · ⬜

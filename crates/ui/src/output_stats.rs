@@ -55,7 +55,9 @@ pub fn output_stats(ui: &mut egui::Ui, rows: &[OutputStatsRow<'_>]) {
                             long_line(ui, "  fichier", &file_name(target), target);
                         }
                     }
-                    OutputStatus::Failed { reason } => long_line(ui, "  raison", reason, reason),
+                    OutputStatus::Failed { reason } | OutputStatus::Reconnecting { reason, .. } => {
+                        long_line(ui, "  raison", reason, reason);
+                    }
                     _ => {}
                 }
                 if let Some(a) = row.activity {
@@ -78,11 +80,8 @@ pub fn output_stats(ui: &mut egui::Ui, rows: &[OutputStatsRow<'_>]) {
                     line(ui, "  file d'attente", c.queued.to_string());
                 }
                 if o.spec.is_stream() {
-                    let attempts = match o.status {
-                        OutputStatus::Reconnecting { attempt } => attempt,
-                        _ => 0,
-                    };
-                    line(ui, "  reconnexions", attempts.to_string());
+                    let count = row.activity.map_or(0, |a| a.reconnections);
+                    line(ui, "  reconnexions", count.to_string());
                 }
             }
         });
@@ -94,7 +93,7 @@ pub(crate) fn status_label(status: &OutputStatus) -> String {
         OutputStatus::Idle => "arrêtée".into(),
         OutputStatus::Starting => "démarrage…".into(),
         OutputStatus::Running { .. } => "en cours".into(),
-        OutputStatus::Reconnecting { attempt } => format!("reconnexion (essai {attempt})"),
+        OutputStatus::Reconnecting { attempt, .. } => format!("reconnexion (essai {attempt})"),
         OutputStatus::Stopping => "finalisation…".into(),
         OutputStatus::Failed { .. } => "erreur".into(),
     }

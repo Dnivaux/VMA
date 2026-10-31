@@ -45,7 +45,12 @@ pub use encoder::{EncoderChoice, Skipped};
 
 /// Video bit rate of a recording at 1080p50 (`phase-2.md` § 6), scaled with the pixel rate.
 const RECORD_KBPS_1080P50: u64 = 40_000;
+/// Constant video bit rate of a stream at 1080p50 (`phase-2.md` § 6); 1080p30 and below get
+/// three quarters (4.5 Mb/s).
+const STREAM_KBPS_1080P50: u64 = 6_000;
 const AUDIO_KBPS: u32 = 160;
+/// Encoded data a stream may hold while its connection is slow (2 s).
+const NETWORK_SLACK: Duration = Duration::from_secs(2);
 /// Pictures queued in the video `appsrc` before the feed blocks.
 const VIDEO_QUEUE: u64 = 2;
 /// Audio blocks queued in the audio `appsrc` before the feed blocks.
@@ -89,13 +94,100 @@ impl RecordSettings {
     }
 }
 
+/// An RTMP or RTMPS destination.
+#[derive(Clone, PartialEq, Eq)]
+pub struct StreamSettings {
+    /// Server address, without the key.
+    pub url: String,
+    /// Stream key (empty: none). Never logged.
+    pub key: String,
+    /// Constant video bit rate, kbit/s.
+    pub video_kbps: u32,
+    /// Frames between key frames.
+    pub gop_frames: u32,
+    pub audio_kbps: u32,
+}
+
+impl std::fmt::Debug for StreamSettings {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StreamSettings")
+            .field("url", &self.url)
+            .field("key", &"***")
+            .field("video_kbps", &self.video_kbps)
+            .field("gop_frames", &self.gop_frames)
+            .field("audio_kbps", &self.audio_kbps)
+            .finish()
+    }
+}
+
+impl StreamSettings {
+    /// Defaults of `phase-2.md` § 6: H.264 at a constant 6 Mb/s at 1080p50 (4.5 Mb/s at 30p
+    /// and below, both scaled with the picture size), a key frame every 2 s, AAC 160 kb/s.
+    pub fn new(url: String, key: String, format: OutputFormat) -> Self {
+        let pixels = u64::from(format.resolution.width()) * u64::from(format.resolution.height());
+        let (num, den) = (
+            u64::from(format.rate.num()),
+            u64::from(format.rate.den().max(1)),
+        );
+        let high_rate = num > 31 * den;
+        let kbps = STREAM_KBPS_1080P50 * pixels / (1920 * 1080);
+        let kbps = if high_rate { kbps } else { kbps * 3 / 4 };
+        Self {
+            url,
+            key,
+            video_kbps: u32::try_from(kbps.max(500)).unwrap_or(u32::MAX),
+            gop_frames: u32::try_from((2 * num).div_ceil(den)).unwrap_or(1),
+            audio_kbps: AUDIO_KBPS,
+        }
+    }
+
+    /// What `rtmp2sink` connects to: the address, then the key as the stream name.
+    fn location(&self) -> String {
+        let url = self.url.trim().trim_end_matches('/');
+        match self.key.as_str() {
+            "" => url.to_owned(),
+            key => format!("{url}/{key}"),
+        }
+    }
+}
+
 /// What a pipeline is made of (crate-internal: tests also use raw streams and other sinks).
 #[derive(Debug, Clone)]
 pub(crate) struct Plan {
     pub video: Video,
     pub audio: Audio,
-    pub container: Container,
+    pub mux: Mux,
     pub sink: Sink,
+    /// Never to appear in a reason or a log (stream key, full location).
+    pub secrets: Secrets,
+}
+
+/// Texts scrubbed from every message of an output; `Debug` shows none of them.
+#[derive(Clone, Default)]
+pub(crate) struct Secrets(pub Vec<String>);
+
+impl std::fmt::Debug for Secrets {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Secrets({})", self.0.len())
+    }
+}
+
+/// The multiplexer of an output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Mux {
+    Mkv,
+    Mp4,
+    /// RTMP.
+    Flv,
+}
+
+impl From<Container> for Mux {
+    fn from(container: Container) -> Self {
+        match container {
+            Container::Mkv => Self::Mkv,
+            Container::Mp4 => Self::Mp4,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -119,15 +211,53 @@ pub(crate) enum Audio {
     Raw,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub(crate) enum Sink {
     File(PathBuf),
+    /// `rtmp2sink`; the location carries the key.
+    Rtmp(String),
     /// `gst-launch` description of the sink bin (tests: a slow or failing sink).
     #[cfg(test)]
     Launch(String),
 }
 
+impl std::fmt::Debug for Sink {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::File(path) => f.debug_tuple("File").field(path).finish(),
+            Self::Rtmp(_) => f.write_str("Rtmp(***)"),
+            #[cfg(test)]
+            Self::Launch(d) => f.debug_tuple("Launch").field(d).finish(),
+        }
+    }
+}
+
 impl Plan {
+    fn stream(settings: &StreamSettings) -> Self {
+        let location = settings.location();
+        Self {
+            video: Video::Encoded {
+                codec: VideoCodec::H264,
+                tuning: VideoTuning {
+                    kbps: settings.video_kbps,
+                    cbr: true,
+                    gop: settings.gop_frames.max(1),
+                },
+            },
+            audio: Audio::Aac {
+                kbps: settings.audio_kbps,
+            },
+            mux: Mux::Flv,
+            secrets: Secrets(
+                [settings.key.clone(), location.clone()]
+                    .into_iter()
+                    .filter(|s| !s.is_empty())
+                    .collect(),
+            ),
+            sink: Sink::Rtmp(location),
+        }
+    }
+
     fn recording(settings: &RecordSettings) -> Self {
         Self {
             video: Video::Encoded {
@@ -141,8 +271,9 @@ impl Plan {
             audio: Audio::Aac {
                 kbps: settings.audio_kbps,
             },
-            container: settings.container,
+            mux: settings.container.into(),
             sink: Sink::File(settings.path.clone()),
+            secrets: Secrets::default(),
         }
     }
 }
@@ -162,7 +293,9 @@ pub struct GstOutput {
     notes: Receiver<Note>,
     video_src: gst_app::AppSrc,
     audio_src: gst_app::AppSrc,
+    /// `filesink` or `rtmp2sink`: where the bytes written are counted.
     sink: Option<gst::Element>,
+    secrets: Vec<String>,
     video_encoder: Option<EncoderChoice>,
     audio_encoder: Option<EncoderChoice>,
     failure: Option<String>,
@@ -186,7 +319,27 @@ impl GstOutput {
         )
     }
 
+    /// Starts streaming to `settings.url`; frames go in through the returned feed. The
+    /// connection is made in the background: a refused or lost one shows in [`Self::poll`].
+    pub fn stream(
+        format: OutputFormat,
+        settings: &StreamSettings,
+    ) -> Result<(Self, OutputFeed), IoError> {
+        Self::start(format, &Plan::stream(settings), &mut encoder::probe_element)
+    }
+
     pub(crate) fn start(
+        format: OutputFormat,
+        plan: &Plan,
+        probe: &mut dyn FnMut(&'static str) -> Result<gst::Element, String>,
+    ) -> Result<(Self, OutputFeed), IoError> {
+        Self::build(format, plan, probe).map_err(|e| match e {
+            IoError::Pipeline(message) => IoError::Pipeline(scrub(&message, &plan.secrets.0)),
+            other => other,
+        })
+    }
+
+    fn build(
         format: OutputFormat,
         plan: &Plan,
         probe: &mut dyn FnMut(&'static str) -> Result<gst::Element, String>,
@@ -196,8 +349,14 @@ impl GstOutput {
         pipeline.use_clock(None::<&gst::Clock>);
         let (video_src, video_tail, video_encoder) = video_branch(&pipeline, format, plan, probe)?;
         let (audio_src, audio_tail, audio_encoder) = audio_branch(&pipeline, plan, probe)?;
-        let mux = match plan.container {
-            Container::Mkv => {
+        let mux = match plan.mux {
+            Mux::Flv => {
+                let mux = element("flvmux")?;
+                mux.set_property("streamable", true);
+                encoder::set(&mux, "metadatacreator", "VMA");
+                mux
+            }
+            Mux::Mkv => {
                 let mux = element("matroskamux")?;
                 // Not "streamable": a normal stop writes the duration and the index (seekable
                 // in every player); after a crash the file is still read up to its last
@@ -206,7 +365,7 @@ impl GstOutput {
                 mux.set_property("writing-app", "VMA");
                 mux
             }
-            Container::Mp4 => {
+            Mux::Mp4 => {
                 let mux = element("mp4mux")?;
                 // Fragments of 1 s: readable up to the last one after a crash.
                 mux.set_property("fragment-duration", 1000u32);
@@ -223,16 +382,39 @@ impl GstOutput {
                 sink.set_property("sync", false);
                 sink
             }
+            Sink::Rtmp(location) => {
+                let sink = element("rtmp2sink")?;
+                sink.set_property("location", location.as_str());
+                sink.set_property("sync", false);
+                sink
+            }
             #[cfg(test)]
             Sink::Launch(description) => gst::parse::bin_from_description(description, true)
                 .map_err(|e| IoError::Pipeline(e.to_string()))?
                 .upcast(),
         };
         add(&pipeline, &[&mux, &sink])?;
-        link_pad(&video_tail, &mux, "video_%u")?;
-        link_pad(&audio_tail, &mux, "audio_%u")?;
-        mux.link(&sink)
-            .map_err(|e| IoError::Pipeline(format!("mux → sink: {e}")))?;
+        // `flvmux` has one pad of each kind, the others numbered request pads.
+        let (video_pad, audio_pad) = match plan.mux {
+            Mux::Flv => ("video", "audio"),
+            Mux::Mkv | Mux::Mp4 => ("video_%u", "audio_%u"),
+        };
+        link_pad(&video_tail, &mux, video_pad)?;
+        link_pad(&audio_tail, &mux, audio_pad)?;
+        if matches!(plan.sink, Sink::Rtmp(_)) {
+            // Network slack after the encoder (a few hundred kB): the connection, a slow ack
+            // or a short hiccup is absorbed here, not by the engine's shared pictures.
+            let slack = element("queue")?;
+            slack.set_property("max-size-buffers", 0u32);
+            slack.set_property("max-size-bytes", 0u32);
+            slack.set_property("max-size-time", NETWORK_SLACK.as_nanos() as u64);
+            add(&pipeline, &[&slack])?;
+            gst::Element::link_many([&mux, &slack, &sink])
+                .map_err(|e| IoError::Pipeline(format!("mux → sink: {e}")))?;
+        } else {
+            mux.link(&sink)
+                .map_err(|e| IoError::Pipeline(format!("mux → sink: {e}")))?;
+        }
 
         let (notes_tx, notes) = crossbeam_channel::bounded(16);
         if let Some(bus) = pipeline.bus() {
@@ -260,11 +442,11 @@ impl GstOutput {
                 .unwrap_or_else(|| e.to_string());
             return Err(IoError::Pipeline(format!("cannot start: {reason}")));
         }
-        let file_sink = matches!(plan.sink, Sink::File(_)).then(|| sink.clone());
+        let counted_sink = matches!(plan.sink, Sink::File(_) | Sink::Rtmp(_)).then(|| sink.clone());
         tracing::info!(
             video = %video_encoder.as_ref().map_or("raw".into(), ToString::to_string),
             audio = %audio_encoder.as_ref().map_or("raw".into(), ToString::to_string),
-            container = ?plan.container,
+            mux = ?plan.mux,
             "output started"
         );
         let feed = OutputFeed {
@@ -280,7 +462,8 @@ impl GstOutput {
             notes,
             video_src,
             audio_src,
-            sink: file_sink,
+            sink: counted_sink,
+            secrets: plan.secrets.0.clone(),
             video_encoder,
             audio_encoder,
             failure: None,
@@ -312,10 +495,16 @@ impl GstOutput {
         self.failure.as_deref()
     }
 
-    /// Bytes written so far (file outputs).
+    /// Bytes written (file) or sent (stream) so far.
     pub fn bytes(&self) -> Option<u64> {
+        let sink = self.sink.as_ref()?;
+        if sink.factory().is_some_and(|f| f.name() == "rtmp2sink") {
+            // `rtmp2sink`: what went out on the connection (0 before it is up).
+            let stats = sink.property::<Option<gst::Structure>>("stats")?;
+            return stats.get::<u64>("out-bytes-total").ok();
+        }
         // Asked of the sink pad: `filesink` answers there in bytes.
-        let pad = self.sink.as_ref()?.static_pad("sink")?;
+        let pad = sink.static_pad("sink")?;
         let position = pad.query_position::<gst::format::Bytes>()?;
         Some(*position)
     }
@@ -365,6 +554,7 @@ impl GstOutput {
     fn note(&mut self, note: Note) {
         match note {
             Note::Failed(reason) if self.failure.is_none() => {
+                let reason = scrub(&reason, &self.secrets);
                 tracing::error!(%reason, "output failed");
                 let _ = self.pipeline.set_state(gst::State::Null);
                 self.failure = Some(reason);
@@ -692,6 +882,18 @@ fn link_pad(from: &gst::Element, mux: &gst::Element, template: &str) -> Result<(
     src.link(&sink)
         .map(|_| ())
         .map_err(|e| IoError::Pipeline(format!("branch → mux: {e:?}")))
+}
+
+/// `text` with every secret replaced by `***` (GStreamer messages quote the location).
+pub(crate) fn scrub(text: &str, secrets: &[String]) -> String {
+    let mut text = text.to_owned();
+    // Longest first: the location contains the key.
+    let mut secrets: Vec<&String> = secrets.iter().filter(|s| !s.is_empty()).collect();
+    secrets.sort_by_key(|s| std::cmp::Reverse(s.len()));
+    for secret in secrets {
+        text = text.replace(secret.as_str(), "***");
+    }
+    text
 }
 
 fn relay(notes: &Sender<Note>, message: &gst::Message) {

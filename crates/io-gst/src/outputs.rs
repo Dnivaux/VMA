@@ -1,9 +1,13 @@
-//! Outputs on `vma-io` (Phase 2 step 5): starts, watches and stops one pipeline per output
+//! Outputs on `vma-io` (Phase 2 steps 5–6): starts, watches and stops one pipeline per output
 //! on the requests of `vma-control`, reports each run back to it, and publishes what the
-//! outputs are doing (bytes written, bit rate) for the statistics.
+//! outputs are doing (bytes written or sent, bit rate, reconnections) for the statistics.
 //!
-//! Stopping never blocks the thread: the feed is detached from the engine's hub (its end of
-//! stream follows), then the pipeline is polled until the file is finalised.
+//! - Stopping never blocks the thread: the feed is detached from the engine's hub (its end of
+//!   stream follows), then the pipeline is polled until the file is finalised.
+//! - A stream is running once media bytes go out. A lost connection (error, nothing sent for
+//!   [`STALL_TIMEOUT`], no connection within [`CONNECT_TIMEOUT`]) destroys its pipeline and
+//!   builds a new one after 1, 2, 5, then every 10 s, without end (ADR 0006 § 4, same policy as
+//!   the inputs); the recordings are not touched. A recording that fails stays failed.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -12,9 +16,10 @@ use std::time::{Duration, Instant};
 use arc_swap::ArcSwap;
 use gstreamer::glib;
 use vma_core::OutputId;
-use vma_engine::{IoEvent, OutputHub, OutputSpec, RecordSpec};
+use vma_engine::{IoEvent, OutputHub, OutputSpec, RecordSpec, RtmpSpec};
 
-use crate::output::{GstOutput, OutputFormat, RecordSettings};
+use crate::output::{GstOutput, OutputFormat, RecordSettings, StreamSettings};
+use crate::supervisor::retry_delay;
 
 /// How long a stopping output may take to finalise its file before it is abandoned.
 pub(crate) const STOP_TIMEOUT: Duration = Duration::from_secs(5);
@@ -22,16 +27,24 @@ pub(crate) const STOP_TIMEOUT: Duration = Duration::from_secs(5);
 const RATE_WINDOW: Duration = Duration::from_secs(1);
 /// Most attempts at a free file name (`VMA … (2).mkv`, …).
 const NAME_ATTEMPTS: u32 = 100;
+/// Bytes sent before a stream counts as connected (past the RTMP commands: media flows).
+const CONNECTED_BYTES: u64 = 16 * 1024;
+/// A stream not connected after this long is lost.
+pub(crate) const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+/// A connected stream that sends nothing for this long is lost.
+pub(crate) const STALL_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// What a running output is doing, published 4 times a second.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OutputActivity {
     /// When its pipeline started.
     pub since: Instant,
-    /// Bytes written (file outputs).
+    /// Bytes written (file) or sent (stream, current connection).
     pub bytes: Option<u64>,
     /// Over the last second, kbit/s.
     pub kbps: Option<u32>,
+    /// Streams: connections lost since the start.
+    pub reconnections: u32,
 }
 
 /// Activity of every running output.
@@ -62,18 +75,56 @@ fn local_stamp() -> String {
         .unwrap_or_else(|_| "sans date".to_owned())
 }
 
-/// One output with a pipeline: running, or finalising.
+/// What an output's slot is doing.
+#[derive(Debug)]
+enum Phase {
+    /// Pipeline running since `started`; a stream is `connected` once media goes out.
+    Running {
+        pipeline: GstOutput,
+        started: Instant,
+        connected: bool,
+    },
+    /// A stream between two connections: next attempt at `at`.
+    Waiting { at: Instant },
+    /// Finalising since `since`.
+    Stopping { pipeline: GstOutput, since: Instant },
+}
+
+/// How to build the pipeline of an output again.
+#[derive(Debug, Clone)]
+enum Recipe {
+    Record,
+    Stream(StreamSettings),
+}
+
+/// One output of `vma-io`.
 #[derive(Debug)]
 struct Slot {
     id: OutputId,
     run: u64,
-    pipeline: GstOutput,
+    recipe: Recipe,
+    phase: Phase,
+    /// Start of the run.
     since: Instant,
-    /// Since when it is finalising.
-    stopping: Option<Instant>,
+    /// Consecutive lost connections (reset once connected again).
+    attempt: u32,
+    reconnections: u32,
+    encoder: String,
+    target: Option<String>,
     /// Start of the bit-rate window and the bytes then.
     window: (Instant, u64),
     kbps: Option<u32>,
+    /// Last time the bytes sent changed, and their count (stall watchdog).
+    moved: (Instant, u64),
+}
+
+impl Slot {
+    fn pipeline(&self) -> Option<&GstOutput> {
+        match &self.phase {
+            Phase::Running { pipeline, .. } | Phase::Stopping { pipeline, .. } => Some(pipeline),
+            Phase::Waiting { .. } => None,
+        }
+    }
 }
 
 /// Every output pipeline of `vma-io`.
@@ -103,7 +154,8 @@ impl Outputs {
         }
     }
 
-    /// Builds and starts run `run` of `output`; reports `OutputRunning` or `OutputFailed`.
+    /// Builds and starts run `run` of `output`. A recording reports `OutputRunning` at once, a
+    /// stream once it sends media; `OutputFailed` if the pipeline cannot be built.
     pub(crate) fn start(
         &mut self,
         output: OutputId,
@@ -114,38 +166,63 @@ impl Outputs {
         if self.slots.iter().any(|s| s.id == output) {
             // Never asked by `vma-control` (it stops first): the old run is finalised.
             tracing::warn!(%output, "output started twice: the previous run is stopped");
-            self.stop(output);
+            self.stop(output, &mut |_| {});
         }
-        let started = match spec {
+        let recipe = match spec {
             _ if self.unavailable.is_some() => Err(format!(
                 "GStreamer is not available: {}",
                 self.unavailable.as_deref().unwrap_or_default()
             )),
-            OutputSpec::Record(record) => self.record(output, record),
-            OutputSpec::Rtmp(_) => {
-                Err("RTMP streaming is not available yet (Phase 2, step 6)".into())
-            }
+            OutputSpec::Record(record) => self.record_settings(record).map(|_| Recipe::Record),
+            OutputSpec::Rtmp(rtmp) => self.stream_settings(rtmp).map(Recipe::Stream),
             OutputSpec::Srt(_) => Err("SRT is not available yet (Phase 2, step 7)".into()),
         };
+        let started = recipe.and_then(|recipe| {
+            let (pipeline, target) = match (&recipe, spec) {
+                (Recipe::Record, OutputSpec::Record(record)) => {
+                    let settings = self.record_settings(record)?;
+                    let target = settings.path.display().to_string();
+                    (self.attach_record(output, &settings)?, target)
+                }
+                (Recipe::Stream(settings), _) => {
+                    tracing::info!(%output, url = %settings.url, kbps = settings.video_kbps, "starting a stream");
+                    (self.attach_stream(output, settings)?, settings.url.clone())
+                }
+                _ => return Err("inconsistent output settings".to_owned()),
+            };
+            Ok((recipe, pipeline, target))
+        });
         match started {
-            Ok((pipeline, target)) => {
-                let encoder = describe(&pipeline);
+            Ok((recipe, pipeline, target)) => {
                 let now = Instant::now();
+                let encoder = describe(&pipeline);
+                let record = matches!(recipe, Recipe::Record);
                 self.slots.push(Slot {
                     id: output,
                     run,
-                    pipeline,
+                    recipe,
+                    phase: Phase::Running {
+                        pipeline,
+                        started: now,
+                        connected: record,
+                    },
                     since: now,
-                    stopping: None,
+                    attempt: 0,
+                    reconnections: 0,
+                    encoder: encoder.clone(),
+                    target: Some(target.clone()),
                     window: (now, 0),
                     kbps: None,
+                    moved: (now, 0),
                 });
-                emit(IoEvent::OutputRunning {
-                    output,
-                    run,
-                    encoder,
-                    target,
-                });
+                if record {
+                    emit(IoEvent::OutputRunning {
+                        output,
+                        run,
+                        encoder,
+                        target: Some(target),
+                    });
+                }
             }
             Err(reason) => {
                 tracing::error!(%output, %reason, "output not started");
@@ -159,11 +236,8 @@ impl Outputs {
         self.publish();
     }
 
-    fn record(
-        &self,
-        output: OutputId,
-        spec: &RecordSpec,
-    ) -> Result<(GstOutput, Option<String>), String> {
+    /// Settings of a recording, with a fresh file name.
+    fn record_settings(&self, spec: &RecordSpec) -> Result<RecordSettings, String> {
         let folder = match &spec.folder {
             Some(folder) if !folder.is_dir() => {
                 return Err(format!("folder {} does not exist", folder.display()));
@@ -178,66 +252,94 @@ impl Outputs {
         };
         let path = record_path(&folder, &local_stamp(), spec.container.extension())
             .ok_or_else(|| format!("no free file name in {}", folder.display()))?;
-        let mut settings = RecordSettings::new(path.clone(), self.format);
+        let mut settings = RecordSettings::new(path, self.format);
         settings.codec = spec.codec;
         settings.container = spec.container;
         if let Some(kbps) = spec.video_kbps {
             settings.video_kbps = kbps;
         }
-        tracing::info!(%output, path = %path.display(), ?settings.codec, ?settings.container, kbps = settings.video_kbps, "starting a recording");
+        Ok(settings)
+    }
+
+    fn stream_settings(&self, spec: &RtmpSpec) -> Result<StreamSettings, String> {
+        let key = spec
+            .key
+            .expose()
+            .ok_or("the stream key is missing")?
+            .to_owned();
+        let mut settings = StreamSettings::new(spec.url.trim().to_owned(), key, self.format);
+        if let Some(kbps) = spec.video_kbps {
+            settings.video_kbps = kbps;
+        }
+        Ok(settings)
+    }
+
+    fn attach_record(
+        &self,
+        output: OutputId,
+        settings: &RecordSettings,
+    ) -> Result<GstOutput, String> {
+        tracing::info!(%output, path = %settings.path.display(), ?settings.codec, ?settings.container, kbps = settings.video_kbps, "starting a recording");
         let (pipeline, feed) =
-            GstOutput::record(self.format, &settings).map_err(|e| e.to_string())?;
+            GstOutput::record(self.format, settings).map_err(|e| e.to_string())?;
         self.hub
             .attach(output, Box::new(feed))
             .map_err(|e| e.to_string())?;
-        Ok((pipeline, Some(path.display().to_string())))
+        Ok(pipeline)
+    }
+
+    fn attach_stream(
+        &self,
+        output: OutputId,
+        settings: &StreamSettings,
+    ) -> Result<GstOutput, String> {
+        let (pipeline, feed) =
+            GstOutput::stream(self.format, settings).map_err(|e| e.to_string())?;
+        self.hub
+            .attach(output, Box::new(feed))
+            .map_err(|e| e.to_string())?;
+        Ok(pipeline)
     }
 
     /// Detaches `output` from the engine (its end of stream follows); [`Self::tick`] then
-    /// waits for the file to be finalised.
-    pub(crate) fn stop(&mut self, output: OutputId) {
+    /// waits for the file to be finalised. A stream waiting to reconnect stops at once.
+    pub(crate) fn stop(&mut self, output: OutputId, emit: &mut impl FnMut(IoEvent)) {
         self.hub.detach(output);
-        match self.slots.iter_mut().find(|s| s.id == output) {
-            Some(slot) if slot.stopping.is_none() => slot.stopping = Some(Instant::now()),
-            Some(_) => {}
-            None => tracing::debug!(%output, "stop of an output without pipeline"),
-        }
+        let now = Instant::now();
+        let Some(index) = self.slots.iter().position(|s| s.id == output) else {
+            tracing::debug!(%output, "stop of an output without pipeline");
+            return;
+        };
+        let slot = self.slots.remove(index);
+        let Slot { phase, run, .. } = slot;
+        let phase = match phase {
+            Phase::Running { pipeline, .. } => Phase::Stopping {
+                pipeline,
+                since: now,
+            },
+            Phase::Waiting { .. } => {
+                emit(IoEvent::OutputStopped { output, run });
+                self.publish();
+                return;
+            }
+            stopping @ Phase::Stopping { .. } => stopping,
+        };
+        self.slots.insert(index, Slot { phase, ..slot });
         // A stopping output has no activity to show any more.
         self.publish();
     }
 
-    /// Watches the pipelines: failures, finalised files, bit rates.
+    /// Watches the pipelines: failures, connections, finalised files, bit rates.
     pub(crate) fn tick(&mut self, now: Instant, emit: &mut impl FnMut(IoEvent)) {
-        let hub = &self.hub;
-        let before = self.slots.len();
-        self.slots.retain_mut(|slot| {
-            let done = match slot.stopping {
-                None => slot.pipeline.poll().map(|reason| Err(reason.to_owned())),
-                Some(since) => slot
-                    .pipeline
-                    .poll_stop(now.saturating_duration_since(since), STOP_TIMEOUT)
-                    .map(|done| done.map_err(|e| e.to_string())),
-            };
-            let (id, run) = (slot.id, slot.run);
-            match done {
-                None => true,
-                Some(Ok(())) => {
-                    emit(IoEvent::OutputStopped { output: id, run });
-                    false
-                }
-                Some(Err(reason)) => {
-                    hub.detach(id);
-                    emit(IoEvent::OutputFailed {
-                        output: id,
-                        run,
-                        reason,
-                    });
-                    false
-                }
+        let before: Vec<_> = self.slots.iter().map(|s| (s.id, s.run)).collect();
+        let slots = std::mem::take(&mut self.slots);
+        for slot in slots {
+            if let Some(slot) = self.advance(slot, now, emit) {
+                self.slots.push(slot);
             }
-        });
+        }
         for slot in &mut self.slots {
-            let bytes = slot.pipeline.bytes().unwrap_or(0);
+            let bytes = slot.pipeline().and_then(GstOutput::bytes).unwrap_or(0);
             let (start, at_start) = slot.window;
             let elapsed = now.saturating_duration_since(start);
             if elapsed >= RATE_WINDOW {
@@ -250,24 +352,148 @@ impl Outputs {
                 slot.window = (now, bytes);
             }
         }
-        if self.slots.len() != before {
+        let after: Vec<_> = self.slots.iter().map(|s| (s.id, s.run)).collect();
+        if after != before {
             self.publish();
         }
     }
 
-    /// Publishes the activity of the running outputs.
+    /// One slot, one step; `None` once it is over (stopped or failed, reported).
+    fn advance(
+        &self,
+        mut slot: Slot,
+        now: Instant,
+        emit: &mut impl FnMut(IoEvent),
+    ) -> Option<Slot> {
+        let (id, run) = (slot.id, slot.run);
+        let stream = matches!(slot.recipe, Recipe::Stream(_));
+        match &mut slot.phase {
+            Phase::Stopping { pipeline, since } => {
+                match pipeline.poll_stop(now.saturating_duration_since(*since), STOP_TIMEOUT) {
+                    None => return Some(slot),
+                    Some(Ok(())) => emit(IoEvent::OutputStopped { output: id, run }),
+                    // A stream cut while stopping cannot be finalised: it is stopped anyway.
+                    Some(Err(e)) if stream => {
+                        tracing::warn!(output = %id, error = %e, "stream stopped without its end");
+                        emit(IoEvent::OutputStopped { output: id, run });
+                    }
+                    Some(Err(e)) => emit(IoEvent::OutputFailed {
+                        output: id,
+                        run,
+                        reason: e.to_string(),
+                    }),
+                }
+                None
+            }
+            Phase::Waiting { at } if now < *at => Some(slot),
+            Phase::Waiting { .. } => {
+                let Recipe::Stream(settings) = &slot.recipe else {
+                    return None;
+                };
+                match self.attach_stream(id, settings) {
+                    Ok(pipeline) => {
+                        tracing::info!(output = %id, attempt = slot.attempt, "stream reconnecting");
+                        slot.phase = Phase::Running {
+                            pipeline,
+                            started: now,
+                            connected: false,
+                        };
+                        slot.moved = (now, 0);
+                        slot.window = (now, 0);
+                        Some(slot)
+                    }
+                    Err(reason) => Some(self.lost(slot, now, reason, emit)),
+                }
+            }
+            Phase::Running {
+                pipeline,
+                started,
+                connected,
+            } => {
+                let failed = pipeline.poll().map(str::to_owned);
+                if let Some(reason) = failed {
+                    if !stream {
+                        self.hub.detach(id);
+                        emit(IoEvent::OutputFailed {
+                            output: id,
+                            run,
+                            reason,
+                        });
+                        return None;
+                    }
+                    return Some(self.lost(slot, now, reason, emit));
+                }
+                if !stream {
+                    return Some(slot);
+                }
+                let bytes = pipeline.bytes().unwrap_or(0);
+                if bytes != slot.moved.1 {
+                    slot.moved = (now, bytes);
+                }
+                if !*connected {
+                    if bytes >= CONNECTED_BYTES {
+                        *connected = true;
+                        slot.attempt = 0;
+                        emit(IoEvent::OutputRunning {
+                            output: id,
+                            run,
+                            encoder: slot.encoder.clone(),
+                            target: slot.target.clone(),
+                        });
+                    } else if now.saturating_duration_since(*started) >= CONNECT_TIMEOUT {
+                        let reason =
+                            format!("no connection within {} s", CONNECT_TIMEOUT.as_secs());
+                        return Some(self.lost(slot, now, reason, emit));
+                    }
+                } else if now.saturating_duration_since(slot.moved.0) >= STALL_TIMEOUT {
+                    let reason = format!("nothing sent for {} s", STALL_TIMEOUT.as_secs());
+                    return Some(self.lost(slot, now, reason, emit));
+                }
+                Some(slot)
+            }
+        }
+    }
+
+    /// A stream lost its connection: its pipeline goes, a new one comes after the backoff.
+    fn lost(
+        &self,
+        mut slot: Slot,
+        now: Instant,
+        reason: String,
+        emit: &mut impl FnMut(IoEvent),
+    ) -> Slot {
+        self.hub.detach(slot.id);
+        slot.attempt = slot.attempt.saturating_add(1);
+        slot.reconnections = slot.reconnections.saturating_add(1);
+        // Dropping the pipeline stops it (state `NULL`).
+        slot.phase = Phase::Waiting {
+            at: now + retry_delay(slot.attempt),
+        };
+        slot.kbps = None;
+        tracing::warn!(output = %slot.id, attempt = slot.attempt, %reason, "stream lost");
+        emit(IoEvent::OutputReconnecting {
+            output: slot.id,
+            run: slot.run,
+            attempt: slot.attempt,
+            reason,
+        });
+        slot
+    }
+
+    /// Publishes the activity of the outputs that run (or wait to reconnect).
     pub(crate) fn publish(&self) {
         let all = self
             .slots
             .iter()
-            .filter(|s| s.stopping.is_none())
+            .filter(|s| !matches!(s.phase, Phase::Stopping { .. }))
             .map(|s| {
                 (
                     s.id,
                     OutputActivity {
                         since: s.since,
-                        bytes: s.pipeline.bytes(),
+                        bytes: s.pipeline().and_then(GstOutput::bytes),
                         kbps: s.kbps,
+                        reconnections: s.reconnections,
                     },
                 )
             })
@@ -278,15 +504,14 @@ impl Outputs {
     /// Stops every output and waits (at most [`STOP_TIMEOUT`] in all) for their files: on
     /// `vma-io`'s way out, so that a recording running at exit is finalised.
     pub(crate) fn shutdown(&mut self) {
+        let mut log = |event| tracing::info!(?event, "output at exit");
         let ids: Vec<_> = self.slots.iter().map(|s| s.id).collect();
         for id in ids {
-            self.stop(id);
+            self.stop(id, &mut log);
         }
         let deadline = Instant::now() + STOP_TIMEOUT;
         while !self.slots.is_empty() && Instant::now() < deadline {
-            self.tick(Instant::now(), &mut |event| {
-                tracing::info!(?event, "output at exit")
-            });
+            self.tick(Instant::now(), &mut log);
             std::thread::sleep(Duration::from_millis(20));
         }
         if !self.slots.is_empty() {
@@ -451,10 +676,9 @@ mod tests {
         send(
             &engine,
             Command::AddOutput {
-                spec: OutputSpec::Rtmp(RtmpSpec {
-                    url: "rtmp://127.0.0.1/live".into(),
-                    key: Secret::new("k"),
-                    video_kbps: None,
+                spec: OutputSpec::Srt(vma_engine::SrtSpec {
+                    host: "127.0.0.1".into(),
+                    ..vma_engine::SrtSpec::default()
                 }),
                 name: None,
             },
@@ -486,5 +710,325 @@ mod tests {
             local_stamp()
         );
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    // Streaming (Phase 2 step 6).
+
+    /// A local MediaMTX (RTMP only) on its own port, killed on drop.
+    struct Server {
+        binary: PathBuf,
+        config: PathBuf,
+        port: u16,
+        child: Option<std::process::Child>,
+    }
+
+    impl Server {
+        /// `None` (test skipped) without `VMA_MEDIAMTX`; the CI sets it, with
+        /// `VMA_REQUIRE_MEDIAMTX` so that a missing server fails instead.
+        fn start() -> Option<Self> {
+            let Some(binary) = std::env::var_os("VMA_MEDIAMTX").map(PathBuf::from) else {
+                assert!(
+                    std::env::var_os("VMA_REQUIRE_MEDIAMTX").is_none(),
+                    "VMA_MEDIAMTX not set"
+                );
+                eprintln!("skipped: no MediaMTX (set VMA_MEDIAMTX to its binary)");
+                return None;
+            };
+            let port = std::net::TcpListener::bind("127.0.0.1:0")
+                .and_then(|l| l.local_addr())
+                .unwrap()
+                .port();
+            let config = std::env::temp_dir()
+                .join(format!("vma-mediamtx-{}-{port}.yml", std::process::id()));
+            std::fs::write(
+                &config,
+                format!(
+                    "logLevel: warn\nrtsp: false\nhls: false\nwebrtc: false\nsrt: false\n\
+                     moq: false\nrtmp: true\nrtmpAddress: 127.0.0.1:{port}\npaths:\n  all_others:\n"
+                ),
+            )
+            .unwrap();
+            let mut server = Self {
+                binary,
+                config,
+                port,
+                child: None,
+            };
+            server.run();
+            Some(server)
+        }
+
+        fn run(&mut self) {
+            let child = std::process::Command::new(&self.binary)
+                .arg(&self.config)
+                .stdout(std::process::Stdio::null())
+                .spawn()
+                .expect("MediaMTX starts");
+            self.child = Some(child);
+            let end = Instant::now() + Duration::from_secs(10);
+            while std::net::TcpStream::connect(("127.0.0.1", self.port)).is_err() {
+                assert!(Instant::now() < end, "MediaMTX does not listen");
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        }
+
+        /// The server goes away (connections reset), as a crashed or unreachable one.
+        fn kill(&mut self) {
+            if let Some(mut child) = self.child.take() {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+        }
+
+        fn url(&self) -> String {
+            format!("rtmp://127.0.0.1:{}/live", self.port)
+        }
+    }
+
+    impl Drop for Server {
+        fn drop(&mut self) {
+            self.kill();
+            let _ = std::fs::remove_file(&self.config);
+        }
+    }
+
+    /// Video buffers received from `location` over `window`, once the server has the stream
+    /// (it announces it after probing the tracks, ≈ 2 s).
+    fn received(location: &str, window: Duration) -> u64 {
+        use gstreamer as gst;
+        use gstreamer::prelude::*;
+        use std::sync::atomic::{AtomicU64, Ordering};
+        let end = Instant::now() + Duration::from_secs(15);
+        loop {
+            let description = format!(
+                "rtmp2src location={location} ! flvdemux name=d \
+                 d.video ! queue ! appsink name=v sync=false emit-signals=false \
+                 d.audio ! queue ! fakesink sync=false"
+            );
+            let pipeline = gst::parse::launch(&description)
+                .unwrap()
+                .downcast::<gst::Pipeline>()
+                .unwrap();
+            let count = Arc::new(AtomicU64::new(0));
+            let sink = pipeline
+                .by_name("v")
+                .unwrap()
+                .downcast::<gstreamer_app::AppSink>()
+                .unwrap();
+            let counter = Arc::clone(&count);
+            sink.set_callbacks(
+                gstreamer_app::AppSinkCallbacks::builder()
+                    .new_sample(move |s| {
+                        let _ = s.pull_sample();
+                        counter.fetch_add(1, Ordering::Relaxed);
+                        Ok(gst::FlowSuccess::Ok)
+                    })
+                    .build(),
+            );
+            pipeline.set_state(gst::State::Playing).unwrap();
+            std::thread::sleep(window);
+            let _ = pipeline.set_state(gst::State::Null);
+            let n = count.load(Ordering::Relaxed);
+            if n > 0 || Instant::now() > end {
+                return n;
+            }
+            std::thread::sleep(Duration::from_millis(500));
+        }
+    }
+
+    fn rtmp(url: &str, key: &str) -> Command {
+        Command::AddOutput {
+            spec: OutputSpec::Rtmp(RtmpSpec {
+                url: url.into(),
+                key: Secret::new(key),
+                video_kbps: None,
+            }),
+            name: None,
+        }
+    }
+
+    #[test]
+    fn three_destinations_stream_at_once() {
+        // B7: 3 destinations, started together, each received under its key.
+        let Some(server) = Server::start() else {
+            return;
+        };
+        crate::pipeline::tests::init();
+        let mut engine = spawn_engine(FrameRate::FPS_50, false);
+        let io = IoRuntime::start(engine.take_io_port().unwrap()).unwrap();
+        let state = engine.state();
+        for key in ["s1", "s2", "s3"] {
+            send(&engine, rtmp(&server.url(), key));
+        }
+        send(&engine, Command::StartStreaming { slot: None });
+        let streams = [OutputId(2), OutputId(3), OutputId(4)];
+        for id in streams {
+            let status = wait_status(&state, id, |s| {
+                matches!(
+                    s,
+                    OutputStatus::Running { .. } | OutputStatus::Failed { .. }
+                )
+            });
+            assert!(matches!(status, OutputStatus::Running { .. }), "{status:?}");
+        }
+        // A while without readers, then each destination read back.
+        std::thread::sleep(Duration::from_secs(2));
+        for key in ["s1", "s2", "s3"] {
+            let n = received(&format!("{}/{key}", server.url()), Duration::from_secs(2));
+            eprintln!("{key}: {n} pictures in 2 s");
+            assert!(n >= 25, "{key}: {n} pictures in 2 s");
+        }
+        for id in streams {
+            let activity = io.output_activity(id).unwrap();
+            assert!(activity.bytes.unwrap_or(0) > 0, "{activity:?}");
+            assert_eq!(engine.outputs().counters(id).unwrap().dropped, 0);
+        }
+        send(&engine, Command::StopStreaming { slot: None });
+        for id in streams {
+            wait_status(&state, id, |s| *s == OutputStatus::Idle);
+        }
+    }
+
+    #[test]
+    fn lost_server_reconnects_while_the_recording_runs() {
+        // B7: server cut → reconnection after 1 s (then 2, 5, 10 s); the recording beside it
+        // goes on without a gap.
+        let Some(mut server) = Server::start() else {
+            return;
+        };
+        crate::pipeline::tests::init();
+        let rate = FrameRate::FPS_50;
+        let mut engine = spawn_engine(rate, false);
+        let io = IoRuntime::start(engine.take_io_port().unwrap()).unwrap();
+        let state = engine.state();
+        let dir = folder("beside-stream");
+        record_into(&engine, Some(dir.clone()), Container::Mkv);
+        send(&engine, rtmp(&server.url(), "cut"));
+        let stream = OutputId(2);
+        send(&engine, Command::StartRecording);
+        send(&engine, Command::StartStreaming { slot: None });
+        let target = match wait_status(&state, REC, |s| matches!(s, OutputStatus::Running { .. })) {
+            OutputStatus::Running { target, .. } => PathBuf::from(target.unwrap()),
+            _ => unreachable!(),
+        };
+        wait_status(&state, stream, |s| {
+            matches!(s, OutputStatus::Running { .. })
+        });
+        std::thread::sleep(Duration::from_millis(500));
+
+        server.kill();
+        let lost_at = Instant::now();
+        let status = wait_status(&state, stream, |s| {
+            matches!(s, OutputStatus::Reconnecting { .. })
+        });
+        eprintln!("lost after {:?}: {status:?}", lost_at.elapsed());
+        assert!(matches!(
+            status,
+            OutputStatus::Reconnecting { attempt: 1, .. }
+        ));
+        server.run();
+        wait_status(&state, stream, |s| {
+            matches!(s, OutputStatus::Running { .. })
+        });
+        let back = lost_at.elapsed();
+        eprintln!("running again after {back:?}");
+        assert!(back < Duration::from_secs(9), "{back:?}");
+        assert!(io.output_activity(stream).unwrap().reconnections >= 1);
+        let n = received(&format!("{}/cut", server.url()), Duration::from_secs(2));
+        assert!(n >= 25, "{n} pictures after the reconnection");
+
+        let recording = engine.outputs().counters(REC).unwrap();
+        assert_eq!(
+            recording.dropped, 0,
+            "the recording lost nothing: {recording:?}"
+        );
+        send(&engine, Command::StopRecording);
+        send(&engine, Command::StopStreaming { slot: None });
+        wait_status(&state, REC, |s| *s == OutputStatus::Idle);
+        drop(engine);
+        drop(io);
+        let (back, error) = read_back(&target);
+        assert_eq!(error, None);
+        let period = vma_engine::video_pts_ns(rate, 1);
+        let gaps = back
+            .video
+            .windows(2)
+            .filter(|w| w[1].0.saturating_sub(w[0].0) > period + 1_000_000)
+            .count();
+        assert_eq!(
+            gaps,
+            0,
+            "the recording has no gap ({} pictures)",
+            back.video.len()
+        );
+        assert!(back.video.len() as u64 >= recording.delivered);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[derive(Clone, Default)]
+    struct Logs(Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for Logs {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn unreachable_server_is_retried_and_the_key_never_shows() {
+        // B13 for streams: GStreamer quotes the location (with the key) in its errors.
+        const KEY: &str = "live_5c0ffee9d2a1";
+        let logs = Logs::default();
+        let writer = logs.clone();
+        // Global: `vma-io` logs from its own thread. One process per test with nextest; under
+        // `cargo test` another test may have set it first (the logs are then not checked).
+        let captured = tracing::subscriber::set_global_default(
+            tracing_subscriber::fmt()
+                .with_max_level(tracing::Level::TRACE)
+                .with_writer(move || writer.clone())
+                .finish(),
+        )
+        .is_ok();
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .and_then(|l| l.local_addr())
+            .unwrap()
+            .port();
+        let mut engine = spawn_engine(FrameRate::FPS_25, false);
+        let _io = IoRuntime::start(engine.take_io_port().unwrap()).unwrap();
+        let state = engine.state();
+        send(&engine, rtmp(&format!("rtmp://127.0.0.1:{port}/live"), KEY));
+        send(&engine, Command::StartStreaming { slot: None });
+        let stream = OutputId(2);
+        let first = wait_status(&state, stream, |s| {
+            matches!(
+                s,
+                OutputStatus::Reconnecting { .. } | OutputStatus::Failed { .. }
+            )
+        });
+        let OutputStatus::Reconnecting { attempt: 1, reason } = &first else {
+            panic!("{first:?}");
+        };
+        eprintln!("{reason}");
+        // Retried after 1 s, still unreachable: attempt 2.
+        let second = wait_status(&state, stream, |s| {
+            matches!(s, OutputStatus::Reconnecting { attempt: 2, .. })
+        });
+        let journal = serde_json::to_string(&*state.load()).unwrap();
+        send(&engine, Command::StopStreaming { slot: None });
+        wait_status(&state, stream, |s| *s == OutputStatus::Idle);
+        drop(engine);
+        for text in [format!("{first:?} {second:?}"), journal] {
+            assert!(!text.contains(KEY), "{text}");
+        }
+        if captured {
+            let logs = String::from_utf8(logs.0.lock().unwrap().clone()).unwrap();
+            assert!(logs.contains("stream lost"), "{logs}");
+            assert!(!logs.contains(KEY), "{logs}");
+        }
     }
 }

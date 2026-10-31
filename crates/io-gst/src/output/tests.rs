@@ -40,8 +40,9 @@ fn raw_plan(path: &Path) -> Plan {
     Plan {
         video: Video::Raw,
         audio: Audio::Raw,
-        container: Container::Mkv,
+        mux: Mux::Mkv,
         sink: Sink::File(path.to_owned()),
+        secrets: Secrets::default(),
     }
 }
 
@@ -620,4 +621,42 @@ fn disk_full_fails_the_output_only() {
     assert_eq!(error, None);
     assert_eq!(back.video.len() as u64, n);
     std::fs::remove_file(&path).unwrap();
+}
+
+#[test]
+fn stream_settings_defaults_and_location() {
+    let settings = |rate, w, h| {
+        StreamSettings::new(
+            "rtmp://live.example.net/app/".into(),
+            "key".into(),
+            format(rate, w, h),
+        )
+    };
+    let s = settings(FrameRate::FPS_50, 1920, 1080);
+    assert_eq!(
+        (s.video_kbps, s.gop_frames, s.audio_kbps),
+        (6_000, 100, 160)
+    );
+    assert_eq!(settings(FrameRate::FPS_30, 1920, 1080).video_kbps, 4_500);
+    assert_eq!(settings(FrameRate::FPS_29_97, 1920, 1080).gop_frames, 60);
+    assert_eq!(settings(FrameRate::FPS_59_94, 1280, 720).video_kbps, 2_666);
+    assert_eq!(s.location(), "rtmp://live.example.net/app/key");
+    let no_key = StreamSettings {
+        key: String::new(),
+        ..s.clone()
+    };
+    assert_eq!(no_key.location(), "rtmp://live.example.net/app");
+    assert!(!format!("{s:?}").contains("\"key\""), "{s:?}");
+    let plan = Plan::stream(&s);
+    assert!(!format!("{plan:?}").contains("app/key"), "{plan:?}");
+}
+
+#[test]
+fn secrets_are_scrubbed_from_messages() {
+    let secrets = vec!["k3y".to_owned(), "rtmp://h/app/k3y".to_owned()];
+    assert_eq!(
+        scrub("Could not connect to rtmp://h/app/k3y (k3y)", &secrets),
+        "Could not connect to *** (***)"
+    );
+    assert_eq!(scrub("nothing", &[String::new()]), "nothing");
 }

@@ -78,9 +78,11 @@ pub enum OutputStatus {
         encoder: String,
         target: Option<String>,
     },
-    /// A stream lost its server and is being reconnected (from step 6).
+    /// A stream lost its server (or could not reach it) and is being reconnected: attempt
+    /// `attempt` comes after 1, 2, 5, then every 10 s; `reason` of the last loss.
     Reconnecting {
         attempt: u32,
+        reason: String,
     },
     /// Finalising (end of stream, file closed).
     Stopping,
@@ -322,6 +324,13 @@ pub enum Event {
         run: u64,
         encoder: String,
         target: Option<String>,
+    },
+    /// Run `run` of a stream lost its connection; `io-gst` tries again (attempt `attempt`).
+    OutputReconnecting {
+        output: OutputId,
+        run: u64,
+        attempt: u32,
+        reason: String,
     },
     /// Run `run` of an output is finalised and stopped.
     OutputStopped { output: OutputId, run: u64 },
@@ -571,6 +580,17 @@ impl State {
                 .then(|| OutputStatus::Running {
                     encoder: encoder.clone(),
                     target: target.clone(),
+                })
+            }),
+            Event::OutputReconnecting {
+                output,
+                run,
+                attempt,
+                reason,
+            } => self.output_event(*output, *run, |status| {
+                status.is_on().then(|| OutputStatus::Reconnecting {
+                    attempt: *attempt,
+                    reason: reason.clone(),
                 })
             }),
             Event::OutputStopped { output, run } => {
@@ -2180,5 +2200,55 @@ mod tests {
         assert!(!s.ftb.active);
         s.apply(&Command::SetFadeToBlackDuration { ms: 0 }).unwrap();
         assert_eq!(s.plan().ftb.frames, 0, "0 ms: at once");
+    }
+
+    #[test]
+    fn a_lost_stream_reconnects_under_the_same_run() {
+        let mut s = state();
+        let a = add_output(&mut s, rtmp("k"));
+        s.apply(&Command::StartOutput { output: a }).unwrap();
+        running(&mut s, a);
+        let lost = |attempt| Event::OutputReconnecting {
+            output: a,
+            run: 1,
+            attempt,
+            reason: "connection closed remotely".into(),
+        };
+        s.apply_event(&lost(1));
+        assert_eq!(
+            status(&s, a),
+            OutputStatus::Reconnecting {
+                attempt: 1,
+                reason: "connection closed remotely".into()
+            }
+        );
+        assert!(status(&s, a).is_on(), "still on air for the buttons");
+        s.apply_event(&lost(2));
+        running(&mut s, a);
+        assert!(matches!(status(&s, a), OutputStatus::Running { .. }));
+        // Stopped meanwhile: a late loss is ignored.
+        s.apply(&Command::StopOutput { output: a }).unwrap();
+        s.apply_event(&lost(3));
+        assert_eq!(status(&s, a), OutputStatus::Stopping);
+        // Updating it while it reconnects is refused (still active).
+        let mut s = state();
+        let b = add_output(&mut s, rtmp("k"));
+        s.apply(&Command::StartOutput { output: b }).unwrap();
+        s.apply_event(&Event::OutputReconnecting {
+            output: b,
+            run: 1,
+            attempt: 1,
+            reason: "refused".into(),
+        });
+        assert_eq!(
+            refused(
+                &mut s,
+                Command::UpdateOutput {
+                    output: b,
+                    spec: rtmp("other")
+                }
+            ),
+            Rejection::OutputActive(b)
+        );
     }
 }

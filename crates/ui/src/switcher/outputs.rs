@@ -224,7 +224,7 @@ impl Switcher {
                     ui.add(egui::Label::new(RichText::new(target).small()).wrap());
                 }
             }
-            OutputStatus::Failed { reason } => {
+            OutputStatus::Failed { reason } | OutputStatus::Reconnecting { reason, .. } => {
                 ui.add(egui::Label::new(RichText::new(reason).color(WARNING)).wrap());
             }
             _ => {}

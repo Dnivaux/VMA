@@ -60,6 +60,8 @@ pub struct OutputActivity {
     pub bytes: Option<u64>,
     /// Over the last second, kbit/s.
     pub kbps: Option<u32>,
+    /// Streams: connections lost since the start.
+    pub reconnections: u32,
 }
 
 /// What a native dialog was opened for.
