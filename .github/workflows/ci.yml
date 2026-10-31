@@ -19,7 +19,7 @@ env:
 
 jobs:
   fmt:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
@@ -28,13 +28,13 @@ jobs:
       - run: cargo fmt --all --check
 
   deny:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
       - uses: EmbarkStudios/cargo-deny-action@v2
 
   msrv:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
       - name: Install GStreamer development files
@@ -54,7 +54,9 @@ jobs:
       matrix:
         include:
           # No GPU on hosted runners: software adapters (lavapipe / WARP).
-          - os: ubuntu-latest
+          # Ubuntu pinned: the openh264 plugin is built from the gst-plugins-bad sources of
+          # the runner's GStreamer (1.24.2 on 24.04); `ubuntu-latest` moves to 26.04.
+          - os: ubuntu-24.04
             wgpu_backend: vulkan
           - os: windows-latest
             wgpu_backend: dx12
