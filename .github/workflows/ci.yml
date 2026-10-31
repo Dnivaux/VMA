@@ -131,6 +131,8 @@ jobs:
           mkdir -p "$RUNNER_TEMP/gst-plugins"
           g++ -shared -o "$RUNNER_TEMP/gst-plugins/libgstopenh264.so" ./*.o \
             $(pkg-config --libs gstreamer-video-1.0 gstreamer-pbutils-1.0 openh264)
+          # Loads it now: a missing symbol or library fails here, with the reason.
+          GST_DEBUG=GST_PLUGIN_LOADING:4 gst-inspect-1.0 "$RUNNER_TEMP/gst-plugins/libgstopenh264.so" | head -20
           echo "GST_PLUGIN_PATH=$RUNNER_TEMP/gst-plugins" >> "$GITHUB_ENV"
       - name: Output encoders present (openh264enc, avenc_aac)
         shell: bash
