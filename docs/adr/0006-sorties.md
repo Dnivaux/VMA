@@ -159,6 +159,14 @@ Précisions (détail dans la spec `io-gst.md`, « Phase 2 — Sorties ») :
 - Le sondage s'arrête à `READY` (§ 6) : un refus à l'ouverture de la session d'encodage (limite
   de sessions NVENC) fait échouer la sortie au premier frame, raison affichée.
 
+## Mise en œuvre des commandes et de l'UI (étape 5, 2026-10-31)
+Précisions (détail dans `commands.md`, `ui.md` et `io-gst.md`, « Phase 2 ») :
+- **MKV non `streamable`** (§ 4) : l'arrêt normal écrit la durée et l'index ; la lecture après
+  un arrêt brutal reste assurée (B4 inchangé).
+- Un **numéro de run** par démarrage relie les événements de `vma-io` au bon démarrage.
+- Les 3 destinations de stream sont chacune **RTMP ou SRT** (`phase-2.md` § 1 : 1 à 3
+  destinations, SRT en plus) ; à confirmer sur la référence (question 17).
+
 ## Conséquences
 - Temps de rendu par tick : + une passe FTB, une passe de conversion 4:2:0 et une copie vers
   tampon (≈ 3 Mo en 1080p) quand une sortie est active ; mesurés par l'histogramme par phase

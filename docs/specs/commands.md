@@ -145,6 +145,45 @@ Précisions apportées en codant (à relire) :
 - Ordre de publication : plan d'abord, snapshot ensuite (le rendu n'est jamais en retard sur
   l'UI).
 
+## Phase 2 — Sorties (étape 5, 2026-10-31)
+Commandes de `phase-2.md` § 5, mises en œuvre telles quelles ; précisions apportées en codant
+(à relire) :
+- **Réglages** (`OutputSpec`) : `Record { folder, codec, container, video_kbps }`,
+  `Rtmp { url, key, video_kbps }`, `Srt { mode, host, port, latency_ms, passphrase,
+  video_kbps }`. `folder: None` = dossier Vidéos de l'utilisateur ; `video_kbps: None` = débit
+  par défaut de `phase-2.md` § 6. Validés à l'ajout et à la modification (débit 100 à
+  200 000 kb/s, adresse `rtmp://` ou `rtmps://`, port non nul, latence SRT 20 à 8 000 ms,
+  phrase de passe vide ou de 10 à 79 caractères) : sinon refus, état inchangé.
+- **Un enregistrement existe dès le départ** (`State::DEFAULT_RECORDING`, `output#1`), pour que
+  le bouton Enregistrer marche tout de suite. Il peut être modifié ou supprimé
+  (`StartRecording` est alors refusé : « no recording output is configured »).
+- **Destinations de stream** : 3 au plus, **RTMP ou SRT chacune** ; une destination ajoutée
+  prend le plus petit numéro libre (1 à 3), affiché « Stream n ». `StartStreaming { slot }`
+  agit sur la destination `slot`, ou sur toutes (`None`). 8 sorties au plus en tout.
+- **État d'une sortie** : `Idle → Starting → Running { encoder, target } → Stopping → Idle`, ou
+  `Failed { reason }` ; `Reconnecting { attempt }` est réservé aux streams (étape 6). Chaque
+  démarrage reçoit un **numéro de run** : `io-gst` le rappelle dans ses événements
+  (`OutputRunning`, `OutputStopped`, `OutputFailed`, journalisés comme les autres), et ceux d'un
+  run ancien sont ignorés (un arrêt suivi d'un démarrage rapide ne se mélange pas).
+- Démarrer une sortie qui tourne : sans effet ; en cours d'arrêt : refusé. Arrêter une sortie en
+  erreur la remet à l'arrêt (acquittement) ; une confirmation de démarrage arrivée après un
+  arrêt la laisse en cours d'arrêt. Modifier une sortie active : refusé ; changer un
+  enregistrement en stream (ou l'inverse) : refusé. Supprimer une sortie active l'arrête.
+- **`Secret`** (clé de stream, phrase de passe SRT) : `Serialize` et `Debug` donnent `***`
+  (vide reste vide : rien de secret). Le journal, les logs, l'état sérialisé et les rapports
+  n'en contiennent donc jamais la valeur (B13). Relu depuis un journal, il vaut
+  `Secret::Redacted` : le démarrage de la sortie est refusé (« the secret of output#n is
+  missing… »), le rejeu s'arrête là avec cette raison, et la clé doit être saisie de nouveau.
+- **FTB** : `FadeToBlack` bascule `ftb.active` ; la durée (`SetFadeToBlackDuration`, 0 à
+  10 000 ms, défaut 1 000 ms) donne `round(durée × cadence)` ticks, 0 = immédiat. Le fondu
+  lui-même est calculé par le rendu (comme une transition) : le *k*-ième tick après la
+  commande montre `(k + 1) / images`. **Relancé en cours de fondu, il repart d'où il en est, à
+  la même vitesse** (retour en 10 ticks après 10 ticks d'un fondu de 50) : choix à confirmer
+  sur la référence (question 16 de `observation-reference-phase2.md`). Le niveau n'est pas
+  dans l'état versionné : `RenderFeedback::fade_to_black()` (0 = Program, 1 = noir).
+- Requêtes vers `vma-io` : `IoRequest::StartOutput { output, run, spec }` et
+  `StopOutput { output }`.
+
 ## Critères d'acceptation
 | Critère | Test |
 |---|---|
@@ -157,3 +196,6 @@ Précisions apportées en codant (à relire) :
 | Ajout / retrait à chaud sans image manquée (A12) | GPU logiciel, 20 cycles pendant le rendu |
 | `vma-control` n'alloue pas sur le thread de rendu : ressources libérées côté contrôle | test : compteur de libérations par thread (instrumentation de `InputResources::drop`) |
 | Chaque action UI émet la bonne `Command` (A11) | voir [`ui.md`](ui.md) |
+| *(Phase 2)* Sorties : démarrage, arrêt, runs, destinations 1–3, refus sans effet | `state::tests` (8 tests) |
+| *(Phase 2)* **B11** côté moteur : FTB de la durée réglée aux 6 cadences, retour, Program inchangé | `control::tests::fade_to_black_*` (temps simulé), `render_loop::fade_to_black_darkens_the_outputs_not_the_program_view` (GPU) |
+| *(Phase 2)* **B13** côté moteur : ni la clé ni la phrase de passe dans le journal, les logs (niveau TRACE) ou l'état sérialisé ; rejeu refusé sans la clé | `control::tests::secrets_never_reach_the_journal_the_logs_nor_the_published_state` |

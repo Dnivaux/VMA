@@ -212,7 +212,8 @@ appsrc F32 48 kHz stéréo ─► audioconvert ─► encodeur AAC ─► aacpar
   Débit d'enregistrement : 40 Mb/s × (débit de pixels / 1080p50), 500 kb/s au minimum ; GOP 1 s ;
   AAC 160 kb/s. Un encodeur refusé seulement à l'ouverture de sa session (limite NVENC) fait
   échouer la sortie au premier frame, raison affichée.
-- **Conteneurs** : MKV `matroskamux streamable=true` ; MP4 `mp4mux` fragmenté (1 s) en mode
+- **Conteneurs** : MKV `matroskamux` *(étape 5 : `streamable=false`, voir plus bas ; à l'étape 4
+  `streamable=true`)* ; MP4 `mp4mux` fragmenté (1 s) en mode
   `first-moov-then-finalise` : MP4 classique (index complet) après un arrêt normal, lisible
   jusqu'au dernier fragment après un arrêt brutal. `filesink` **non tamponné** : chaque bloc est
   écrit tout de suite (B4).
@@ -234,3 +235,38 @@ appsrc F32 48 kHz stéréo ─► audioconvert ─► encodeur AAC ─► aacpar
 | B9 : matériel masqué → `openh264enc` (ou refus explicite s'il est absent), raisons listées ; HEVC sans matériel → refus explicite ; rien ne tombe | `encoder::tests` (3), `masked_hardware_falls_back_or_refuses_explicitly` ; NVENC retenu sur la machine de dev | CI + manuel |
 | B10 (`io-gst`) : `bt709` et chroma `mpeg2` relus du MKV brut (chroma : GStreamer ≥ 1.26, Windows en CI) ; `bt709` relu des MKV et MP4 encodés | `file_carries_…`, `recordings_are_complete_…` | CI |
 | Dossier absent → refus au démarrage ; disque plein → la sortie échoue avec sa raison, l'enregistrement voisin est finalisé | `unwritable_path_is_refused_at_start`, `disk_full_fails_the_output_only` (`/dev/full`, Linux seulement) | CI |
+
+## Phase 2 — Sorties sur `vma-io` (étape 5, 2026-10-31)
+Module `outputs` : `vma-io` exécute `IoRequest::StartOutput { output, run, spec }` et
+`StopOutput { output }`, et rend compte de chaque run à `vma-control` (`IoEvent::OutputRunning
+{ encoder, target }`, `OutputStopped`, `OutputFailed { reason }`).
+- **Enregistrement** : dossier choisi, ou dossier Vidéos de l'utilisateur
+  (`glib::user_special_dir(Videos)` : XDG `VIDEOS` sous Linux, dossier connu Vidéos sous
+  Windows ; à défaut le dossier personnel), créé s'il manque ; un dossier choisi qui n'existe
+  pas fait échouer la sortie (« folder … does not exist »). Nom : `VMA AAAA-MM-JJ HH-MM-SS.mkv`
+  (heure locale, `glib::DateTime`), suivi de ` (2)`, ` (3)`… si le nom est pris : jamais
+  d'écrasement. Encodeurs annoncés « nvh264enc + avenc_aac » (avec la raison d'un repli).
+- **MKV non `streamable`** : avec `streamable=true` (étape 4), `matroskamux` n'écrivait ni la
+  durée ni l'index : un fichier arrêté normalement n'avait pas de durée et se parcourait mal dans
+  les lecteurs. Désormais l'arrêt normal écrit durée et index (relu : 9,84 s, 491 images pour un
+  soak de 10 s) ; un processus tué laisse un fichier lu jusqu'à son dernier bloc complet (B4
+  inchangé : 73 images sur 75).
+- **Arrêt sans blocage** : le feed est détaché du hub (EOS après sa dernière image), puis
+  `GstOutput::poll_stop` est interrogé à chaque tour de `vma-io` jusqu'au fichier finalisé
+  (5 s au plus, EOS forcé à mi-délai) ; les inputs continuent d'être servis pendant ce temps.
+- **Sortie de l'application** : à l'arrêt de `vma-io` (après le moteur), les sorties en cours
+  sont arrêtées et finalisées (5 s au plus en tout) : un MP4 enregistré à la fermeture est
+  complet.
+- **Activité** publiée 4 fois par seconde (`IoRuntime::output_activity`) : début, octets écrits,
+  débit sur la dernière seconde. Une sortie qui s'arrête n'en a plus.
+- **RTMP et SRT** : refusés au démarrage avec une raison explicite (« not available yet (Phase 2,
+  step 6 / 7) ») jusqu'aux étapes 6 et 7. Reste à faire à l'étape 6 : ne jamais laisser la clé
+  passer dans un message d'erreur de GStreamer (l'URL complète de `rtmp2sink` la contient).
+
+### Critères (étape 5)
+| Critère | Test (`vma-io-gst`, `outputs::tests`) | Où |
+|---|---|---|
+| Jalon : le bouton Enregistrer (commandes seules) donne un fichier lisible dans le dossier choisi, encodeur et fichier dans l'état, activité publiée, compteurs du moteur | `record_button_writes_a_readable_file_into_the_chosen_folder` (vrai moteur, vrai encodeur) | CI + local |
+| Un enregistrement en cours à la fermeture est finalisé (MP4 lisible en entier) | `a_recording_running_at_exit_is_finalised` | CI + local |
+| Démarrage refusé (dossier absent, RTMP pas encore là) : seule la sortie échoue, avec la raison ; le Program continue | `refused_starts_fail_the_output_only` | CI |
+| Noms de fichier datés, jamais d'écrasement | `file_names_carry_the_date_and_never_overwrite` | CI |

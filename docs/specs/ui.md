@@ -123,6 +123,33 @@ refusées, `journal_dropped`.
 - **Statistiques**, par input : mode de capture, conversion (« aucune » ou « videoconvert
   (CPU) »).
 
+## Phase 2 — Sorties (étape 5, 2026-10-31)
+- **Barre du haut** : **Enregistrer** (toutes les sorties d'enregistrement ; pendant
+  l'enregistrement, bouton rouge « REC hh:mm:ss », un clic l'arrête), **Streamer** (toutes les
+  destinations ; « EN DIRECT hh:mm:ss » ; grisé sans destination), interrupteur **Sorties**
+  (« Sorties (erreur) » quand une sortie est en erreur).
+- **FTB** dans la colonne de transition, sous les 4 boutons : rouge tant que les sorties sont
+  au noir ou en fondu, barre de progression pendant le fondu, durée au **clic droit** (ms).
+  La vue Program de l'UI ne change pas (seules les sorties passent au noir).
+- **Fenêtre Sorties** : une carte par sortie (nom, type, état, encodeur retenu et fichier quand
+  elle tourne, raison d'une erreur). À l'arrêt, les réglages se modifient dans un brouillon
+  local : enregistrement (dossier, avec « Parcourir… » ouvert par `MainUi` sur un thread à
+  part ; codec H.264 / HEVC ; conteneur MKV / MP4 ; débit automatique ou en kb/s), stream
+  (RTMP : adresse, clé ; SRT : mode appelant / écoute, hôte, port, latence, phrase de passe ;
+  débit). **Appliquer** envoie `UpdateOutput` ; **Démarrer** envoie d'abord les réglages non
+  appliqués, puis `StartOutput` ; **Annuler**, **Supprimer**. En marche : un résumé des réglages
+  et **Arrêter**. « + Destination de stream » (3 au plus) ouvre un formulaire, « Ajouter »
+  envoie `AddOutput`.
+- **Secrets** : clé de stream et phrase de passe dans des champs mot de passe, jamais affichées
+  ni dans un libellé ; relues d'un journal, le champ est vide (« à saisir de nouveau »).
+- **Statistiques**, section Sorties (`vma_ui::output_stats`, testable sans moteur) : pour chaque
+  sortie qui n'est pas à l'arrêt, état, encodeur, fichier, durée, débit sur la dernière
+  seconde, taille, images envoyées / perdues (rouge si non nul), file d'attente, reconnexions
+  (streams). En dessous : images non relues par le rendu et images perdues faute d'image libre
+  (pool), affichées dès qu'une sortie est attachée. Durée, débit et taille viennent de
+  `vma-io` par `IoStatus::output_activity`.
+- Glyphes « ● » et « ⚠ » absents des polices d'egui : libellés texte (« REC », « (erreur) »).
+
 ## Critères d'acceptation
 | Critère | Test |
 |---|---|
@@ -134,4 +161,7 @@ refusées, `journal_dropped`.
 | L'UI reflète un nouvel état au plus une frame UI après sa publication | `switcher::ui_follows_the_new_state_on_the_next_frame` |
 | Tally conforme, y compris pendant une transition et à la T-Bar | `tally::tests::red_green_and_both_red_during_a_transition` |
 | Chaque widget a un nom accessible | contrôle automatique d'`egui_kittest` dans chaque test |
+| *(Phase 2)* Enregistrer, Streamer, FTB, Sorties (Démarrer / Appliquer / Arrêter / Supprimer, dossier, destination ajoutée) émettent la bonne `Command` (A11) | `switcher::record_and_stream_buttons`, `ftb_button`, `output_settings_start_stop_and_remove`, `a_stream_destination_is_added_with_its_key_hidden` |
+| *(Phase 2)* **B13** côté UI : la clé tapée n'apparaît ni en libellé ni en valeur | `switcher::a_stream_destination_is_added_with_its_key_hidden` |
+| *(Phase 2)* **B15** côté UI : état, encodeur, durée, débit, taille, envoyées / perdues, file, reconnexions | `switcher::output_statistics_show_every_figure` |
 | Utilisation réelle : chaque type d'input, Quick Play, Cut, 4 boutons, T-Bar, contrôles vidéo, à la souris et au clavier ; sélecteur de fichier natif (Linux, Windows) | checklist `docs/manual-tests/phase1-inputs.md` |

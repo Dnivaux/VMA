@@ -37,3 +37,13 @@ En attendant les réponses, VMA utilise la valeur entre parenthèses (`phase-2.m
 15. Machine surchargée pendant un enregistrement : dans le fichier, la vidéo saccade-t-elle
     (image précédente tenue) pendant que **le son reste continu**, ou entend-on des coupures ?
     (vidéo tenue, son continu, sans coupure)
+
+## Choix de l'étape 5 (à confirmer)
+16. FTB relancé **pendant** le fondu (au milieu de la descente vers le noir) : le Program
+    revient-il depuis le niveau atteint, à la même vitesse, ou le fondu doit-il d'abord finir ?
+    (revient depuis le niveau atteint, à la même vitesse)
+17. Les destinations de stream : chacune peut-elle être RTMP **ou** SRT (3 au plus en tout), ou
+    le SRT est-il une sortie à part, en plus des 3 destinations ? (chacune RTMP ou SRT, 3 au
+    plus)
+18. Le bouton d'enregistrement fonctionne-t-il sans aucun réglage préalable (dossier et format
+    par défaut) ? (oui)

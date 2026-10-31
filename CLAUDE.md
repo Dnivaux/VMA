@@ -42,6 +42,8 @@ cargo run --release -- --soak 600 --hostile --report …   # + agressions fenêt
 cargo run --release -- --rate 59.94 --resolution 720p --inputs 4 --input-rates 59.94,25,29.97,60
 tests/soak/a6-rates.sh                                    # A6 : un soak de 2 min par cadence maître
 # Journal des commandes : logs/commands-AAAA-MM-JJ.jsonl par défaut (--journal-dir, --no-journal)
+# Enregistrer le Program dès le démarrage (sinon bouton « Enregistrer », dossier Vidéos) :
+cargo run --release -- --record /tmp/vma-rec --soak 10 --report /tmp/vma-rec/soak.md
 
 # Regénérer les golden frames après un changement visuel VOULU (puis relire le PNG) :
 VMA_UPDATE_GOLDEN=1 cargo test -p vma-compositor --test golden_test_pattern
@@ -54,10 +56,10 @@ Variables wgpu utiles : `WGPU_BACKEND=vulkan|dx12` ; `WGPU_ADAPTER_NAME=Intel` (
 | `crates/core` | Types communs, sérialisables (`FrameRate` rationnel, `Resolution`, `InputId`, `PixelFormat`, `ColorInfo`, `Rgb8`, `InputKind`, `OutputId`, `VideoCodec`, `Container`). **Ne pas modifier sans le signaler** : tout en dépend. |
 | `crates/clock` | Horloge maître à cadence fixe, compteur d'images manquées. |
 | `crates/compositor` | wgpu/WGSL : `Mixer` (calques `Rgba16Float`, Cut / Fade gamma ou linéaire, sortie `Rgba8Unorm`), `OutputStage` (FTB, flash de synchro, NV12 BT.709 limitée pour les sorties), mire, readback (tests). |
-| `crates/engine` | `State` + `Command` (thread `vma-control`, journal JSONL), thread de rendu cadencé par l'horloge (plan seqlock, `Sequencer`), triple buffer vers l'UI, stats ; sorties : anneau de relecture NV12, thread `vma-output` (PTS et audio dérivés de *n*, `OutputHub` / `OutputConsumer`, un thread par sortie). |
-| `crates/ui` | egui : `Switcher` (Preview / Program, transitions, T-Bar, barre d'inputs, raccourcis, réglages), panneau Statistiques. Tests sans fenêtre avec `egui_kittest`. |
+| `crates/engine` | `State` + `Command` (thread `vma-control`, journal JSONL), thread de rendu cadencé par l'horloge (plan seqlock, `Sequencer`), triple buffer vers l'UI, stats ; sorties : `OutputSpec` / `Secret` (jamais écrit : `***`), état et runs des sorties, FTB, anneau de relecture NV12, thread `vma-output` (PTS et audio dérivés de *n*, `OutputHub` / `OutputConsumer`, un thread par sortie). |
+| `crates/ui` | egui : `Switcher` (Preview / Program, transitions, T-Bar, FTB, barre d'inputs, raccourcis, réglages, boutons Enregistrer / Streamer, fenêtre Sorties), panneau Statistiques (dont `output_stats`). Tests sans fenêtre avec `egui_kittest`. |
 | `app/` | Binaire : assemble fenêtre eframe, moteur, UI. |
-| `crates/io-gst` | `vma-io` : pipelines d'entrée (capture, fichiers, images fixes), et de sortie (`GstOutput` + `OutputFeed` : échelle d'encodeurs, MKV / MP4). |
+| `crates/io-gst` | `vma-io` : pipelines d'entrée (capture, fichiers, images fixes), et de sortie (`GstOutput` + `OutputFeed` : échelle d'encodeurs, MKV / MP4), démarrées / arrêtées sur requête de `vma-control` (`outputs`). |
 | `crates/{io-ndi,io-html,audio,replay,api}` | Squelettes vides pour les phases suivantes. |
 | `docs/adr/` | Décisions d'architecture (une par fichier, à faire valider). 0001 archi (acceptée avec amendements), 0002 décisions produit. |
 | `docs/specs/` | Une spec par module, avec critères d'acceptation. |
