@@ -176,6 +176,11 @@ Précisions (détail dans `commands.md`, `ui.md` et `io-gst.md`, « Phase 2 ») 
 - La clé n'apparaît dans aucune raison ni aucun log de VMA (masquage des messages de
   GStreamer).
 
+## Mise en œuvre du SRT (étape 7, 2026-10-31)
+- Mode et latence dans l'URI de `srtsink` ; reconnexion interne de `srtsink` coupée au profit
+  de la politique commune (visible) ; une sortie en écoute ne bloque jamais le moteur
+  (`wait-for-connection=false`) et reste « en cours » sans appelant.
+
 ## Conséquences
 - Temps de rendu par tick : + une passe FTB, une passe de conversion 4:2:0 et une copie vers
   tampon (≈ 3 Mo en 1080p) quand une sortie est active ; mesurés par l'histogramme par phase

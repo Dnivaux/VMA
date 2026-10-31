@@ -31,6 +31,13 @@ les tests d'enregistrement passent par NVENC ; le repli n'est alors vérifié qu
 empaquette `libopenh264` mais pas le plugin : la CI le compile depuis les sources de
 `gst-plugins-bad` de la version du runner (archive épinglée par SHA-256, `ci.yml`).
 
+Tests de streaming (Phase 2) :
+- **RTMP** : MediaMTX (MIT), binaire officiel à télécharger (somme dans `ci.yml`), désigné par
+  `VMA_MEDIAMTX=/chemin/mediamtx` ; sans cette variable, les deux tests RTMP sont sautés.
+- **SRT** : `srtsink` / `srtsrc` du paquet `gst-plugins-bad` (avec `srt`, MPL-2.0) —
+  `sudo pacman -S --needed gst-plugins-bad` ; sans eux, les tests SRT sont sautés. La CI les
+  exige (`VMA_REQUIRE_SRT`, comme `VMA_REQUIRE_MEDIAMTX`).
+
 NDI (`ndisrc`/`ndisink`, gst-plugins-rs) : procédure à documenter en Phase 3.
 
 Windows : installeurs officiels MSVC x86_64 (runtime **et** développement, 1.26.11 en CI,

@@ -311,3 +311,37 @@ appsrc F32 ─► … ─► AAC ─► aacparse ─► queue ──────
 Sans `VMA_MEDIAMTX`, les deux tests MediaMTX sont sautés (message) ; la CI Ubuntu télécharge
 MediaMTX v1.21.2 (somme épinglée) et pose `VMA_REQUIRE_MEDIAMTX` : absent, ils échouent. Sous
 Windows (pas de MediaMTX en CI), ils sont sautés.
+
+## Phase 2 — SRT (étape 7, 2026-10-31)
+```text
+… ─► encodeur H.264 (CBR) ─► h264parse config-interval=-1 ─┐
+                                                           ├─► mpegtsmux alignment=7 ─► queue (2 s) ─► srtsink
+… ─► AAC ─► aacparse ──────────────────────────────────────┘
+```
+- **Réglages** (`SrtSettings`, `phase-2.md` § 6) : H.264 à débit constant, 8 Mb/s en 1080p50
+  (même mise à l'échelle que RTMP), **GOP 1 s** (un récepteur qui arrive décode plus vite ;
+  choix non fixé par la spec), AAC 160 kb/s ; MPEG-TS par paquets de 7 × 188 octets (une charge
+  utile SRT), SPS / PPS répétés à chaque image clé.
+- **Adresse** : `srt://hôte:port?mode=caller|listener&latency=ms`. Le mode doit être dans
+  l'URI : sinon, `srtsink` en écoute se lie à `localaddress` / `localport` (7001 par défaut)
+  et pas à l'adresse donnée (constaté en 1.28.8). Hôte vide en écoute = toutes les interfaces ;
+  IPv6 entre crochets. La **phrase de passe** est une propriété, jamais dans l'URI, retirée de
+  tous les messages.
+- **Appelant** : « en cours » quand le média part (comme RTMP), reconnexion 1 / 2 / 5 / 10 s
+  quand le récepteur disparaît (« Socket is broken or closed ») ou refuse (mauvaise phrase de
+  passe : même message générique, `srtsink` ne remonte pas la raison du refus). La
+  reconnexion interne de `srtsink` (`auto-reconnect`) est coupée : la nôtre est visible dans
+  l'état et les statistiques.
+- **Écoute** : « en cours » dès qu'elle écoute (cible affichée « srt://…:port (listening) »),
+  sans chien de garde de connexion ni de silence ; tant que personne n'appelle, `srtsink`
+  jette les données (`wait-for-connection=false`) : aucune image perdue côté moteur. Un
+  récepteur qui part ne la fait pas tomber. Octets envoyés : somme sur ses appelants.
+- Port déjà pris (écoute) ou élément absent : échec au démarrage, avec la raison.
+
+### Critères (étape 7)
+| Critère | Test (`vma-io-gst`, `outputs::tests`) | Où |
+|---|---|---|
+| **B8** appelant + phrase de passe : reçu et analysé par un `srtsrc` local (99 images en 2 s à 50p), récepteur parti → reconnexion, revenu → en cours en 2 s, relu | `srt_caller_reaches_its_receiver_and_reconnects` | CI (les 2 OS, SRT exigé) ; local avec `gst-plugins-bad` |
+| **B8** mauvaise phrase de passe : refusée (reconnexion), rien de déchiffré, aucune phrase dans l'état | `srt_wrong_passphrase_is_refused_and_never_shown` | idem |
+| **B8** écoute : en cours seule, sans perte ; un appelant `srtsrc` reçoit le flux ; son départ ne la fait pas tomber | `srt_listener_waits_for_its_receivers` | idem |
+| Réglages, adresse, IPv6, aucun secret dans `Debug` | `output::tests::srt_settings_defaults_and_location` | CI |
