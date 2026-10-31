@@ -6,12 +6,15 @@
 //!   close, play, pause, seek, loop), runs one pipeline per input, reports lost signals and
 //!   reconnects, and publishes the position of the video files.
 //!
+//! - Outputs ([`GstOutput`], Phase 2): one pipeline per output (encoder ladder, MKV / MP4),
+//!   fed by the engine's distribution through an [`OutputFeed`].
 //! - Capture devices: listed by a device monitor ([`IoRuntime::devices`]), opened in the mode
 //!   closest to the master format ([`CaptureMode`], [`IoRuntime::pipeline_info`]).
 
 mod devices;
 mod feeds;
 mod mode;
+mod output;
 mod pipeline;
 mod runtime;
 pub mod still;
@@ -20,6 +23,7 @@ mod supervisor;
 pub use devices::CaptureDevice;
 pub use feeds::{Feeds, PictureOut, VideoFormat};
 pub use mode::{CaptureMode, Encoding};
+pub use output::{EncoderChoice, GstOutput, OutputFeed, OutputFormat, RecordSettings, Skipped};
 pub use runtime::{IoRuntime, PipelineInfo};
 
 /// Errors of `io-gst`.
@@ -33,6 +37,11 @@ pub enum IoError {
     Feed(#[from] vma_engine::FeedError),
     #[error("still image: {0}")]
     Still(#[from] still::StillError),
+    #[error("no {what} encoder available ({})", output::list_skipped(.tried))]
+    NoEncoder {
+        what: &'static str,
+        tried: Vec<Skipped>,
+    },
     #[error("could not spawn the io thread: {0}")]
     Spawn(#[from] std::io::Error),
 }

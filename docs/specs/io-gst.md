@@ -179,3 +179,56 @@ le compositeur.
 | Identifiant stable, une API par OS (doublons PipeWire masqués) | `devices::tests` (3 tests) | CI |
 | Caméra débranchée → signal perdu, « not connected » tant qu'elle est absente, reconnue par son identifiant au retour (nouveau feed) | `runtime::tests::unplugged_camera_comes_back_by_its_identifier` ; moteur réel : `tests/runtime.rs::capture_of_a_missing_device_is_a_lost_signal` | CI |
 | Vraie webcam (V4L2, Media Foundation), débranchement / rebranchement, mode affiché | checklist `docs/manual-tests/phase1-inputs.md` (avec l'UI de l'étape 8c) | manuel |
+
+## Phase 2 — Sorties (étape 4, 2026-10-31)
+Module `output` (ADR 0006 § 4–6) : un pipeline GStreamer par sortie, construit et démarré par
+`GstOutput::record` (sur `vma-io` à partir de l'étape 5), alimenté par un `OutputFeed`, le
+consommateur à attacher à l'`OutputHub` du moteur.
+
+```text
+appsrc NV12 (BT.709 limitée, chroma « left ») ─► videoconvert ─► encodeur ─► parseur ─► queue ─┐
+                                                                                                ├─► mux ─► filesink
+appsrc F32 48 kHz stéréo ─► audioconvert ─► encodeur AAC ─► aacparse ─► queue ────────────────────┘
+```
+- **Horodatage** : l'image *k* de la sortie (comptée depuis la première image qu'elle reçoit,
+  *k* = *n* − *n₀*) a `video_pts_ns(k)` ; l'audio commence à l'échantillon de *n₀*
+  (`audio_sample_at(n₀)`, l'audio d'images sautées avant *n₀* est écarté), l'échantillon *s* est à
+  *s* / 48 kHz (arrondi au-dessus). Une image non relue laisse un trou d'une période ; l'audio
+  reste continu (étape 3, validé). Pipeline **sans horloge** (`use_clock(None)`), `appsrc` en
+  `format=time`, `is-live`, sans horodatage automatique : le moteur cadence.
+- **Image sans copie** : le NV12 de l'`OutputFrame` partagée est enveloppé dans un `gst::Buffer`
+  (`Buffer::from_slice`), avec un `VideoMeta` (plans tassés). L'audio est copié (≈ 8 ko par image).
+- **Files** : `appsrc` bloquant au-delà de 2 images (vidéo) et 4 blocs (audio). Une sortie lente
+  bloque son propre thread (`vma-out-<id>`) ; le moteur compte les images qu'elle perd (B6).
+- **Couleur** (B10) : caps `colorimetry=bt709` (plage limitée) et `chroma-site=mpeg2` ; le
+  Matroska et le MP4 les portent dans leur en-tête (relu : `bt709`).
+- **Encodeurs** : échelle de l'ADR 0006 § 6, élément présent **et** passé à `READY`
+  (`EncoderChoice` : élément retenu et raisons des rejets, pour l'UI et les rapports). Réglages
+  par famille (noms de propriétés propres à NVENC, QSV, VA, Media Foundation, OpenH264), appliqués
+  seulement si la propriété existe, jamais de panique sur une valeur refusée. **Pas d'images B**,
+  enregistrement compris (pas de délai de réordonnancement, moins d'images partagées retenues).
+  Débit d'enregistrement : 40 Mb/s × (débit de pixels / 1080p50), 500 kb/s au minimum ; GOP 1 s ;
+  AAC 160 kb/s. Un encodeur refusé seulement à l'ouverture de sa session (limite NVENC) fait
+  échouer la sortie au premier frame, raison affichée.
+- **Conteneurs** : MKV `matroskamux streamable=true` ; MP4 `mp4mux` fragmenté (1 s) en mode
+  `first-moov-then-finalise` : MP4 classique (index complet) après un arrêt normal, lisible
+  jusqu'au dernier fragment après un arrêt brutal. `filesink` **non tamponné** : chaque bloc est
+  écrit tout de suite (B4).
+- **Arrêt** : détacher le feed du hub ; le feed relâché envoie EOS après sa dernière image ;
+  `GstOutput::stop(délai)` attend la fin du fichier (EOS forcé à mi-délai si le feed est encore
+  attaché), puis `NULL`.
+- **Erreur d'écriture** (disque plein, droits) : l'erreur du bus réveille un feed bloqué
+  (EOS sur les `appsrc`), `poll()` rend la raison et arrête ce pipeline ; les autres sorties et le
+  Program continuent. Dossier absent : refus au démarrage, avec la raison.
+
+### Critères (étape 4)
+| Critère | Test (`vma-io-gst`, `output::tests`) | Où |
+|---|---|---|
+| B3 : fichier relu, PTS de l'image *k* = *k* × den / num (à la ms du Matroska), échantillons audio exacts et continus, trou d'une période pour une image manquée, aux 6 cadences, sortie démarrée en cours de route | `file_carries_the_pts_and_audio_of_n_at_every_master_rate` (vidéo et audio bruts en MKV, indépendants des encodeurs) | CI |
+| B3 avec le moteur réel : chaque image relue à *k* × 20 ms, flash blanc et bip au même instant (± 1 ms), aucune image perdue, pool jamais vide | `engine_frames_reach_the_file_with_flash_and_beep_aligned` | CI |
+| B4 : MKV décodable jusqu'à ≤ 2 s avant que le processus soit tué | `mkv_survives_a_killed_process` (sous-processus tué après 3 s ; 73 images sur 75 en local) | CI |
+| B5 : MP4 lisible jusqu'au dernier fragment après un arrêt brutal ; MKV et MP4 complets (toutes les images, l'audio à un bloc AAC près) après un arrêt normal | `mp4_survives_a_killed_process_up_to_its_last_fragment` (50 / 75 en local), `recordings_are_complete_after_a_normal_stop` | CI |
+| B6 (`io-gst`) : un sink qui bloque (50 ms par tampon) perd ses images, comptées ; l'enregistrement voisin n'en perd aucune ; 0 tick manqué ; l'arrêt de la sortie lente ne pend pas | `blocking_sink_loses_only_its_own_frames` | CI |
+| B9 : matériel masqué → `openh264enc` (ou refus explicite s'il est absent), raisons listées ; HEVC sans matériel → refus explicite ; rien ne tombe | `encoder::tests` (3), `masked_hardware_falls_back_or_refuses_explicitly` ; NVENC retenu sur la machine de dev | CI + manuel |
+| B10 (`io-gst`) : `bt709` et chroma `mpeg2` relus du MKV brut ; `bt709` relu des MKV et MP4 encodés | `file_carries_…`, `recordings_are_complete_…` | CI |
+| Dossier absent → refus au démarrage ; disque plein → la sortie échoue avec sa raison, l'enregistrement voisin est finalisé | `unwritable_path_is_refused_at_start`, `disk_full_fails_the_output_only` (`/dev/full`, Linux seulement) | CI |

@@ -25,6 +25,10 @@ gst-inspect-1.0 nvh264enc   # NVENC (Phase 2)
 gst-inspect-1.0 rtmp2sink   # RTMP (Phase 2)
 gst-inspect-1.0 srtsink     # SRT (Phase 2) — absent sur la machine de dev au 2026-10-26
 ```
+Repli logiciel H.264 (Phase 2, utilisé par la CI) : `openh264enc`, du paquet `gst-plugins-bad`
+avec `libopenh264` (BSD-2) — `sudo pacman -S --needed gst-plugins-bad libopenh264`. Sans lui,
+les tests d'enregistrement passent par NVENC ; le repli n'est alors vérifié qu'en CI.
+
 NDI (`ndisrc`/`ndisink`, gst-plugins-rs) : procédure à documenter en Phase 3.
 
 Windows : installeurs officiels MSVC x86_64 (runtime **et** développement, 1.26.11 en CI,

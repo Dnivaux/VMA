@@ -146,6 +146,19 @@ diffère, seul le remplissage audio (`AudioTrack`) change, pas le découpage.
 - Mesure (RTX 5090, 1080p50, mire, une sortie, 20 s) : tick p50 0,22 ms, p99 0,62 ms ;
   enregistrement de l'étage de sortie p99 0,011 ms ; 0 image manquée, 0 non relue.
 
+## Mise en œuvre des pipelines (étape 4, 2026-10-31)
+Précisions (détail dans la spec `io-gst.md`, « Phase 2 — Sorties ») :
+- **Pas d'`appsrc` *leaky*** (§ 2) : `appsrc` bloquant avec une file courte ; la perte se fait
+  dans la file de 3 images de l'étape 3, où elle est comptée. Une erreur du pipeline réveille
+  un feed bloqué (EOS).
+- **Temps 0 de chaque sortie** à sa première image *n₀* : image *k* = *n* − *n₀* à
+  `video_pts_ns(k)`, audio à partir de `audio_sample_at(n₀)`. Une sortie démarrée en cours de
+  route commence donc à 0, comme un fichier ou un stream ordinaire.
+- **Pas d'images B**, enregistrement compris ; **MP4** fragmenté (1 s) puis finalisé en MP4
+  classique à l'arrêt normal (`first-moov-then-finalise`) ; `filesink` non tamponné.
+- Le sondage s'arrête à `READY` (§ 6) : un refus à l'ouverture de la session d'encodage (limite
+  de sessions NVENC) fait échouer la sortie au premier frame, raison affichée.
+
 ## Conséquences
 - Temps de rendu par tick : + une passe FTB, une passe de conversion 4:2:0 et une copie vers
   tampon (≈ 3 Mo en 1080p) quand une sortie est active ; mesurés par l'histogramme par phase

@@ -66,7 +66,8 @@ jobs:
           sudo apt-get install -y mesa-vulkan-drivers libvulkan1 vulkan-tools \
             libxkbcommon-dev libwayland-dev libx11-dev libxcursor-dev libxrandr-dev libxi-dev \
             libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
-            gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-libav
+            gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad \
+            gstreamer1.0-libav
       - name: Cache GStreamer installers (Windows)
         if: runner.os == 'Windows'
         uses: actions/cache@v4
@@ -105,6 +106,12 @@ jobs:
           "$root\bin" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
           "PKG_CONFIG_PATH=$root\lib\pkgconfig" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
           "GSTREAMER_1_0_ROOT_MSVC_X86_64=$root\" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+      - name: Output encoders present (openh264enc, avenc_aac)
+        shell: bash
+        run: |
+          for e in openh264enc avenc_aac matroskamux mp4mux; do
+            gst-inspect-1.0 --exists "$e" && echo "$e: ok" || { echo "$e: missing"; exit 1; }
+          done
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
