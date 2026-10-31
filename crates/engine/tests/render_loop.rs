@@ -645,11 +645,20 @@ fn fade_to_black_darkens_the_outputs_not_the_program_view() {
     assert!(wait_for(Duration::from_secs(3), || feedback
         .fade_to_black()
         == 0.0));
-    std::thread::sleep(Duration::from_millis(100));
+    // Read-back frames lag behind the render (much more on a software adapter): wait for one
+    // rendered after the fade ended.
+    let back = feedback.last_frame() + 1;
+    let mut seen: Vec<(u64, u8)> = Vec::new();
+    assert!(
+        wait_for(Duration::from_secs(5), || {
+            seen.extend(rx.try_iter());
+            seen.last().is_some_and(|s| s.0 >= back)
+        }),
+        "no output frame after the fade"
+    );
     hub.detach(vma_core::OutputId(1));
     spawned.engine.stop();
 
-    let seen: Vec<(u64, u8)> = rx.try_iter().collect();
     assert_eq!(seen.first().map(|s| s.1), Some(235), "white before the FTB");
     assert_eq!(seen.last().map(|s| s.1), Some(235), "white again after");
     let first_black = seen.iter().position(|s| s.1 == 16).expect("black frames");
