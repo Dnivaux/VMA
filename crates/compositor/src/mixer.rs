@@ -227,6 +227,12 @@ impl Mixer {
         );
     }
 
+    /// The `Rgba16Float` Program target written by [`Mixer::encode`], before the output pass
+    /// (the input of the outputs' [`OutputStage`](crate::OutputStage)).
+    pub fn program(&self) -> &RenderTarget {
+        &self.program
+    }
+
     fn fill(
         &self,
         queue: &wgpu::Queue,
@@ -271,7 +277,8 @@ impl Mixer {
     }
 }
 
-fn fullscreen_pipeline(
+/// A full-screen triangle pipeline (`vs_main`, fragment `fs_main`) without blending.
+pub(crate) fn fullscreen_pipeline(
     device: &wgpu::Device,
     label: &str,
     source: &str,
@@ -282,6 +289,18 @@ fn fullscreen_pipeline(
         label: Some(label),
         source: wgpu::ShaderSource::Wgsl(source.into()),
     });
+    fullscreen_pipeline_in(device, label, &shader, "fs_main", layout, format)
+}
+
+/// Same as [`fullscreen_pipeline`], with a fragment entry point of an existing module.
+pub(crate) fn fullscreen_pipeline_in(
+    device: &wgpu::Device,
+    label: &str,
+    shader: &wgpu::ShaderModule,
+    fragment: &str,
+    layout: &wgpu::BindGroupLayout,
+    format: wgpu::TextureFormat,
+) -> wgpu::RenderPipeline {
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some(label),
         bind_group_layouts: &[Some(layout)],
@@ -291,7 +310,7 @@ fn fullscreen_pipeline(
         label: Some(label),
         layout: Some(&pipeline_layout),
         vertex: wgpu::VertexState {
-            module: &shader,
+            module: shader,
             entry_point: Some("vs_main"),
             compilation_options: wgpu::PipelineCompilationOptions::default(),
             buffers: &[],
@@ -300,8 +319,8 @@ fn fullscreen_pipeline(
         depth_stencil: None,
         multisample: wgpu::MultisampleState::default(),
         fragment: Some(wgpu::FragmentState {
-            module: &shader,
-            entry_point: Some("fs_main"),
+            module: shader,
+            entry_point: Some(fragment),
             compilation_options: wgpu::PipelineCompilationOptions::default(),
             targets: &[Some(wgpu::ColorTargetState {
                 format,
@@ -314,7 +333,8 @@ fn fullscreen_pipeline(
     })
 }
 
-fn draw_fullscreen(
+/// One full-screen draw into `target`, cleared to black first.
+pub(crate) fn draw_fullscreen(
     encoder: &mut wgpu::CommandEncoder,
     label: &str,
     pipeline: &wgpu::RenderPipeline,

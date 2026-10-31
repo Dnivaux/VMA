@@ -52,7 +52,7 @@ Variables wgpu utiles : `WGPU_BACKEND=vulkan|dx12` ; `WGPU_ADAPTER_NAME=Intel` (
 |---|---|
 | `crates/core` | Types communs, sérialisables (`FrameRate` rationnel, `Resolution`, `InputId`, `PixelFormat`, `ColorInfo`, `Rgb8`, `InputKind`, `OutputId`, `VideoCodec`, `Container`). **Ne pas modifier sans le signaler** : tout en dépend. |
 | `crates/clock` | Horloge maître à cadence fixe, compteur d'images manquées. |
-| `crates/compositor` | wgpu/WGSL : `Mixer` (calques `Rgba16Float`, Cut / Fade gamma ou linéaire, sortie `Rgba8Unorm`), mire, readback (tests). |
+| `crates/compositor` | wgpu/WGSL : `Mixer` (calques `Rgba16Float`, Cut / Fade gamma ou linéaire, sortie `Rgba8Unorm`), `OutputStage` (FTB, flash de synchro, NV12 BT.709 limitée pour les sorties), mire, readback (tests). |
 | `crates/engine` | `State` + `Command` (thread `vma-control`, journal JSONL), thread de rendu cadencé par l'horloge (plan seqlock, `Sequencer`), triple buffer vers l'UI, stats. |
 | `crates/ui` | egui : `Switcher` (Preview / Program, transitions, T-Bar, barre d'inputs, raccourcis, réglages), panneau Statistiques. Tests sans fenêtre avec `egui_kittest`. |
 | `app/` | Binaire : assemble fenêtre eframe, moteur, UI. |

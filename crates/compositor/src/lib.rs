@@ -5,6 +5,8 @@
 //! - [`Mixer`]: Program composition — sources (solid colour, test pattern, frame) rendered into
 //!   [`INTERNAL_FORMAT`] layers, Cut / Fade in the gamma or linear domain, output pass to
 //!   [`PROGRAM_FORMAT`].
+//! - [`OutputStage`]: what every output receives — FTB and sync flash on the Program, then
+//!   Y'CbCr BT.709 limited range 4:2:0 (NV12 planes) for the encoders.
 //! - [`thumbnails`]: every input drawn into its cell of a thumbnail atlas.
 //! - [`TestPattern`], plus helpers to create a headless device and read a texture back
 //!   (tests only).
@@ -13,12 +15,14 @@
 //! Every texture holds **Rec.709 gamma-encoded R'G'B'** values, full range: `Rgba16Float`
 //! inside the compositor, `Rgba8Unorm` (rounded to nearest) for the UI. The test pattern is
 //! defined directly in that encoded domain (75 % bars = code value 191). Linear light is only
-//! used for the optional linear mix and for scaling.
+//! used for the optional linear mix and for scaling. The outputs are converted to Y'CbCr
+//! BT.709 limited range by the [`OutputStage`].
 
 mod error;
 mod frame;
 pub mod headless;
 mod mixer;
+mod output;
 pub mod readback;
 mod target;
 mod test_pattern;
@@ -27,6 +31,7 @@ pub mod thumbnails;
 pub use error::CompositorError;
 pub use frame::{FrameError, FramePipelines, InputFrame, Plane, fit_rect};
 pub use mixer::{INTERNAL_FORMAT, Mix, MixSpace, Mixer, Source};
+pub use output::{CHROMA_FORMAT, LUMA_FORMAT, OutputLook, OutputStage};
 pub use target::RenderTarget;
 pub use test_pattern::{TEST_PATTERN_PERIOD_FRAMES, TestPattern};
 

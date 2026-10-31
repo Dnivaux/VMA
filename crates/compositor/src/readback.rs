@@ -5,15 +5,31 @@
 
 use crate::{CompositorError, RenderTarget};
 
-/// Copies `target` to system memory as tightly packed RGBA8 rows (`width * 4` bytes each).
+/// Copies an `Rgba8Unorm` `target` to system memory as tightly packed rows (`width * 4` bytes
+/// each).
 pub fn read_rgba8(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    target: &RenderTarget,
+) -> Result<Vec<u8>, CompositorError> {
+    read_bytes(device, queue, target)
+}
+
+/// Copies `target` to system memory as tightly packed rows of its texels (`width × texel
+/// size` bytes each, e.g. 1 for `R8Unorm`, 2 for `Rg8Unorm`).
+pub fn read_bytes(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     target: &RenderTarget,
 ) -> Result<Vec<u8>, CompositorError> {
     let width = target.resolution().width();
     let height = target.resolution().height();
-    let unpadded = width * 4;
+    let texel = target
+        .texture()
+        .format()
+        .block_copy_size(None)
+        .ok_or(CompositorError::UnsupportedReadback)?;
+    let unpadded = width * texel;
     let padded =
         unpadded.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT) * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
 

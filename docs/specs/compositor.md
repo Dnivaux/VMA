@@ -120,3 +120,48 @@ simple bilinéaire en Phase 1 (crénelage possible) ; mipmaps ou filtre plus lar
 | Mise à l'échelle linéaire : damier noir / blanc 1 px réduit de moitié → gris 191 ±1 (`255 × 0,5^(1/2,4)` : moitié de la luminance), et non 128 | `golden_frame::halved_checkerboard_is_191_not_128` | CI |
 | Tailles impaires : dernière colonne et dernière ligne présentes (chroma arrondie au supérieur) | `golden_frame::odd_sized_frames_are_complete` | CI |
 | Upload invalide (nombre de plans, *stride*, taille) refusé sans erreur GPU ni panique | `golden_frame::bad_uploads_are_refused` | CI |
+
+---
+
+## Phase 2 — Étage de sortie (ADR 0006 § 1, étape 2 du plan, 2026-10-31)
+`OutputStage` (module `output`) lit la cible `program16` du `Mixer` (`Mixer::program()`) ; tout
+est créé dans `OutputStage::new`, `encode` enregistre 3 passes et écrit un uniform de 16 octets.
+
+1. **Passe « look »** → `out16` (`Rgba16Float`) : FTB et flash de synchro (`OutputLook`). La vue
+   Program de l'UI ne passe jamais par là.
+   - FTB = mix vers le noir : gain `1 − p` sur les valeurs encodées (gamma, défaut), ou
+     `(1 − p)^(1/2,4)` en domaine linéaire (calculé sur le CPU : 0 % et 100 % restent exacts).
+   - Flash : image entièrement blanche ; il l'emporte sur le FTB.
+2. **Conversion NV12** : R'G'B' (écrêté à 0–1) → Y'CbCr **BT.709 plage limitée** (Y' 16–235,
+   Cb / Cr 16–240), arrondi explicite au code le plus proche. Luma `R8Unorm` à la taille du
+   Program, chroma `Rg8Unorm` (Cb, Cr) à la demi-taille arrondie au supérieur (tailles impaires
+   complètes). Matrice calculée depuis `Matrix::Bt709` (même source que le décodage des inputs).
+   - **Implantation de la chroma « left »** (MPEG-2 / H.264 par défaut, `chroma-site=mpeg2` à
+     signaler dans les caps à l'étape 4) : sur la colonne paire, entre les deux lignes. Filtre
+     `[1 2 1] / 4` horizontal autour de la colonne 2i, moyenne des lignes 2j et 2j + 1, bords
+     répétés ; moyenne faite sur R'G'B' (luminance non constante, comme les encodeurs).
+3. **`encode_rgba8`** (à la demande) : `out16` → `Rgba8Unorm`, même passe que la vue Program
+   (sortie plein écran, étape 8).
+
+Les tampons de relecture et l'appel par le rendu (seulement si une sortie est active) sont à
+l'étape 3 (`engine`). `readback::read_bytes` relit n'importe quelle cible copiable (tests).
+
+**Précision** : `program16` et `out16` sont des demi-flottants, et Vulkan permet de les écrire
+arrondis vers zéro (cas de NVIDIA) : un code calculé peut différer de la valeur exacte de
+0,5 + 0,11 au plus. Exemple : gris 46 → Y' 55 au lieu de 56 (55,506). Les tests tolèrent cet
+écart ; les cas exacts (noir, blanc, gris neutres en chroma, 0 % / 100 %) restent exacts.
+
+### Critères d'acceptation (Phase 2, côté `compositor`)
+| Critère | Test | Où |
+|---|---|---|
+| **B11** FTB 0 % = Program (mire comprise), deux domaines | `golden_output::ftb_at_0_percent_is_the_program` (bit-exact) | CI |
+| **B11** FTB 100 % = noir exact (Y' 16, CbCr 128), **vue Program de l'UI inchangée** | `golden_output::ftb_at_100_percent_is_black_and_leaves_the_ui_alone` | CI |
+| **B11** FTB 50 % : moitié des codes (gamma), moitié de la lumière (linéaire), ±0,5 | `golden_output::ftb_at_50_percent` | CI |
+| Flash de synchro : blanc (Y' 235, CbCr 128), prioritaire sur le FTB, UI non flashée | `golden_output::flash_is_white_and_wins_over_the_fade` | CI |
+| **B10** Barres 75 % → Y'CbCr 709 limitée, ±1 contre les valeurs publiées et ±0,63 contre l'analytique | `golden_output::bars_are_bt709_limited_range` | CI |
+| **B10** Les 256 gris : Y' = 16 + 219 k / 255 arrondi, Cb = Cr = 128 exactement | `golden_output::every_grey_code_maps_to_limited_range` | CI |
+| Implantation « left », bords, tailles impaires (8×4, 7×5, 13×3) contre une référence CPU | `golden_output::nv12_matches_the_cpu_reference_with_left_siting_and_odd_sizes`, `a_vertical_edge_on_an_even_column_takes_a_quarter_of_its_left_neighbour` | CI |
+| Aller-retour NV12 → décodeur des inputs (A7) → R'G'B' d'origine ±2 | `golden_output::nv12_round_trips_through_the_input_decoder` | CI |
+
+Restent pour B10 et B11 : la colorimétrie signalée dans les caps et le conteneur (relecture
+`io-gst`, étape 4) ; la commande FTB, sa durée et son retour (moteur, étape 5).

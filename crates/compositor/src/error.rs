@@ -13,4 +13,6 @@ pub enum CompositorError {
     MapRange(#[from] wgpu::MapRangeError),
     #[error("GPU readback channel closed before the buffer was mapped")]
     ReadbackAborted,
+    #[error("this texture format cannot be read back")]
+    UnsupportedReadback,
 }
