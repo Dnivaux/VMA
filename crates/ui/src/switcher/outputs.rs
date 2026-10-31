@@ -214,13 +214,18 @@ impl Switcher {
         });
         match &output.status {
             OutputStatus::Running { encoder, target } => {
-                ui.label(RichText::new(encoder).small().monospace());
+                ui.label(
+                    RichText::new(crate::output_stats::short_encoder(encoder))
+                        .small()
+                        .monospace(),
+                )
+                .on_hover_text(encoder);
                 if let Some(target) = target {
-                    ui.label(RichText::new(target).small());
+                    ui.add(egui::Label::new(RichText::new(target).small()).wrap());
                 }
             }
             OutputStatus::Failed { reason } => {
-                ui.label(RichText::new(reason).color(WARNING));
+                ui.add(egui::Label::new(RichText::new(reason).color(WARNING)).wrap());
             }
             _ => {}
         }

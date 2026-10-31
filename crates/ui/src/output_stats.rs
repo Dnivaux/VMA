@@ -46,14 +46,16 @@ pub fn output_stats(ui: &mut egui::Ui, rows: &[OutputStatsRow<'_>]) {
                 ui.label(&o.name);
                 ui.label(RichText::new(status_label(&o.status)).color(color));
                 ui.end_row();
+                // Long texts (paths, fallback reasons, GStreamer errors) are shortened, whole
+                // on hover: the panel keeps its width.
                 match &o.status {
                     OutputStatus::Running { encoder, target } => {
-                        line(ui, "  encodeur", encoder.clone());
+                        long_line(ui, "  encodeur", &short_encoder(encoder), encoder);
                         if let Some(target) = target {
-                            line(ui, "  fichier", target.clone());
+                            long_line(ui, "  fichier", &file_name(target), target);
                         }
                     }
-                    OutputStatus::Failed { reason } => line(ui, "  raison", reason.clone()),
+                    OutputStatus::Failed { reason } => long_line(ui, "  raison", reason, reason),
                     _ => {}
                 }
                 if let Some(a) = row.activity {
@@ -129,6 +131,42 @@ fn size(bytes: u64) -> String {
     }
 }
 
+/// Longest value shown on one line, in characters.
+const MAX_CHARS: usize = 32;
+
+/// « openh264enc (fallback: …) + avenc_aac » → « openh264enc (repli) + avenc_aac ».
+pub(crate) fn short_encoder(encoder: &str) -> String {
+    encoder
+        .split(" + ")
+        .map(|e| match e.split_once(" (fallback") {
+            Some((element, _)) => format!("{element} (repli)"),
+            None => e.to_owned(),
+        })
+        .collect::<Vec<_>>()
+        .join(" + ")
+}
+
+/// The last component of a path.
+pub(crate) fn file_name(path: &str) -> String {
+    std::path::Path::new(path)
+        .file_name()
+        .map_or_else(|| path.to_owned(), |n| n.to_string_lossy().into_owned())
+}
+
+/// `value` cut to [`MAX_CHARS`], `full` on hover.
+fn long_line(ui: &mut egui::Ui, label: &str, value: &str, full: &str) {
+    ui.label(label);
+    let shown = if value.chars().count() > MAX_CHARS {
+        let cut: String = value.chars().take(MAX_CHARS - 1).collect();
+        format!("{cut}…")
+    } else {
+        value.to_owned()
+    };
+    ui.label(RichText::new(shown).monospace())
+        .on_hover_text(full);
+    ui.end_row();
+}
+
 fn line(ui: &mut egui::Ui, label: &str, value: String) {
     ui.label(label);
     ui.label(RichText::new(value).monospace());
@@ -147,5 +185,10 @@ mod tests {
         assert_eq!(kbps(40_000), "40,0 Mb/s");
         assert_eq!(size(12_345_678), "12,3 Mo");
         assert_eq!(size(2_500_000_000), "2,50 Go");
+        assert_eq!(
+            short_encoder("openh264enc (fallback: nvh264enc: not installed) + avenc_aac"),
+            "openh264enc (repli) + avenc_aac"
+        );
+        assert_eq!(file_name("/home/op/Vidéos/VMA 1.mkv"), "VMA 1.mkv");
     }
 }
