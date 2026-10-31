@@ -201,7 +201,9 @@ appsrc F32 48 kHz stéréo ─► audioconvert ─► encodeur AAC ─► aacpar
 - **Files** : `appsrc` bloquant au-delà de 2 images (vidéo) et 4 blocs (audio). Une sortie lente
   bloque son propre thread (`vma-out-<id>`) ; le moteur compte les images qu'elle perd (B6).
 - **Couleur** (B10) : caps `colorimetry=bt709` (plage limitée) et `chroma-site=mpeg2` ; le
-  Matroska et le MP4 les portent dans leur en-tête (relu : `bt709`).
+  Matroska et le MP4 les portent dans leur en-tête (relu : `bt709`). Limite : avant GStreamer
+  1.26, `matroskamux` n'écrit pas l'implantation de la chroma (Ubuntu 24.04 : 1.24) ; le flux
+  H.264 la porte alors seul (VUI, « left » étant la valeur par défaut de H.264).
 - **Encodeurs** : échelle de l'ADR 0006 § 6, élément présent **et** passé à `READY`
   (`EncoderChoice` : élément retenu et raisons des rejets, pour l'UI et les rapports). Réglages
   par famille (noms de propriétés propres à NVENC, QSV, VA, Media Foundation, OpenH264), appliqués
@@ -230,5 +232,5 @@ appsrc F32 48 kHz stéréo ─► audioconvert ─► encodeur AAC ─► aacpar
 | B5 : MP4 lisible jusqu'au dernier fragment après un arrêt brutal ; MKV et MP4 complets (toutes les images, l'audio à un bloc AAC près) après un arrêt normal | `mp4_survives_a_killed_process_up_to_its_last_fragment` (50 / 75 en local), `recordings_are_complete_after_a_normal_stop` | CI |
 | B6 (`io-gst`) : un sink qui bloque (50 ms par tampon) perd ses images, comptées ; l'enregistrement voisin n'en perd aucune ; 0 tick manqué ; l'arrêt de la sortie lente ne pend pas | `blocking_sink_loses_only_its_own_frames` | CI |
 | B9 : matériel masqué → `openh264enc` (ou refus explicite s'il est absent), raisons listées ; HEVC sans matériel → refus explicite ; rien ne tombe | `encoder::tests` (3), `masked_hardware_falls_back_or_refuses_explicitly` ; NVENC retenu sur la machine de dev | CI + manuel |
-| B10 (`io-gst`) : `bt709` et chroma `mpeg2` relus du MKV brut ; `bt709` relu des MKV et MP4 encodés | `file_carries_…`, `recordings_are_complete_…` | CI |
+| B10 (`io-gst`) : `bt709` et chroma `mpeg2` relus du MKV brut (chroma : GStreamer ≥ 1.26, Windows en CI) ; `bt709` relu des MKV et MP4 encodés | `file_carries_…`, `recordings_are_complete_…` | CI |
 | Dossier absent → refus au démarrage ; disque plein → la sortie échoue avec sa raison, l'enregistrement voisin est finalisé | `unwritable_path_is_refused_at_start`, `disk_full_fails_the_output_only` (`/dev/full`, Linux seulement) | CI |

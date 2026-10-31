@@ -241,7 +241,12 @@ fn file_carries_the_pts_and_audio_of_n_at_every_master_rate() {
         let caps = back.video_caps.unwrap();
         let s = caps.structure(0).unwrap();
         assert_eq!(s.get::<&str>("colorimetry").unwrap(), "bt709", "{caps}");
-        assert_eq!(s.get::<&str>("chroma-site").unwrap(), "mpeg2", "{caps}");
+        // The Matroska elements of GStreamer 1.24 (Ubuntu CI) neither write nor read the
+        // chroma siting: the reader then assumes centred chroma.
+        let (major, minor, ..) = gst::version();
+        if (major, minor) >= (1, 26) {
+            assert_eq!(s.get::<&str>("chroma-site").unwrap(), "mpeg2", "{caps}");
+        }
         std::fs::remove_file(&path).unwrap();
     }
 }
