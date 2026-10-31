@@ -9,7 +9,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use vma_core::InputId;
 
 use crate::command::{Effect, MixDomain};
-use crate::plan::{PlanProgress, PlanReader, RenderPlan};
+use crate::plan::{PlanFtb, PlanProgress, PlanReader, RenderPlan};
+
+/// FTB level meaning full black (fixed point: exact at both ends, linear in between).
+const FTB_BLACK: u64 = 1 << 40;
 
 /// What the Program output shows on one tick: `from` mixed towards `to` by `mix`
 /// (0 = `from` alone, 1 = `to` alone). `None` is black.
@@ -23,6 +26,8 @@ pub struct Composition {
     pub effect: Effect,
     pub domain: MixDomain,
     pub preview: Option<InputId>,
+    /// Outputs only (not the UI's Program view): 0 = Program, 1 = black.
+    pub fade_to_black: f32,
 }
 
 impl Composition {
@@ -61,6 +66,8 @@ pub struct RenderFeedback {
     /// frame.
     started_id: AtomicU64,
     done_id: AtomicU64,
+    /// FTB level of the last tick, 0 to [`FTB_BLACK`].
+    ftb: AtomicU64,
 }
 
 impl RenderFeedback {
@@ -89,6 +96,11 @@ impl RenderFeedback {
         (id != 0).then(|| (id, self.started_frame.load(Ordering::Relaxed)))
     }
 
+    /// FTB level of the last tick: 0 = Program on the outputs, 1 = black.
+    pub fn fade_to_black(&self) -> f32 {
+        ftb_ratio(self.ftb.load(Ordering::Acquire))
+    }
+
     /// Last timed transition whose final frame was shown.
     pub fn done(&self) -> Option<u64> {
         let id = self.done_id.load(Ordering::Acquire);
@@ -103,6 +115,9 @@ pub struct Sequencer {
     plan: RenderPlan,
     /// Timed transition being run: `(id, first frame)`.
     running: Option<(u64, u64)>,
+    /// FTB level, 0 to [`FTB_BLACK`], and the frame it was computed for.
+    ftb: u64,
+    ftb_frame: Option<u64>,
 }
 
 impl Sequencer {
@@ -111,7 +126,25 @@ impl Sequencer {
             reader,
             plan: RenderPlan::default(),
             running: None,
+            ftb: 0,
+            ftb_frame: None,
         }
+    }
+
+    /// Moves the FTB level towards the plan's target: a full fade over `frames` ticks, so the
+    /// k-th tick after the command shows `(k + 1) / frames`, like a transition. Turned back
+    /// half-way, it returns at the same pace from where it was. Skipped ticks count.
+    fn fade_to_black(&mut self, frame: u64, ftb: PlanFtb) -> u64 {
+        let elapsed = self.ftb_frame.map_or(1, |last| frame.saturating_sub(last));
+        self.ftb_frame = Some(frame);
+        let step = FTB_BLACK.div_ceil(u64::from(ftb.frames.max(1)));
+        let moved = step.saturating_mul(elapsed);
+        self.ftb = if ftb.black {
+            self.ftb.saturating_add(moved).min(FTB_BLACK)
+        } else {
+            self.ftb.saturating_sub(moved)
+        };
+        self.ftb
     }
 
     /// Resolves tick `frame`. Call once per tick, with increasing frame indices (ticks may
@@ -121,6 +154,8 @@ impl Sequencer {
             self.plan = plan;
         }
         let plan = self.plan;
+        let ftb = self.fade_to_black(frame, plan.ftb);
+        feedback.ftb.store(ftb, Ordering::Release);
         let mut composition = Composition {
             frame,
             version: plan.version,
@@ -130,6 +165,7 @@ impl Sequencer {
             effect: Effect::Fade,
             domain: plan.domain,
             preview: plan.preview,
+            fade_to_black: ftb_ratio(ftb),
         };
         if let Some(t) = plan.transition {
             let progress = match t.progress {
@@ -182,6 +218,10 @@ impl Sequencer {
     }
 }
 
+fn ftb_ratio(level: u64) -> f32 {
+    (level.min(FTB_BLACK) as f64 / FTB_BLACK as f64) as f32
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -203,6 +243,7 @@ mod tests {
                 progress: PlanProgress::Timed { frames },
             }),
             domain: MixDomain::Gamma,
+            ftb: PlanFtb::default(),
         }
     }
 

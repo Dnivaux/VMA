@@ -143,6 +143,8 @@ pub struct IoPort {
     pub timelines: Timelines,
     /// Master format: capture devices are opened in the mode closest to it.
     pub format: Format,
+    /// Where `vma-io` attaches the outputs it starts.
+    pub outputs: OutputHub,
 }
 
 /// The single consumer of one output's frames (typically the UI).
@@ -310,7 +312,7 @@ impl RenderEngine {
                 feeds: feeds.clone(),
                 input_stats,
                 timelines: timelines.clone(),
-                outputs,
+                outputs: outputs.clone(),
                 io_port: Some(IoPort {
                     requests: io_requests,
                     events: io_events,
@@ -320,6 +322,7 @@ impl RenderEngine {
                         rate: config.rate,
                         resolution: config.resolution,
                     },
+                    outputs: outputs.clone(),
                 }),
             },
             Readers {
@@ -623,7 +626,7 @@ impl RenderWorker {
         if self.active_outputs.any() {
             let started = Instant::now();
             let look = OutputLook {
-                fade_to_black: 0.0,
+                fade_to_black: composition.fade_to_black,
                 space,
                 flash: self.sync.is_some_and(|sync| sync.is_flash(frame)),
             };

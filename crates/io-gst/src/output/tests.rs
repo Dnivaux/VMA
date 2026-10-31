@@ -99,10 +99,10 @@ fn feed_frames(
 
 /// What `decodebin` finds in a file.
 #[derive(Debug, Default)]
-struct ReadBack {
+pub(crate) struct ReadBack {
     video_caps: Option<gst::Caps>,
     /// PTS (ns) and first luma byte of each picture.
-    video: Vec<(u64, u8)>,
+    pub(crate) video: Vec<(u64, u8)>,
     /// PTS (ns) and samples per channel of each audio buffer.
     audio: Vec<(u64, u64)>,
     /// Samples (per channel) where a beep starts, counted from the first one in the file.
@@ -146,7 +146,7 @@ impl ReadBack {
 }
 
 /// Decodes `path` to the end; the error that stopped it early, if any (a truncated file).
-fn read_back(path: &Path) -> (ReadBack, Option<String>) {
+pub(crate) fn read_back(path: &Path) -> (ReadBack, Option<String>) {
     init();
     let pipeline = gst::Pipeline::new();
     let src = gst::ElementFactory::make("filesrc")
@@ -251,7 +251,7 @@ fn file_carries_the_pts_and_audio_of_n_at_every_master_rate() {
     }
 }
 
-fn spawn_engine(rate: FrameRate, sync_test: bool) -> RenderEngine {
+pub(crate) fn spawn_engine(rate: FrameRate, sync_test: bool) -> RenderEngine {
     let gpu =
         pollster::block_on(vma_compositor::headless::request_gpu()).expect("GPU adapter required");
     let config = EngineConfig {

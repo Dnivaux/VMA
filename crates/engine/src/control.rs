@@ -20,7 +20,7 @@ use crate::plan::PlanWriter;
 use crate::sequencer::RenderFeedback;
 use crate::sources::{SourceSync, SourceUpdate};
 use crate::state::{Event, IoRequest, State};
-use vma_core::InputId;
+use vma_core::{InputId, OutputId};
 
 /// Commands waiting to be applied before `send` reports the channel full.
 const COMMAND_CAPACITY: usize = 1024;
@@ -138,6 +138,23 @@ pub enum IoEvent {
     SignalLost {
         input: InputId,
         attempts: u32,
+        reason: String,
+    },
+    /// Run `run` of an output started (`IoRequest::StartOutput`).
+    OutputRunning {
+        output: OutputId,
+        run: u64,
+        /// The encoders retained, and why a fallback.
+        encoder: String,
+        /// The file of a recording.
+        target: Option<String>,
+    },
+    /// Run `run` of an output is finalised and stopped.
+    OutputStopped { output: OutputId, run: u64 },
+    /// Run `run` of an output could not start, or stopped on an error.
+    OutputFailed {
+        output: OutputId,
+        run: u64,
         reason: String,
     },
 }
@@ -323,6 +340,36 @@ impl Controller {
                     input,
                     frame: self.feedback.last_frame(),
                     attempts,
+                });
+            }
+            IoEvent::OutputRunning {
+                output,
+                run,
+                encoder,
+                target,
+            } => {
+                tracing::info!(%output, run, %encoder, ?target, "output running");
+                self.event(Event::OutputRunning {
+                    output,
+                    run,
+                    encoder,
+                    target,
+                });
+            }
+            IoEvent::OutputStopped { output, run } => {
+                tracing::info!(%output, run, "output stopped");
+                self.event(Event::OutputStopped { output, run });
+            }
+            IoEvent::OutputFailed {
+                output,
+                run,
+                reason,
+            } => {
+                tracing::warn!(%output, run, %reason, "output failed");
+                self.event(Event::OutputFailed {
+                    output,
+                    run,
+                    reason,
                 });
             }
         }
@@ -785,5 +832,141 @@ mod tests {
         assert_eq!(rig.feedback.plan_version(), 3);
         rig.send(Command::Transition { button: 9 });
         assert_eq!(rig.reader.load().version, 3, "refused: no new version");
+    }
+
+    #[test]
+    fn fade_to_black_of_the_outputs_takes_the_set_duration_at_every_rate() {
+        // B11 (engine side): the k-th tick shows (k + 1) / frames, black after `frames`
+        // ticks, back to Program on the second command; the Program itself never changes.
+        for rate in FrameRate::MASTER_RATES {
+            for ms in [0, 40, 500, 1000] {
+                let mut rig = Rig::new(rate);
+                let a = rig.color();
+                rig.send(Command::SetFadeToBlackDuration { ms });
+                let frames = crate::TransitionSetting::fade(ms)
+                    .frames(rate)
+                    .map_or(1, |f| f as usize);
+                for _ in 0..3 {
+                    assert_eq!(rig.tick().fade_to_black, 0.0);
+                }
+                for back in [false, true] {
+                    rig.send(Command::FadeToBlack);
+                    for k in 0..frames + 2 {
+                        let c = rig.tick();
+                        let along = ((k + 1).min(frames) as f32) / frames as f32;
+                        let want = if back { 1.0 - along } else { along };
+                        assert!(
+                            (c.fade_to_black - want).abs() < 1e-6,
+                            "{rate} {ms} ms tick {k}: {} instead of {want}",
+                            c.fade_to_black
+                        );
+                        assert_eq!(c.single(), Some(Some(a)), "Program unchanged");
+                        assert_eq!(rig.feedback.fade_to_black(), c.fade_to_black);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn fade_to_black_turned_back_half_way_returns_at_the_same_pace() {
+        let mut rig = Rig::new(FrameRate::FPS_50);
+        rig.color();
+        rig.send(Command::FadeToBlack); // 1000 ms: 50 ticks
+        for _ in 0..10 {
+            rig.tick();
+        }
+        assert!((rig.feedback.fade_to_black() - 0.2).abs() < 1e-6);
+        rig.send(Command::FadeToBlack);
+        let back: Vec<f32> = (0..11).map(|_| rig.tick().fade_to_black).collect();
+        assert!(back[8] > 0.0 && back[9] == 0.0, "10 ticks back: {back:?}");
+        // Skipped ticks count: the fade follows the frame index.
+        rig.send(Command::FadeToBlack);
+        rig.frame += 24;
+        assert!((rig.tick().fade_to_black - 25.0 / 50.0).abs() < 1e-6);
+    }
+
+    /// Writes the logs of a test into a buffer.
+    #[derive(Debug, Clone, Default)]
+    struct Logs(Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for Logs {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn secrets_never_reach_the_journal_the_logs_nor_the_published_state() {
+        // B13 (engine side).
+        use crate::output_spec::{OutputSpec, RtmpSpec, Secret, SrtSpec};
+        const KEY: &str = "live_7d1f0c9a5e";
+        const PASSPHRASE: &str = "correct horse battery";
+        let logs = Logs::default();
+        let writer = logs.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::TRACE)
+            .with_writer(move || writer.clone())
+            .finish();
+        let mut rig = Rig::new(FrameRate::FPS_50);
+        tracing::subscriber::with_default(subscriber, || {
+            let rtmp = OutputSpec::Rtmp(RtmpSpec {
+                url: "rtmps://live.example.net/app".into(),
+                key: Secret::new(KEY),
+                video_kbps: None,
+            });
+            rig.send(Command::AddOutput {
+                spec: rtmp.clone(),
+                name: None,
+            });
+            rig.send(Command::AddOutput {
+                spec: OutputSpec::Srt(SrtSpec {
+                    host: "10.0.0.2".into(),
+                    passphrase: Secret::new(PASSPHRASE),
+                    ..SrtSpec::default()
+                }),
+                name: None,
+            });
+            rig.send(Command::StartStreaming { slot: None });
+            // Refused (running), logged with the command.
+            rig.send(Command::UpdateOutput {
+                output: vma_core::OutputId(2),
+                spec: rtmp,
+            });
+            rig.controller.io_event(IoEvent::OutputFailed {
+                output: vma_core::OutputId(2),
+                run: 1,
+                reason: "connection refused".into(),
+            });
+            rig.send(Command::StopStreaming { slot: None });
+        });
+        let journal = rig.journal_text();
+        let logs = String::from_utf8(logs.0.lock().unwrap().clone()).unwrap();
+        let state = serde_json::to_string(&*rig.reader.load()).unwrap();
+        assert!(
+            journal.contains("AddOutput") && journal.contains("***"),
+            "{journal}"
+        );
+        assert!(logs.contains("command refused"), "{logs}");
+        for (what, text) in [("journal", &journal), ("logs", &logs), ("state", &state)] {
+            for secret in [KEY, PASSPHRASE] {
+                assert!(!text.contains(secret), "{secret} in the {what}:\n{text}");
+            }
+        }
+        // The journal replays up to the start, which needs the secrets again.
+        let fresh = State::new(Format {
+            rate: FrameRate::FPS_50,
+            resolution: Resolution::HD_1080,
+        });
+        let error = replay(fresh, &journal).unwrap_err().to_string();
+        assert!(
+            error.contains("secret") && error.contains("missing"),
+            "{error}"
+        );
     }
 }

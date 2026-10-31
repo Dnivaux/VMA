@@ -10,13 +10,15 @@ use arc_swap::ArcSwap;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use vma_core::{ColorInfo, InputId};
+use vma_core::{ColorInfo, InputId, OutputId};
 use vma_engine::{InputSpec, IoEvent, IoEventSender, IoPort, IoRequest, Timeline};
 
 use crate::IoError;
 use crate::devices::{CaptureDevice, DeviceList, Monitor};
 use crate::feeds::{Feeds, VideoFormat};
 use crate::mode::CaptureMode;
+use crate::output::OutputFormat;
+use crate::outputs::{Activities, OutputActivity, Outputs};
 use crate::pipeline::{Capture, GstInput, Recipe};
 use crate::still::{self, StillImage};
 use crate::supervisor::retry_delay;
@@ -149,6 +151,7 @@ pub struct IoRuntime {
     gstreamer: Result<(), String>,
     devices: DeviceList,
     infos: Infos,
+    activities: Activities,
 }
 
 impl IoRuntime {
@@ -170,8 +173,19 @@ impl IoRuntime {
         let stop = Arc::new(AtomicBool::new(false));
         let devices = DeviceList::default();
         let infos = Infos::default();
+        let activities = Activities::default();
+        let outputs = Outputs::new(
+            port.outputs.clone(),
+            OutputFormat {
+                rate: port.format.rate,
+                resolution: port.format.resolution,
+            },
+            gstreamer.clone().err(),
+            Arc::clone(&activities),
+        );
         let worker = Worker {
             port,
+            outputs,
             gstreamer: gstreamer.clone(),
             pipelines: Vec::new(),
             timelines_at: Instant::now(),
@@ -190,6 +204,7 @@ impl IoRuntime {
             gstreamer,
             devices,
             infos,
+            activities,
         })
     }
 
@@ -202,6 +217,15 @@ impl IoRuntime {
     /// up to date by `vma-io`.
     pub fn devices(&self) -> Vec<CaptureDevice> {
         self.devices.infos()
+    }
+
+    /// What a running output is doing (`None` while it does not run).
+    pub fn output_activity(&self, output: OutputId) -> Option<OutputActivity> {
+        self.activities
+            .load()
+            .iter()
+            .find(|(id, _)| *id == output)
+            .map(|(_, a)| *a)
     }
 
     /// What the pipeline of `input` reports: capture mode, conversion (`None` while it is
@@ -228,6 +252,7 @@ impl Drop for IoRuntime {
 
 struct Worker {
     port: IoPort,
+    outputs: Outputs,
     gstreamer: Result<(), String>,
     pipelines: Vec<PipelineSlot<vma_engine::FeedRegistry>>,
     timelines_at: Instant,
@@ -256,9 +281,11 @@ impl Worker {
             for slot in &mut self.pipelines {
                 slot.tick(now, &mut |e| send(events, e));
             }
+            self.outputs.tick(now, &mut |e| send(events, e));
             if now >= self.timelines_at {
                 self.timelines_at = now + TIMELINE_PERIOD;
                 self.publish_timelines();
+                self.outputs.publish();
             }
             if now >= self.devices_at {
                 self.devices_at = now + DEVICES_PERIOD;
@@ -267,7 +294,8 @@ impl Worker {
                 }
             }
         }
-        // Pipelines and the monitor stop here, on `vma-io`.
+        // Pipelines and the monitor stop here, on `vma-io`; recordings are finalised first.
+        self.outputs.shutdown();
         self.pipelines.clear();
         self.monitor = None;
         tracing::info!("io thread stopped");
@@ -284,6 +312,12 @@ impl Worker {
             IoRequest::Pause { input } => self.with(input, |s| s.set_playing(false)),
             IoRequest::Seek { input, ms } => self.with(input, |s| s.seek(ms)),
             IoRequest::SetLoop { input, enabled } => self.with(input, |s| s.set_looping(enabled)),
+            IoRequest::StartOutput { output, run, spec } => {
+                let events = &self.port.events;
+                self.outputs
+                    .start(output, run, &spec, &mut |e| send(events, e));
+            }
+            IoRequest::StopOutput { output } => self.outputs.stop(output),
         }
     }
 
@@ -431,6 +465,7 @@ mod tests {
             let now = Instant::now();
             slot.tick(now, &mut |e| match e {
                 IoEvent::SignalLost { attempts, .. } => losses.push((now, attempts)),
+                other => panic!("{other:?}"),
             });
             std::thread::sleep(Duration::from_millis(5));
         }
@@ -470,6 +505,7 @@ mod tests {
                 IoEvent::SignalLost {
                     attempts, reason, ..
                 } => losses.push((attempts, reason)),
+                other => panic!("{other:?}"),
             });
             match losses.len() {
                 // First loss (the "unplug"): the camera disappears.
@@ -511,6 +547,7 @@ mod tests {
             .iter()
             .map(|(o, e)| match e {
                 IoEvent::SignalLost { attempts, .. } => (*o, *attempts),
+                other => panic!("{other:?}"),
             })
             .collect();
         assert_eq!(

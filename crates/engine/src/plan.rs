@@ -30,6 +30,15 @@ pub struct PlanTransition {
     pub progress: PlanProgress,
 }
 
+/// Fade to black of the outputs as the render thread sees it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct PlanFtb {
+    /// Towards black (`true`) or back to Program.
+    pub black: bool,
+    /// Ticks of a full fade; 0 = at once.
+    pub frames: u32,
+}
+
 /// What to show, as of state `version`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct RenderPlan {
@@ -38,9 +47,10 @@ pub struct RenderPlan {
     pub preview: Option<InputId>,
     pub transition: Option<PlanTransition>,
     pub domain: MixDomain,
+    pub ftb: PlanFtb,
 }
 
-const WORDS: usize = 7;
+const WORDS: usize = 8;
 
 impl RenderPlan {
     fn encode(&self) -> [u64; WORDS] {
@@ -73,6 +83,7 @@ impl RenderPlan {
             from,
             to,
             bits | (domain << 56),
+            u64::from(self.ftb.black) | (u64::from(self.ftb.frames) << 1),
         ]
     }
 
@@ -82,7 +93,7 @@ impl RenderPlan {
                 .and_then(|v| u32::try_from(v).ok())
                 .map(InputId)
         };
-        let [version, program, preview, t_id, from, to, bits] = w;
+        let [version, program, preview, t_id, from, to, bits, ftb] = w;
         let transition = match (t_id, id(to)) {
             (1.., Some(to)) => Some(PlanTransition {
                 id: t_id,
@@ -114,6 +125,10 @@ impl RenderPlan {
                 MixDomain::Linear
             } else {
                 MixDomain::Gamma
+            },
+            ftb: PlanFtb {
+                black: ftb & 1 == 1,
+                frames: ((ftb >> 1) & 0xffff_ffff) as u32,
             },
         }
     }
@@ -220,6 +235,10 @@ mod tests {
             } else {
                 MixDomain::Gamma
             },
+            ftb: PlanFtb {
+                black: n.is_multiple_of(3),
+                frames: n * 11,
+            },
         }
     }
 
@@ -238,6 +257,10 @@ mod tests {
                 effect: Effect::Fade,
                 progress: PlanProgress::Timed { frames: u32::MAX },
             }),
+            ftb: PlanFtb {
+                black: true,
+                frames: u32::MAX,
+            },
             ..RenderPlan::default()
         };
         assert_eq!(RenderPlan::decode(edge.encode()), edge);

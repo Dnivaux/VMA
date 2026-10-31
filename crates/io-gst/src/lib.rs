@@ -7,7 +7,8 @@
 //!   reconnects, and publishes the position of the video files.
 //!
 //! - Outputs ([`GstOutput`], Phase 2): one pipeline per output (encoder ladder, MKV / MP4),
-//!   fed by the engine's distribution through an [`OutputFeed`].
+//!   fed by the engine's distribution through an [`OutputFeed`]. `vma-io` starts and stops
+//!   them on the requests of `vma-control` ([`IoRuntime::output_activity`]).
 //! - Capture devices: listed by a device monitor ([`IoRuntime::devices`]), opened in the mode
 //!   closest to the master format ([`CaptureMode`], [`IoRuntime::pipeline_info`]).
 
@@ -15,6 +16,7 @@ mod devices;
 mod feeds;
 mod mode;
 mod output;
+mod outputs;
 mod pipeline;
 mod runtime;
 pub mod still;
@@ -24,6 +26,7 @@ pub use devices::CaptureDevice;
 pub use feeds::{Feeds, PictureOut, VideoFormat};
 pub use mode::{CaptureMode, Encoding};
 pub use output::{EncoderChoice, GstOutput, OutputFeed, OutputFormat, RecordSettings, Skipped};
+pub use outputs::{OutputActivity, default_record_folder};
 pub use runtime::{IoRuntime, PipelineInfo};
 
 /// Errors of `io-gst`.

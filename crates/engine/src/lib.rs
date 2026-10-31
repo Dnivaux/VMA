@@ -12,6 +12,7 @@ mod command;
 mod control;
 mod feed;
 mod journal;
+mod output_spec;
 mod outputs;
 mod plan;
 mod readback;
@@ -33,17 +34,22 @@ pub use control::{
 };
 pub use feed::{FeedError, FeedRegistry, FeedStats, FeedStatsSnapshot, FrameSink};
 pub use journal::{Journal, JournalLine, JournalStats, Origin, Outcome, ReplayError, replay};
+pub use output_spec::{
+    InvalidSpec, MAX_OUTPUTS, OutputSpec, RecordSpec, RtmpSpec, SRT_LATENCY_RANGE, STREAM_SLOTS,
+    Secret, SrtMode, SrtSpec, VIDEO_KBPS_RANGE,
+};
 pub use outputs::{
     AUDIO_CHANNELS, AUDIO_RATE, BEEP_HZ, BEEP_SAMPLES, CONSUMER_QUEUE, DistributionSnapshot,
     HubClosed, OutputConsumer, OutputCounters, OutputCountersSnapshot, OutputFrame, OutputHub,
     SyncTest, audio_sample_at, video_pts_ns,
 };
-pub use plan::{PlanProgress, PlanReader, PlanTransition, RenderPlan};
+pub use plan::{PlanFtb, PlanProgress, PlanReader, PlanTransition, RenderPlan};
 pub use render::{EngineConfig, EngineError, FrameReader, IoPort, Readers, RenderEngine};
 pub use sequencer::{Composition, OnAir, RenderFeedback, Sequencer};
 pub use state::{
-    Ending, Event, Format, InputState, InputStatus, IoRequest, MAX_INPUTS, MAX_NAME_CHARS,
-    Playback, Rejection, SourceFormat, State, TransitionState,
+    Ending, Event, FadeToBlack, Format, InputState, InputStatus, IoRequest, MAX_INPUTS,
+    MAX_NAME_CHARS, OutputState, OutputStatus, Playback, Rejection, SourceFormat, State,
+    TransitionState,
 };
 pub use stats::{RenderCpuSummary, RenderStats, RenderStatsSnapshot};
 pub use timeline::{Timeline, Timelines};

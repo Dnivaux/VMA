@@ -21,7 +21,7 @@
 
 mod encoder;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -168,6 +168,8 @@ pub struct GstOutput {
     failure: Option<String>,
     /// The end of stream reached the sink: the file is finalised.
     finished: bool,
+    /// [`Self::poll_stop`] sent the end of stream itself.
+    forced_eos: bool,
 }
 
 impl GstOutput {
@@ -281,6 +283,7 @@ impl GstOutput {
             audio_encoder,
             failure: None,
             finished: false,
+            forced_eos: false,
         };
         Ok((output, feed))
     }
@@ -300,12 +303,7 @@ impl GstOutput {
     pub fn poll(&mut self) -> Option<&str> {
         while self.failure.is_none() {
             match self.notes.try_recv() {
-                Ok(Note::Failed(reason)) => {
-                    tracing::error!(%reason, "output failed");
-                    let _ = self.pipeline.set_state(gst::State::Null);
-                    self.failure = Some(reason);
-                }
-                Ok(Note::Finished) => self.finished = true,
+                Ok(note) => self.note(note),
                 Err(_) => break,
             }
         }
@@ -324,32 +322,54 @@ impl GstOutput {
     /// most half of `timeout`), sends it itself otherwise, then waits for the muxer to finish
     /// the file. `Err` if it failed or was not finalised in time (the pipeline stops anyway).
     pub fn stop(mut self, timeout: Duration) -> Result<(), IoError> {
-        if let Some(reason) = self.poll() {
-            return Err(IoError::Pipeline(reason.to_owned()));
-        }
         let start = Instant::now();
-        let mut forced = false;
-        while !self.finished {
-            let elapsed = start.elapsed();
-            if !forced && elapsed >= timeout / 2 {
-                tracing::warn!("output feed still attached: ending the stream here");
-                let _ = self.video_src.end_of_stream();
-                let _ = self.audio_src.end_of_stream();
-                forced = true;
+        loop {
+            if let Some(done) = self.poll_stop(start.elapsed(), timeout) {
+                return done;
             }
-            let Some(left) = timeout.checked_sub(elapsed) else {
-                return Err(IoError::Pipeline(format!(
-                    "not finalised within {timeout:?}"
-                )));
-            };
-            match self.notes.recv_timeout(left.min(Duration::from_millis(20))) {
-                Ok(Note::Finished) => self.finished = true,
-                Ok(Note::Failed(reason)) => return Err(IoError::Pipeline(reason)),
-                Err(_) => {}
+            if let Ok(note) = self.notes.recv_timeout(Duration::from_millis(20)) {
+                self.note(note);
             }
         }
-        tracing::info!("output finalised");
-        Ok(())
+    }
+
+    /// [`Self::stop`] without waiting, for a caller that polls: `elapsed` since the feed was
+    /// detached. `None` while the file is being finalised.
+    pub fn poll_stop(
+        &mut self,
+        elapsed: Duration,
+        timeout: Duration,
+    ) -> Option<Result<(), IoError>> {
+        if let Some(reason) = self.poll() {
+            return Some(Err(IoError::Pipeline(reason.to_owned())));
+        }
+        if self.finished {
+            tracing::info!("output finalised");
+            return Some(Ok(()));
+        }
+        if !self.forced_eos && elapsed >= timeout / 2 {
+            tracing::warn!("output feed still attached: ending the stream here");
+            let _ = self.video_src.end_of_stream();
+            let _ = self.audio_src.end_of_stream();
+            self.forced_eos = true;
+        }
+        (elapsed >= timeout).then(|| {
+            Err(IoError::Pipeline(format!(
+                "not finalised within {timeout:?}"
+            )))
+        })
+    }
+
+    fn note(&mut self, note: Note) {
+        match note {
+            Note::Failed(reason) if self.failure.is_none() => {
+                tracing::error!(%reason, "output failed");
+                let _ = self.pipeline.set_state(gst::State::Null);
+                self.failure = Some(reason);
+            }
+            Note::Failed(_) => {}
+            Note::Finished => self.finished = true,
+        }
     }
 }
 

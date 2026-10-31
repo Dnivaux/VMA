@@ -5,7 +5,9 @@ use std::fmt;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
-use vma_core::{FrameRate, InputId, InputKind, Resolution, Rgb8};
+use vma_core::{FrameRate, InputId, InputKind, OutputId, Resolution, Rgb8};
+
+use crate::output_spec::OutputSpec;
 
 /// Longest accepted transition, in milliseconds.
 pub const MAX_TRANSITION_MS: u32 = 10_000;
@@ -84,6 +86,41 @@ pub enum Command {
         ms: u64,
     },
     SetAutoPlay(AutoPlay),
+    // Outputs (Phase 2, `phase-2.md` § 5).
+    AddOutput {
+        spec: OutputSpec,
+        name: Option<String>,
+    },
+    /// Refused while the output runs.
+    UpdateOutput {
+        output: OutputId,
+        spec: OutputSpec,
+    },
+    /// Stops it first if it runs.
+    RemoveOutput {
+        output: OutputId,
+    },
+    StartOutput {
+        output: OutputId,
+    },
+    StopOutput {
+        output: OutputId,
+    },
+    /// Every recording output.
+    StartRecording,
+    StopRecording,
+    /// Stream destination `slot` (1–3), or every one (`None`).
+    StartStreaming {
+        slot: Option<u8>,
+    },
+    StopStreaming {
+        slot: Option<u8>,
+    },
+    /// Toggles the outputs between black and Program, over the FTB duration.
+    FadeToBlack,
+    SetFadeToBlackDuration {
+        ms: u32,
+    },
 }
 
 /// Stable identifier of a capture device, provided by `io-gst`.

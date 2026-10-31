@@ -4,13 +4,14 @@
 //! at a time, in order, so a journal replay gives the same state back.
 
 use serde::{Deserialize, Serialize};
-use vma_core::{FrameRate, InputId, PixelFormat, Resolution};
+use vma_core::{FrameRate, InputId, OutputId, PixelFormat, Resolution};
 
 use crate::command::{
     AutoPlay, Command, Effect, InputSpec, MAX_TRANSITION_MS, MixDomain, TRANSITION_BUTTONS,
     TransitionSetting,
 };
-use crate::plan::{PlanProgress, PlanTransition, RenderPlan};
+use crate::output_spec::{InvalidSpec, MAX_OUTPUTS, OutputSpec, RecordSpec, STREAM_SLOTS};
+use crate::plan::{PlanFtb, PlanProgress, PlanTransition, RenderPlan};
 
 /// Maximum number of inputs (fixed slot table on the render side, ADR 0003).
 pub const MAX_INPUTS: usize = 64;
@@ -63,6 +64,75 @@ pub struct InputState {
     pub status: InputStatus,
     /// `Some` for inputs with a timeline only.
     pub playback: Option<Playback>,
+}
+
+/// Life cycle of an output (`phase-2.md` § 5).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum OutputStatus {
+    Idle,
+    /// Asked to `io-gst`, not confirmed yet.
+    Starting,
+    /// `encoder`: the encoders retained (and why a fallback, if any); `target`: the file of a
+    /// recording.
+    Running {
+        encoder: String,
+        target: Option<String>,
+    },
+    /// A stream lost its server and is being reconnected (from step 6).
+    Reconnecting {
+        attempt: u32,
+    },
+    /// Finalising (end of stream, file closed).
+    Stopping,
+    /// Stopped by an error; the rest of the program carries on.
+    Failed {
+        reason: String,
+    },
+}
+
+impl OutputStatus {
+    /// Starting, running, reconnecting or stopping: its settings cannot change.
+    pub fn is_active(&self) -> bool {
+        !matches!(self, Self::Idle | Self::Failed { .. })
+    }
+
+    /// Produces (or tries to): starting, running or reconnecting.
+    pub fn is_on(&self) -> bool {
+        matches!(
+            self,
+            Self::Starting | Self::Running { .. } | Self::Reconnecting { .. }
+        )
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OutputState {
+    pub id: OutputId,
+    pub name: String,
+    pub spec: OutputSpec,
+    /// Streams: destination number, 1 to [`STREAM_SLOTS`].
+    pub slot: Option<u8>,
+    pub status: OutputStatus,
+    /// Each start gets a new run number; `io-gst` events of an older run are ignored.
+    pub run: u64,
+}
+
+/// Fade to black of the outputs (not of the UI's Program view, ADR 0006 § 1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FadeToBlack {
+    /// Asked for: the outputs go (or are) black. The fade itself runs on the render thread
+    /// (`RenderFeedback::fade_to_black`).
+    pub active: bool,
+    pub duration_ms: u32,
+}
+
+impl Default for FadeToBlack {
+    fn default() -> Self {
+        Self {
+            active: false,
+            duration_ms: State::DEFAULT_FTB_MS,
+        }
+    }
 }
 
 /// What happens to Preview when a transition ends.
@@ -166,6 +236,26 @@ pub enum Rejection {
     NoPlayback(InputId),
     #[error("there is no input")]
     NoInputs,
+    #[error("unknown output {0}")]
+    UnknownOutput(OutputId),
+    #[error("too many outputs (maximum {MAX_OUTPUTS})")]
+    TooManyOutputs,
+    #[error("all {STREAM_SLOTS} stream destinations are taken")]
+    NoStreamSlot,
+    #[error("there is no stream destination {0}")]
+    UnknownStream(u8),
+    #[error("no {0} output is configured")]
+    NoOutput(&'static str),
+    #[error("{0} is running: stop it first")]
+    OutputActive(OutputId),
+    #[error("{0} is still stopping")]
+    OutputStopping(OutputId),
+    #[error("a recording cannot become a stream, nor the reverse")]
+    OutputKindChanged,
+    #[error("the secret of {0} is missing (read back from a journal): enter it again")]
+    SecretMissing(OutputId),
+    #[error("invalid output settings: {0}")]
+    InvalidOutput(#[from] InvalidSpec),
 }
 
 /// Work for `io-gst` that follows from an accepted command.
@@ -194,10 +284,20 @@ pub enum IoRequest {
         input: InputId,
         enabled: bool,
     },
+    /// Build and start the pipeline of an output; report under `run`.
+    StartOutput {
+        output: OutputId,
+        run: u64,
+        spec: OutputSpec,
+    },
+    /// Finalise and stop it (also when it is removed).
+    StopOutput {
+        output: OutputId,
+    },
 }
 
 /// Something that happened outside `vma-control` and changes the state.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Event {
     /// The render thread showed the first frame of a timed transition.
     TransitionStarted { id: u64, frame: u64 },
@@ -216,6 +316,21 @@ pub enum Event {
         frame: u64,
         attempts: u32,
     },
+    /// `io-gst` started run `run` of an output.
+    OutputRunning {
+        output: OutputId,
+        run: u64,
+        encoder: String,
+        target: Option<String>,
+    },
+    /// Run `run` of an output is finalised and stopped.
+    OutputStopped { output: OutputId, run: u64 },
+    /// Run `run` of an output failed (start refused, write error, encoder error…).
+    OutputFailed {
+        output: OutputId,
+        run: u64,
+        reason: String,
+    },
 }
 
 /// The whole mixer state, versioned. Readers get immutable snapshots (`StateReader`).
@@ -233,8 +348,14 @@ pub struct State {
     pub quick_play: TransitionSetting,
     pub auto_play: AutoPlay,
     pub mix_domain: MixDomain,
+    /// In display order. A recording is configured from the start (the record button works
+    /// at once).
+    pub outputs: Vec<OutputState>,
+    pub ftb: FadeToBlack,
     next_input: u32,
     next_transition: u64,
+    next_output: u32,
+    next_run: u64,
 }
 
 /// Result of an accepted command.
@@ -264,6 +385,10 @@ impl State {
     ];
     /// Quick Play default (documented by the reference: 500 ms Fade).
     pub const DEFAULT_QUICK_PLAY: TransitionSetting = TransitionSetting::fade(500);
+    /// FTB duration (`phase-2.md` § 6, to be confirmed by observation).
+    pub const DEFAULT_FTB_MS: u32 = 1000;
+    /// The recording present from the start.
+    pub const DEFAULT_RECORDING: OutputId = OutputId(1);
 
     pub fn new(format: Format) -> Self {
         Self {
@@ -277,9 +402,29 @@ impl State {
             quick_play: Self::DEFAULT_QUICK_PLAY,
             auto_play: AutoPlay::default(),
             mix_domain: MixDomain::default(),
+            outputs: vec![OutputState {
+                id: Self::DEFAULT_RECORDING,
+                name: OutputSpec::Record(RecordSpec::default()).default_name(None),
+                spec: OutputSpec::Record(RecordSpec::default()),
+                slot: None,
+                status: OutputStatus::Idle,
+                run: 0,
+            }],
+            ftb: FadeToBlack::default(),
             next_input: 1,
             next_transition: 1,
+            next_output: Self::DEFAULT_RECORDING.0 + 1,
+            next_run: 1,
         }
+    }
+
+    pub fn output(&self, id: OutputId) -> Option<&OutputState> {
+        self.outputs.iter().find(|o| o.id == id)
+    }
+
+    /// The stream on destination `slot` (1–3).
+    pub fn stream(&self, slot: u8) -> Option<&OutputState> {
+        self.outputs.iter().find(|o| o.slot == Some(slot))
     }
 
     pub fn input(&self, id: InputId) -> Option<&InputState> {
@@ -336,6 +481,12 @@ impl State {
             preview: self.preview,
             transition,
             domain: self.mix_domain,
+            ftb: PlanFtb {
+                black: self.ftb.active,
+                frames: TransitionSetting::fade(self.ftb.duration_ms)
+                    .frames(self.format.rate)
+                    .unwrap_or(0),
+            },
         }
     }
 
@@ -353,39 +504,40 @@ impl State {
     /// Stale events (a transition that already ended, an input that is gone) are ignored.
     pub fn apply_event(&mut self, event: &Event) -> Vec<IoRequest> {
         let mut io = Vec::new();
-        let changed = match (*event, &mut self.transition) {
-            (
-                Event::TransitionStarted { id, frame },
+        let changed = match event {
+            Event::TransitionStarted { id, frame } => match &mut self.transition {
                 Some(TransitionState::Timed {
                     id: current,
                     started_at,
                     ..
-                }),
-            ) if *current == id && started_at.is_none() => {
-                *started_at = Some(frame);
-                true
+                }) if current == id && started_at.is_none() => {
+                    *started_at = Some(*frame);
+                    true
+                }
+                _ => false,
+            },
+            Event::TransitionDone { id } => {
+                if self.transition.is_some_and(|t| t.id() == *id) {
+                    self.finish_transition(&mut io);
+                    true
+                } else {
+                    false
+                }
             }
-            (Event::TransitionDone { id }, Some(t)) if t.id() == id => {
-                self.finish_transition(&mut io);
-                true
-            }
-            (
-                Event::SignalLost {
-                    input,
-                    frame,
-                    attempts,
-                },
-                _,
-            ) => match self.inputs.iter_mut().find(|i| i.id == input) {
+            Event::SignalLost {
+                input,
+                frame,
+                attempts,
+            } => match self.inputs.iter_mut().find(|i| i.id == *input) {
                 Some(i) if !i.spec.is_generated() => {
                     // Keep the first loss frame across retries.
                     let since_frame = match i.status {
                         InputStatus::SignalLost { since_frame, .. } => since_frame,
-                        _ => frame,
+                        _ => *frame,
                     };
                     let lost = InputStatus::SignalLost {
                         since_frame,
-                        attempts,
+                        attempts: *attempts,
                     };
                     let changed = i.status != lost;
                     i.status = lost;
@@ -393,11 +545,11 @@ impl State {
                 }
                 _ => false,
             },
-            (Event::InputLive { input, source }, _) => {
+            Event::InputLive { input, source } => {
                 let live = InputStatus::Live {
-                    source: Some(source),
+                    source: Some(*source),
                 };
-                match self.inputs.iter_mut().find(|i| i.id == input) {
+                match self.inputs.iter_mut().find(|i| i.id == *input) {
                     Some(i) if !i.spec.is_generated() && i.status != live => {
                         i.status = live;
                         true
@@ -405,7 +557,34 @@ impl State {
                     _ => false,
                 }
             }
-            _ => false,
+            Event::OutputRunning {
+                output,
+                run,
+                encoder,
+                target,
+            } => self.output_event(*output, *run, |status| {
+                // Stopped meanwhile: stays stopping.
+                matches!(
+                    status,
+                    OutputStatus::Starting | OutputStatus::Reconnecting { .. }
+                )
+                .then(|| OutputStatus::Running {
+                    encoder: encoder.clone(),
+                    target: target.clone(),
+                })
+            }),
+            Event::OutputStopped { output, run } => {
+                self.output_event(*output, *run, |_| Some(OutputStatus::Idle))
+            }
+            Event::OutputFailed {
+                output,
+                run,
+                reason,
+            } => self.output_event(*output, *run, |status| {
+                (*status != OutputStatus::Idle).then(|| OutputStatus::Failed {
+                    reason: reason.clone(),
+                })
+            }),
         };
         if changed {
             self.version += 1;
@@ -531,7 +710,209 @@ impl State {
                 self.auto_play = *auto_play;
                 Ok(Change::changed())
             }
+            Command::AddOutput { spec, name } => self.add_output(spec, name.as_deref()),
+            Command::UpdateOutput { output, spec } => self.update_output(*output, spec),
+            Command::RemoveOutput { output } => self.remove_output(*output),
+            Command::StartOutput { output } => {
+                if self.require_output(*output)?.status == OutputStatus::Stopping {
+                    return Err(Rejection::OutputStopping(*output));
+                }
+                self.start_outputs(&[*output])
+            }
+            Command::StopOutput { output } => {
+                self.require_output(*output)?;
+                Ok(self.stop_outputs(&[*output]))
+            }
+            Command::StartRecording => {
+                let ids = self.recordings()?;
+                self.start_outputs(&ids)
+            }
+            Command::StopRecording => {
+                let ids = self.recordings()?;
+                Ok(self.stop_outputs(&ids))
+            }
+            Command::StartStreaming { slot } => {
+                let ids = self.streams(*slot)?;
+                self.start_outputs(&ids)
+            }
+            Command::StopStreaming { slot } => {
+                let ids = self.streams(*slot)?;
+                Ok(self.stop_outputs(&ids))
+            }
+            Command::FadeToBlack => {
+                self.ftb.active = !self.ftb.active;
+                Ok(Change::changed())
+            }
+            Command::SetFadeToBlackDuration { ms } => {
+                if *ms > MAX_TRANSITION_MS {
+                    return Err(Rejection::DurationOutOfRange(*ms));
+                }
+                self.ftb.duration_ms = *ms;
+                Ok(Change::changed())
+            }
         }
+    }
+
+    fn add_output(&mut self, spec: &OutputSpec, name: Option<&str>) -> Result<Change, Rejection> {
+        if self.outputs.len() >= MAX_OUTPUTS {
+            return Err(Rejection::TooManyOutputs);
+        }
+        spec.validate()?;
+        let slot = if spec.is_stream() {
+            let free = (1..=STREAM_SLOTS).find(|s| self.stream(*s).is_none());
+            Some(free.ok_or(Rejection::NoStreamSlot)?)
+        } else {
+            None
+        };
+        let name = match name {
+            Some(n) => valid_name(n)?,
+            None => spec.default_name(slot),
+        };
+        let id = OutputId(self.next_output);
+        self.next_output += 1;
+        self.outputs.push(OutputState {
+            id,
+            name,
+            spec: spec.clone(),
+            slot,
+            status: OutputStatus::Idle,
+            run: 0,
+        });
+        Ok(Change::changed())
+    }
+
+    fn update_output(&mut self, output: OutputId, spec: &OutputSpec) -> Result<Change, Rejection> {
+        let current = self.require_output(output)?;
+        if current.status.is_active() {
+            return Err(Rejection::OutputActive(output));
+        }
+        if current.spec.is_stream() != spec.is_stream() {
+            return Err(Rejection::OutputKindChanged);
+        }
+        spec.validate()?;
+        if let Some(o) = self.outputs.iter_mut().find(|o| o.id == output) {
+            o.spec = spec.clone();
+        }
+        Ok(Change::changed())
+    }
+
+    fn remove_output(&mut self, output: OutputId) -> Result<Change, Rejection> {
+        let position = self
+            .outputs
+            .iter()
+            .position(|o| o.id == output)
+            .ok_or(Rejection::UnknownOutput(output))?;
+        let removed = self.outputs.remove(position);
+        let io = if removed.status.is_active() {
+            vec![IoRequest::StopOutput { output }]
+        } else {
+            Vec::new()
+        };
+        Ok(Change { changed: true, io })
+    }
+
+    /// Starts the outputs of `ids` that are idle or failed; the others are left alone. Refused
+    /// as a whole if one of them lacks its secret.
+    fn start_outputs(&mut self, ids: &[OutputId]) -> Result<Change, Rejection> {
+        let startable = |o: &OutputState| !o.status.is_active();
+        for o in self.outputs.iter().filter(|o| ids.contains(&o.id)) {
+            if startable(o) && o.spec.secret_missing() {
+                return Err(Rejection::SecretMissing(o.id));
+            }
+        }
+        let mut change = Change::default();
+        for o in self.outputs.iter_mut().filter(|o| ids.contains(&o.id)) {
+            if startable(o) {
+                let run = self.next_run;
+                self.next_run += 1;
+                o.run = run;
+                o.status = OutputStatus::Starting;
+                change.changed = true;
+                change.io.push(IoRequest::StartOutput {
+                    output: o.id,
+                    run,
+                    spec: o.spec.clone(),
+                });
+            }
+        }
+        Ok(change)
+    }
+
+    /// Stops the outputs of `ids` that produce; a failed one goes back to idle.
+    fn stop_outputs(&mut self, ids: &[OutputId]) -> Change {
+        let mut change = Change::default();
+        for o in self.outputs.iter_mut().filter(|o| ids.contains(&o.id)) {
+            if o.status.is_on() {
+                o.status = OutputStatus::Stopping;
+                change.io.push(IoRequest::StopOutput { output: o.id });
+                change.changed = true;
+            } else if matches!(o.status, OutputStatus::Failed { .. }) {
+                o.status = OutputStatus::Idle;
+                change.changed = true;
+            }
+        }
+        change
+    }
+
+    fn recordings(&self) -> Result<Vec<OutputId>, Rejection> {
+        let ids: Vec<_> = self
+            .outputs
+            .iter()
+            .filter(|o| o.spec.is_recording())
+            .map(|o| o.id)
+            .collect();
+        if ids.is_empty() {
+            return Err(Rejection::NoOutput("recording"));
+        }
+        Ok(ids)
+    }
+
+    fn streams(&self, slot: Option<u8>) -> Result<Vec<OutputId>, Rejection> {
+        match slot {
+            Some(slot) => self
+                .stream(slot)
+                .map(|o| vec![o.id])
+                .ok_or(Rejection::UnknownStream(slot)),
+            None => {
+                let ids: Vec<_> = self
+                    .outputs
+                    .iter()
+                    .filter(|o| o.slot.is_some())
+                    .map(|o| o.id)
+                    .collect();
+                if ids.is_empty() {
+                    return Err(Rejection::NoOutput("stream"));
+                }
+                Ok(ids)
+            }
+        }
+    }
+
+    /// Applies an `io-gst` report about run `run` of `output` (ignored if stale).
+    fn output_event(
+        &mut self,
+        output: OutputId,
+        run: u64,
+        next: impl FnOnce(&OutputStatus) -> Option<OutputStatus>,
+    ) -> bool {
+        let Some(o) = self
+            .outputs
+            .iter_mut()
+            .find(|o| o.id == output && o.run == run)
+        else {
+            return false;
+        };
+        match next(&o.status) {
+            Some(status) if status != o.status => {
+                o.status = status;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn require_output(&self, output: OutputId) -> Result<&OutputState, Rejection> {
+        self.output(output).ok_or(Rejection::UnknownOutput(output))
     }
 
     fn add_input(&mut self, spec: &InputSpec, name: Option<&str>) -> Result<Change, Rejection> {
@@ -1469,5 +1850,335 @@ mod tests {
             s.input(id).unwrap().status,
             InputStatus::Live { .. }
         ));
+    }
+
+    // Outputs (Phase 2 step 5).
+
+    use crate::output_spec::{RtmpSpec, Secret, SrtSpec};
+
+    const REC: OutputId = State::DEFAULT_RECORDING;
+
+    fn rtmp(key: &str) -> OutputSpec {
+        OutputSpec::Rtmp(RtmpSpec {
+            url: "rtmp://live.example.net/app".into(),
+            key: Secret::new(key),
+            video_kbps: None,
+        })
+    }
+
+    fn srt() -> OutputSpec {
+        OutputSpec::Srt(SrtSpec {
+            host: "10.0.0.2".into(),
+            ..SrtSpec::default()
+        })
+    }
+
+    fn add_output(state: &mut State, spec: OutputSpec) -> OutputId {
+        state
+            .apply(&Command::AddOutput { spec, name: None })
+            .unwrap();
+        state.outputs.last().unwrap().id
+    }
+
+    fn status(state: &State, id: OutputId) -> OutputStatus {
+        state.output(id).unwrap().status.clone()
+    }
+
+    fn running(state: &mut State, id: OutputId) {
+        let run = state.output(id).unwrap().run;
+        state.apply_event(&Event::OutputRunning {
+            output: id,
+            run,
+            encoder: "nvh264enc + avenc_aac".into(),
+            target: None,
+        });
+    }
+
+    #[test]
+    fn a_recording_is_there_from_the_start() {
+        let s = state();
+        assert_eq!(s.outputs.len(), 1);
+        let rec = s.output(REC).unwrap();
+        assert_eq!(rec.name, "Enregistrement");
+        assert_eq!(rec.spec, OutputSpec::Record(RecordSpec::default()));
+        assert_eq!((rec.slot, &rec.status), (None, &OutputStatus::Idle));
+        assert_eq!(s.ftb, FadeToBlack::default());
+        assert_eq!(s.ftb.duration_ms, 1000);
+    }
+
+    #[test]
+    fn recording_runs_through_start_running_stop_stopped() {
+        let mut s = state();
+        let io = s.apply(&Command::StartRecording).unwrap();
+        assert_eq!(
+            io,
+            [IoRequest::StartOutput {
+                output: REC,
+                run: 1,
+                spec: OutputSpec::Record(RecordSpec::default()),
+            }]
+        );
+        assert_eq!(status(&s, REC), OutputStatus::Starting);
+        // Pressed again while it starts: nothing more to do.
+        let v = s.version;
+        assert_eq!(s.apply(&Command::StartRecording).unwrap(), []);
+        assert_eq!(s.version, v);
+
+        // An event of another run is stale.
+        s.apply_event(&Event::OutputStopped {
+            output: REC,
+            run: 7,
+        });
+        assert_eq!(status(&s, REC), OutputStatus::Starting);
+        s.apply_event(&Event::OutputRunning {
+            output: REC,
+            run: 1,
+            encoder: "nvh264enc + avenc_aac".into(),
+            target: Some("/home/v/Vidéos/VMA 2026-10-31 18-00-00.mkv".into()),
+        });
+        assert!(matches!(status(&s, REC), OutputStatus::Running { .. }));
+
+        let io = s.apply(&Command::StopRecording).unwrap();
+        assert_eq!(io, [IoRequest::StopOutput { output: REC }]);
+        assert_eq!(status(&s, REC), OutputStatus::Stopping);
+        assert_eq!(
+            refused(&mut s, Command::StartOutput { output: REC }),
+            Rejection::OutputStopping(REC)
+        );
+        s.apply_event(&Event::OutputStopped {
+            output: REC,
+            run: 1,
+        });
+        assert_eq!(status(&s, REC), OutputStatus::Idle);
+
+        // Next start: a new run.
+        let io = s.apply(&Command::StartOutput { output: REC }).unwrap();
+        assert!(matches!(io[..], [IoRequest::StartOutput { run: 2, .. }]));
+    }
+
+    #[test]
+    fn stop_while_starting_stays_stopping_and_failures_are_kept() {
+        let mut s = state();
+        s.apply(&Command::StartRecording).unwrap();
+        s.apply(&Command::StopRecording).unwrap();
+        // The start confirmation arrives after the stop: still stopping.
+        running(&mut s, REC);
+        assert_eq!(status(&s, REC), OutputStatus::Stopping);
+        s.apply_event(&Event::OutputStopped {
+            output: REC,
+            run: 1,
+        });
+
+        s.apply(&Command::StartRecording).unwrap();
+        s.apply_event(&Event::OutputFailed {
+            output: REC,
+            run: 2,
+            reason: "disk full".into(),
+        });
+        assert_eq!(
+            status(&s, REC),
+            OutputStatus::Failed {
+                reason: "disk full".into()
+            }
+        );
+        // A failed output can be changed, started again, or stopped (back to idle).
+        assert_eq!(s.apply(&Command::StopRecording).unwrap(), []);
+        assert_eq!(status(&s, REC), OutputStatus::Idle);
+        s.apply(&Command::StartRecording).unwrap();
+        s.apply_event(&Event::OutputFailed {
+            output: REC,
+            run: 3,
+            reason: "no encoder".into(),
+        });
+        let io = s.apply(&Command::StartRecording).unwrap();
+        assert!(matches!(io[..], [IoRequest::StartOutput { run: 4, .. }]));
+    }
+
+    #[test]
+    fn streams_take_destinations_one_to_three() {
+        let mut s = state();
+        let a = add_output(&mut s, rtmp("k1"));
+        let b = add_output(&mut s, srt());
+        let c = add_output(&mut s, rtmp("k3"));
+        let slots: Vec<_> = [a, b, c].map(|id| s.output(id).unwrap().slot).into();
+        assert_eq!(slots, [Some(1), Some(2), Some(3)]);
+        assert_eq!(s.output(b).unwrap().name, "Stream 2");
+        assert_eq!(
+            refused(
+                &mut s,
+                Command::AddOutput {
+                    spec: rtmp("k4"),
+                    name: None
+                }
+            ),
+            Rejection::NoStreamSlot
+        );
+        // A freed destination is taken again.
+        s.apply(&Command::RemoveOutput { output: b }).unwrap();
+        let d = add_output(&mut s, rtmp("k5"));
+        assert_eq!(s.output(d).unwrap().slot, Some(2));
+
+        // One by one…
+        let io = s.apply(&Command::StartStreaming { slot: Some(2) }).unwrap();
+        assert!(matches!(io[..], [IoRequest::StartOutput { output, .. }] if output == d));
+        assert_eq!(status(&s, a), OutputStatus::Idle);
+        // …or all together (the one already started is left alone); the recording is not.
+        let io = s.apply(&Command::StartStreaming { slot: None }).unwrap();
+        let started: Vec<_> = io
+            .iter()
+            .map(|r| match r {
+                IoRequest::StartOutput { output, .. } => *output,
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(started, [a, c]);
+        assert_eq!(status(&s, REC), OutputStatus::Idle);
+        let io = s.apply(&Command::StopStreaming { slot: None }).unwrap();
+        assert_eq!(io.len(), 3);
+        assert_eq!(
+            refused(&mut s, Command::StopStreaming { slot: Some(4) }),
+            Rejection::UnknownStream(4)
+        );
+    }
+
+    #[test]
+    fn removing_a_running_output_stops_it_and_its_events_are_ignored() {
+        let mut s = state();
+        let a = add_output(&mut s, rtmp("k"));
+        s.apply(&Command::StartOutput { output: a }).unwrap();
+        running(&mut s, a);
+        let io = s.apply(&Command::RemoveOutput { output: a }).unwrap();
+        assert_eq!(io, [IoRequest::StopOutput { output: a }]);
+        let v = s.version;
+        s.apply_event(&Event::OutputStopped { output: a, run: 1 });
+        assert_eq!(s.version, v);
+        // Not running: removed without a request.
+        assert_eq!(s.apply(&Command::RemoveOutput { output: REC }).unwrap(), []);
+        assert_eq!(
+            refused(&mut s, Command::StartRecording),
+            Rejection::NoOutput("recording")
+        );
+        assert_eq!(
+            refused(&mut s, Command::StartStreaming { slot: None }),
+            Rejection::NoOutput("stream")
+        );
+    }
+
+    #[test]
+    fn output_commands_are_refused_without_effect() {
+        let mut s = state();
+        let unknown = OutputId(42);
+        for command in [
+            Command::StartOutput { output: unknown },
+            Command::StopOutput { output: unknown },
+            Command::RemoveOutput { output: unknown },
+            Command::UpdateOutput {
+                output: unknown,
+                spec: srt(),
+            },
+        ] {
+            assert_eq!(refused(&mut s, command), Rejection::UnknownOutput(unknown));
+        }
+        assert_eq!(
+            refused(
+                &mut s,
+                Command::UpdateOutput {
+                    output: REC,
+                    spec: srt()
+                }
+            ),
+            Rejection::OutputKindChanged
+        );
+        let bad = OutputSpec::Rtmp(RtmpSpec {
+            url: "http://x".into(),
+            key: Secret::none(),
+            video_kbps: None,
+        });
+        assert!(matches!(
+            refused(
+                &mut s,
+                Command::AddOutput {
+                    spec: bad,
+                    name: None
+                }
+            ),
+            Rejection::InvalidOutput(_)
+        ));
+        assert_eq!(
+            refused(&mut s, Command::SetFadeToBlackDuration { ms: 10_001 }),
+            Rejection::DurationOutOfRange(10_001)
+        );
+        // Settings of a running output are fixed.
+        s.apply(&Command::StartRecording).unwrap();
+        let spec = OutputSpec::Record(RecordSpec {
+            container: vma_core::Container::Mp4,
+            ..RecordSpec::default()
+        });
+        assert_eq!(
+            refused(
+                &mut s,
+                Command::UpdateOutput {
+                    output: REC,
+                    spec: spec.clone()
+                }
+            ),
+            Rejection::OutputActive(REC)
+        );
+        // Up to 8 outputs.
+        let mut s = state();
+        for n in 0..3 {
+            add_output(&mut s, rtmp(&format!("k{n}")));
+        }
+        for _ in 0..4 {
+            add_output(&mut s, spec.clone());
+        }
+        assert_eq!(
+            refused(&mut s, Command::AddOutput { spec, name: None }),
+            Rejection::TooManyOutputs
+        );
+    }
+
+    #[test]
+    fn a_stream_read_back_from_a_journal_needs_its_secret() {
+        let mut s = state();
+        let a = add_output(&mut s, rtmp("k"));
+        let mut redacted = s.clone();
+        if let Some(o) = redacted.outputs.iter_mut().find(|o| o.id == a)
+            && let OutputSpec::Rtmp(r) = &mut o.spec
+        {
+            r.key = Secret::Redacted;
+        }
+        assert_eq!(
+            refused(&mut redacted, Command::StartStreaming { slot: None }),
+            Rejection::SecretMissing(a)
+        );
+        // Typed again (update): it starts.
+        redacted
+            .apply(&Command::UpdateOutput {
+                output: a,
+                spec: rtmp("k"),
+            })
+            .unwrap();
+        assert!(redacted.apply(&Command::StartOutput { output: a }).is_ok());
+    }
+
+    #[test]
+    fn fade_to_black_toggles_and_reaches_the_plan() {
+        let mut s = state();
+        s.apply(&Command::SetFadeToBlackDuration { ms: 500 })
+            .unwrap();
+        assert_eq!(
+            s.plan().ftb,
+            PlanFtb {
+                black: false,
+                frames: 25
+            }
+        );
+        s.apply(&Command::FadeToBlack).unwrap();
+        assert!(s.ftb.active && s.plan().ftb.black);
+        s.apply(&Command::FadeToBlack).unwrap();
+        assert!(!s.ftb.active);
+        s.apply(&Command::SetFadeToBlackDuration { ms: 0 }).unwrap();
+        assert_eq!(s.plan().ftb.frames, 0, "0 ms: at once");
     }
 }

@@ -11,6 +11,7 @@
 //!   feed, read back from every output.
 //! - `hot_add_and_remove_without_missed_frames`: A12, 20 fed inputs added and removed while
 //!   rendering.
+//! - `fade_to_black_darkens_the_outputs_not_the_program_view`: B11 with the real threads.
 //!
 //! The other tests put a test-pattern input on air first (`spawn`).
 //! - `soak_render_loop`: the Phase 0 acceptance test (10 min at 50 fps, zero missed frame).
@@ -33,7 +34,7 @@ use vma_core::Rgb8;
 use vma_core::{FrameRate, Resolution};
 use vma_engine::{
     Command, EngineConfig, Format, FrameReader, InputSpec, InputStatus, Journal, OnAir,
-    RenderEngine, Source, State,
+    OutputConsumer, OutputFrame, RenderEngine, Source, State,
 };
 
 struct Spawned {
@@ -593,6 +594,76 @@ fn program_pixels_follow_cut_and_fade() {
     let from = feedback.last_frame() + 1;
     assert_eq!(center_pixel(&mut spawned, from), [255, 0, 0, 255]);
     spawned.engine.stop();
+}
+
+/// Output test double: frame index and centre luma of every frame.
+struct Luma(crossbeam_channel::Sender<(u64, u8)>);
+
+impl OutputConsumer for Luma {
+    fn consume(&mut self, frame: std::sync::Arc<OutputFrame>) {
+        let (w, h) = (frame.luma_stride(), frame.resolution.height() as usize);
+        let _ = self.0.send((frame.index, frame.luma()[h / 2 * w + w / 2]));
+    }
+}
+
+#[test]
+fn fade_to_black_darkens_the_outputs_not_the_program_view() {
+    // B11: 500 ms at 50p = 25 ticks to black on the outputs, back on the second command;
+    // the Program the UI shows stays white throughout.
+    let mut spawned = spawn_with_journal(
+        FrameRate::FPS_50,
+        Resolution::new(320, 180).unwrap(),
+        Journal::Disabled,
+    );
+    let commands = spawned.engine.commands();
+    let feedback = spawned.engine.feedback();
+    let send = |command| commands.send(Source::Ui, command).unwrap();
+    send(Command::AddInput {
+        spec: InputSpec::Color { color: Rgb8::WHITE },
+        name: None,
+    });
+    assert!(wait_for(Duration::from_secs(2), || matches!(
+        feedback.on_air(),
+        OnAir::Input(_)
+    )));
+    let (tx, rx) = crossbeam_channel::unbounded();
+    let hub = spawned.engine.outputs();
+    hub.attach(vma_core::OutputId(1), Box::new(Luma(tx)))
+        .unwrap();
+    assert!(wait_for(Duration::from_secs(2), || hub.active() > 0));
+    send(Command::SetFadeToBlackDuration { ms: 500 });
+    std::thread::sleep(Duration::from_millis(200));
+
+    send(Command::FadeToBlack);
+    assert!(wait_for(Duration::from_secs(3), || feedback
+        .fade_to_black()
+        == 1.0));
+    let from = feedback.last_frame() + 1;
+    assert_eq!(center_pixel(&mut spawned, from), [255, 255, 255, 255]);
+    std::thread::sleep(Duration::from_millis(100));
+    send(Command::FadeToBlack);
+    assert!(wait_for(Duration::from_secs(3), || feedback
+        .fade_to_black()
+        == 0.0));
+    std::thread::sleep(Duration::from_millis(100));
+    hub.detach(vma_core::OutputId(1));
+    spawned.engine.stop();
+
+    let seen: Vec<(u64, u8)> = rx.try_iter().collect();
+    assert_eq!(seen.first().map(|s| s.1), Some(235), "white before the FTB");
+    assert_eq!(seen.last().map(|s| s.1), Some(235), "white again after");
+    let first_black = seen.iter().position(|s| s.1 == 16).expect("black frames");
+    let fading = &seen[..first_black];
+    let start = fading
+        .iter()
+        .position(|s| s.1 < 235)
+        .expect("intermediate frames");
+    // Frame indices, not counts: a frame the engine could not read back leaves a gap.
+    assert_eq!(seen[first_black].0 - fading[start].0, 24, "{seen:?}");
+    assert!(
+        fading[start..].windows(2).all(|w| w[1].1 < w[0].1),
+        "darker every frame: {seen:?}"
+    );
 }
 
 /// Adds an input fed from outside (a file spec: no `io-gst` yet, so nothing opens it) and
