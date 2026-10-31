@@ -29,3 +29,11 @@ En attendant les réponses, VMA utilise la valeur entre parenthèses (`phase-2.m
 ## Sortie plein écran (sortie externe)
 12. Que peut-on y envoyer (Program, Preview, un input, multiview) ? (Program seulement en Phase 2)
 13. Comment choisit-on l'écran ? (liste des écrans)
+
+## Sorties en difficulté (étape 3 : comportement retenu à confirmer)
+14. Un stream qui n'arrive plus à suivre (réseau saturé) : l'enregistrement et les autres
+    streams continuent-ils sans perte ? (oui : seule la sortie en difficulté perd des images,
+    comptées dans ses statistiques)
+15. Machine surchargée pendant un enregistrement : dans le fichier, la vidéo saccade-t-elle
+    (image précédente tenue) pendant que **le son reste continu**, ou entend-on des coupures ?
+    (vidéo tenue, son continu, sans coupure)

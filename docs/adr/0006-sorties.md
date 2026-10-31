@@ -117,7 +117,13 @@ nécessaires (LGPL sauf mention), à documenter dans `docs/dev-setup.md` :
   jamais lié ni distribué.
 
 ## Mise en œuvre côté moteur (étape 3, 2026-10-31)
-Précisions et écarts, à valider par le mainteneur avec l'étape :
+Précisions et écarts, **validés par le mainteneur le 2026-10-31**, à condition que le
+comportement observable reste celui de la référence. Les deux écarts ne se voient qu'en
+situation dégradée : une sortie qui ne suit plus ne perd que ses propres images (BRIEF §5, B6) ;
+une image non relue donne une image tenue une période de plus dans le fichier ou le stream, le
+son restant continu. À confirmer sur la référence (questions 14 et 15 de
+[`observation-reference-phase2.md`](../manual-tests/observation-reference-phase2.md)) ; si elle
+diffère, seul le remplissage audio (`AudioTrack`) change, pas le découpage.
 - **Un thread par sortie** (`vma-out-<id>`) avec une file de 3 images, en plus de
   `vma-output` : `vma-output` fait la copie unique et un `try_send` par sortie, et ne bloque
   donc jamais, même si le consommateur d'une sortie bloque (B6). Le § 2 prévoyait une file par
