@@ -136,8 +136,10 @@ soumissions.
   optimisation ultérieure, derrière le même découpage.
 
 ### Critères d'acceptation de l'amendement
-- 4 × 1080p50 en 1080p50 : **tick complet p99 ≤ 1 ms** et max ≤ 3 ms, sur **3 soaks de 2 min**
-  (pour couvrir les deux régimes de phase), `upload_busy` = 0, 0 image manquée / répétée.
+- 4 × 1080p50 en 1080p50 : ~~tick complet p99 ≤ 1 ms et max ≤ 3 ms~~ **tick complet p99 ≤ 5 ms
+  et max ≤ 10 ms** (25 % et 50 % du budget à 50p ; **critère révisé le 2026-10-31**, décision
+  du mainteneur, au vu des résultats ci-dessous), sur **3 soaks de 2 min** (pour couvrir les
+  deux régimes de phase), `upload_busy` = 0, 0 image manquée / répétée.
 - Même mesure à 60p avec 4 sources 60p, et un run 4 × 2160p30 en 2160p30 (informatif, pour
   la Phase 2).
 - Inchangés et verts : golden `golden_frame` (A7, chemin d'upload réel, plus seulement
@@ -149,7 +151,9 @@ soumissions.
 ### Résultats de l'implémentation (2026-10-29, RTX 5090, Vulkan)
 Soaks de 2 min dans l'application réelle, 4 sources synthétiques NV12 : **0 image manquée,
 0 répétée, `upload_busy` = 0** partout ; le thread de rendu ne se bloque plus (≈ 1 changement
-de contexte par tick, celui de l'horloge). Critère de temps : **tenu hors phase, pas en phase**.
+de contexte par tick, celui de l'horloge). Critère de temps initial (p99 ≤ 1 ms) : **tenu hors
+phase, pas en phase** ; critère révisé le 2026-10-31 (p99 ≤ 5 ms, max ≤ 10 ms) : **tenu sur
+les 3 runs**. La cause (mémoire ReBAR) reste en dette, voir ci-dessous.
 
 | Configuration | Tick p50 | p99 | max | Rapport |
 |---|---|---|---|---|

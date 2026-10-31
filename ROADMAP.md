@@ -62,8 +62,12 @@ titres HTML + natifs, multi-cadence dès la Phase 1, macOS plus tard).
   Budget tenu (0 image manquée), mais la marge fond à 60p ou avec plus d'inputs. Cause
   trouvée le 2026-10-28 : `write_texture` tient le mutex `pending_writes` de wgpu-core pendant
   sa copie, et le résultat est bimodal selon la phase des sources (p50 0,17 ou ≈ 7 ms).
-  Correctif proposé : **amendement 1 de l'ADR 0004** (tampons de transfert mappés, copie
-  enregistrée par le rendu), **à valider**, à traiter avant les sorties de la Phase 2.
+  Correctif : **amendement 1 de l'ADR 0004** (tampons de transfert mappés, copie enregistrée
+  par le rendu), implémenté à l'étape 1 de la Phase 2 : le rendu ne se bloque plus (p99
+  3,4 à 3,8 ms en phase, contre 10,5 ms). **Reste** : les écritures des producteurs en mémoire
+  ReBAR (placement de `MAP_WRITE` non réglable par l'API sûre de wgpu) ralentissent le rendu
+  quand elles tombent pendant le tick. Pistes : mémoire hôte importée, zero-copy, étalement
+  des copies ; non mesuré sous DX12.
 - **Soak hostile Windows non passé** : le risque principal non vérifié est le gel du thread UI
   pendant la boucle modale de déplacement / redimensionnement de Windows, combiné à la `Queue`
   partagée (contention possible sur les verrous internes de wgpu au moment du `present`).
@@ -124,7 +128,7 @@ Sous Windows, les critères manuels (B1, B2, B12) seront ⏸ tant qu'aucun test 
 
 | Étape (plan §9) | État | Preuve |
 |---|---|---|
-| 1. Amendement 1 de l'ADR 0004 : tampons de transfert mappés, copie enregistrée par le rendu, `upload_busy` | 🟡 | Implémenté : le producteur n'appelle plus la `Queue`. Tests : golden `golden_frame` par le vrai chemin + tampon occupé, `busy_transfer_buffer_drops_the_picture`, `flooding_producer_never_tears_nor_misses`, A12 et `triple_buffer_gpu_stress` verts (RTX 5090, Intel ARL), 174 tests en local. Soaks de 2 min : 0 manquée, 0 répétée, `upload_busy` = 0 ; tick p99 0,49 ms en 1080p60 et 0,89 ms en 2160p30, mais **3,4 à 3,8 ms en 1080p50 avec des sources en phase** (critère ≤ 1 ms non tenu, contre 10 ms avant) : écritures en rafale dans la mémoire ReBAR, détail dans l'ADR 0004 (« Résultats »). **Décision du mainteneur attendue** sur le critère. CI à passer |
+| 1. Amendement 1 de l'ADR 0004 : tampons de transfert mappés, copie enregistrée par le rendu, `upload_busy` | ✅ | Implémenté : le producteur n'appelle plus la `Queue`. Tests : golden `golden_frame` par le vrai chemin + tampon occupé, `busy_transfer_buffer_drops_the_picture`, `flooding_producer_never_tears_nor_misses`, A12 et `triple_buffer_gpu_stress` verts (RTX 5090, Intel ARL), 174 tests en local. Soaks de 2 min : 0 manquée, 0 répétée, `upload_busy` = 0 ; tick p99 0,49 ms en 1080p60 et 0,89 ms en 2160p30, **3,4 à 3,8 ms (max 9,4 ms) en 1080p50 avec des sources en phase** : écritures en rafale dans la mémoire ReBAR, détail dans l'ADR 0004 (« Résultats »). Critère initial (p99 ≤ 1 ms) **révisé le 2026-10-31** par le mainteneur à p99 ≤ 5 ms et max ≤ 10 ms : tenu ; la cause reste en dette. CI verte Ubuntu + Windows ([run 41196416007](https://github.com/Dnivaux/VMA/actions/runs/41196416007)) |
 
 ## Phase 3 — Réseau et audio · ⬜
 ## Phase 4 — Habillage · ⬜
