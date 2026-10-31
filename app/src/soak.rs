@@ -16,8 +16,8 @@ use std::time::{Duration, Instant};
 use vma_clock::ClockStats;
 use vma_core::InputId;
 use vma_engine::{
-    Command, CommandSender, EngineConfig, InputSpec, InputStatsReader, InputStatus, RenderStats,
-    Source, StateReader,
+    Command, CommandSender, EngineConfig, InputSpec, InputStatsReader, InputStatus, OutputHub,
+    OutputStatus, RenderStats, Source, StateReader,
 };
 
 /// UI-thread liveness, updated once per UI frame.
@@ -61,6 +61,8 @@ pub struct SoakContext {
     pub ui: Arc<UiProbe>,
     pub state: StateReader,
     pub input_stats: InputStatsReader,
+    /// Counters of the outputs (B15).
+    pub outputs: OutputHub,
     pub commands: CommandSender,
     /// Run transitions between the inputs during the soak.
     pub transitions: bool,
@@ -390,8 +392,25 @@ fn report(options: &SoakOptions, soak: &SoakContext, run: &Run<'_>) -> (String, 
     let inputs_ok = inputs
         .iter()
         .all(|i| i.losses == 0 && i.upload_busy == 0 && i.rate_ok && i.latency_ok);
-    let passed =
-        end == End::Completed && c.missed == 0 && r.gpu_dropped == 0 && !r.device_lost && inputs_ok;
+    let state = soak.state.load();
+    let distribution = soak.outputs.distribution();
+    // Every output that ran: no frame lost, no failure; the render read every frame back.
+    let outputs: Vec<_> = state
+        .outputs
+        .iter()
+        .filter(|o| o.status != OutputStatus::Idle)
+        .collect();
+    let outputs_ok = outputs.iter().all(|o| {
+        !matches!(o.status, OutputStatus::Failed { .. })
+            && soak.outputs.counters(o.id).is_none_or(|c| c.dropped == 0)
+    }) && r.output_dropped == 0
+        && distribution.pool_exhausted == 0;
+    let passed = end == End::Completed
+        && c.missed == 0
+        && r.gpu_dropped == 0
+        && !r.device_lost
+        && inputs_ok
+        && outputs_ok;
     let mode = if options.hostile { "hostile" } else { "calme" };
     let ms = |d: Duration| format!("{:.3} ms", d.as_secs_f64() * 1000.0);
 
@@ -413,6 +432,8 @@ fn report(options: &SoakOptions, soak: &SoakContext, run: &Run<'_>) -> (String, 
             (false, End::DeviceLost) => "❌ ÉCHEC (GPU perdu)",
             (false, End::Completed) if !inputs_ok =>
                 "❌ ÉCHEC (input perdu, hors cadence, upload en attente du GPU ou latence > 2 images)",
+            (false, End::Completed) if !outputs_ok =>
+                "❌ ÉCHEC (sortie en erreur, ou images perdues par une sortie)",
             (false, End::Completed) => "❌ ÉCHEC (images manquées ou répétées)",
         }
     );
@@ -538,6 +559,42 @@ fn report(options: &SoakOptions, soak: &SoakContext, run: &Run<'_>) -> (String, 
             s,
             "\nSautées : images remplacées avant d'être prises (source plus rapide que le maître) ; répétées : ticks sans image nouvelle (source plus lente). Les deux sont attendues quand les cadences diffèrent. Upload occupé : images perdues parce que le tampon de transfert de leur emplacement était encore utilisé par le GPU (ADR 0004, amendement 1) ; doit rester à 0.\n"
         );
+    }
+
+    if !outputs.is_empty() {
+        let _ = writeln!(
+            s,
+            "## Sorties\nImages non relues par le rendu : {} ; perdues faute d'image libre (pool) : {} ; distribuées : {}.\n\n| Sortie | État | Encodeur | Envoyées | Perdues | File | Fichier | Taille |\n|---|---|---|---|---|---|---|---|",
+            r.output_dropped, distribution.pool_exhausted, distribution.frames
+        );
+        for o in &outputs {
+            let counters = soak.outputs.counters(o.id).unwrap_or_default();
+            let (status, encoder, target) = match &o.status {
+                OutputStatus::Running { encoder, target } => {
+                    ("en cours".to_owned(), encoder.clone(), target.clone())
+                }
+                OutputStatus::Failed { reason } => {
+                    (format!("**erreur** : {reason}"), String::new(), None)
+                }
+                other => (format!("{other:?}"), String::new(), None),
+            };
+            // The file size is read here, after the run, not on a real-time thread.
+            let size = target
+                .as_deref()
+                .and_then(|t| std::fs::metadata(t).ok())
+                .map_or_else(|| "—".into(), |m| format!("{:.1} Mo", m.len() as f64 / 1e6));
+            let mark = if counters.dropped == 0 { "" } else { " ❌" };
+            let _ = writeln!(
+                s,
+                "| {} | {status} | {encoder} | {} | {}{mark} | {} | {} | {size} |",
+                o.name,
+                counters.delivered,
+                counters.dropped,
+                counters.queued,
+                target.as_deref().map_or("—".into(), |t| format!("`{t}`")),
+            );
+        }
+        let _ = writeln!(s);
     }
 
     let _ = writeln!(

@@ -20,6 +20,8 @@ Options :
   --input-resolution <taille>
                          résolution de ces sources (défaut : celle du Program)
   --spin-margin-us <µs>  marge d'attente active de l'horloge maître (défaut : 1000)
+  --record <dossier>     enregistre le Program dès le démarrage, dans ce dossier
+                         (sans l'option : bouton « Enregistrer », dossier Vidéos)
   --soak <secondes>      soak : tourne N secondes, écrit un rapport, quitte
                          (code 0 = réussi, 2 = images manquées ou répétées)
   --hostile              pendant le soak, agresse la fenêtre en continu
@@ -38,6 +40,8 @@ pub struct Options {
     /// Synthetic inputs added at start-up.
     pub inputs: Vec<Synthetic>,
     pub spin_margin: Option<Duration>,
+    /// Record from start-up into this folder.
+    pub record: Option<PathBuf>,
     pub soak: Option<SoakOptions>,
     /// `None` = no journal.
     pub journal_dir: Option<PathBuf>,
@@ -68,6 +72,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> anyhow::Result<Options> 
     let mut input_rates: Option<Vec<FrameRate>> = None;
     let mut input_resolution = None;
     let mut spin_margin = None;
+    let mut record = None;
     let mut soak_secs = None;
     let mut hostile = false;
     let mut report = None;
@@ -103,6 +108,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> anyhow::Result<Options> 
                 let us: u64 = value(&mut args, &arg)?;
                 spin_margin = Some(Duration::from_micros(us));
             }
+            "--record" => record = Some(PathBuf::from(value::<String>(&mut args, &arg)?)),
             "--soak" => soak_secs = Some(value::<u64>(&mut args, &arg)?),
             "--hostile" => hostile = true,
             "--report" => report = Some(PathBuf::from(value::<String>(&mut args, &arg)?)),
@@ -142,6 +148,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> anyhow::Result<Options> 
         resolution,
         inputs,
         spin_margin,
+        record,
         soak,
         journal_dir,
         help,
@@ -225,6 +232,12 @@ mod tests {
             Some(PathBuf::from("/tmp/j"))
         );
         assert_eq!(parse_str("--no-journal").unwrap().journal_dir, None);
+        assert_eq!(o.record, None);
+        assert_eq!(
+            parse_str("--record /media/rec").unwrap().record,
+            Some(PathBuf::from("/media/rec"))
+        );
+        assert!(parse_str("--record").is_err());
     }
 
     #[test]

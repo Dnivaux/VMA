@@ -60,15 +60,7 @@ fn main() -> anyhow::Result<ExitCode> {
                 Some(dir) => Journal::Directory(dir.clone()),
                 None => Journal::Disabled,
             };
-            let app = App::new(
-                cc,
-                config,
-                journal,
-                &options.inputs,
-                options.soak.clone(),
-                &device_lost,
-                &soak_handle,
-            )?;
+            let app = App::new(cc, config, journal, &options, &device_lost, &soak_handle)?;
             Ok(Box::new(app))
         }),
     )
@@ -102,11 +94,15 @@ impl<'a> App<'a> {
         cc: &eframe::CreationContext<'_>,
         config: EngineConfig,
         journal: Journal,
-        inputs: &[cli::Synthetic],
-        soak_options: Option<cli::SoakOptions>,
+        options: &cli::Options,
         device_lost: &'a OnceLock<String>,
         soak_handle: &OnceLock<soak::SoakHandle>,
     ) -> anyhow::Result<Self> {
+        let (inputs, record, soak_options) = (
+            &options.inputs,
+            options.record.clone(),
+            options.soak.clone(),
+        );
         let render_state = cc
             .wgpu_render_state
             .as_ref()
@@ -157,6 +153,23 @@ impl<'a> App<'a> {
                 resolution: config.resolution,
             })?;
         }
+        // `--record`: the recording present from the start, into that folder, started now.
+        if let Some(folder) = record {
+            for command in [
+                vma_engine::Command::UpdateOutput {
+                    output: vma_engine::State::DEFAULT_RECORDING,
+                    spec: vma_engine::OutputSpec::Record(vma_engine::RecordSpec {
+                        folder: Some(folder),
+                        ..vma_engine::RecordSpec::default()
+                    }),
+                },
+                vma_engine::Command::StartRecording,
+            ] {
+                engine
+                    .commands()
+                    .send(vma_engine::Source::Script, command)?;
+            }
+        }
 
         let textures = {
             let mut renderer = render_state.renderer.write();
@@ -190,6 +203,7 @@ impl<'a> App<'a> {
                     ui: Arc::clone(&ui_probe),
                     state: engine.state(),
                     input_stats: engine.input_stats(),
+                    outputs: engine.outputs(),
                     commands: engine.commands(),
                     // Mix the sources on air while the soak runs (Fade, then Cut, …).
                     transitions: inputs.len() >= 2,
@@ -237,6 +251,19 @@ impl vma_ui::IoStatus for Io {
 
     fn converting(&self, input: vma_core::InputId) -> Option<bool> {
         Some(self.0.as_ref()?.pipeline_info(input)?.converting)
+    }
+
+    fn output_activity(&self, output: vma_core::OutputId) -> Option<vma_ui::OutputActivity> {
+        let a = self.0.as_ref()?.output_activity(output)?;
+        Some(vma_ui::OutputActivity {
+            running_for: a.since.elapsed(),
+            bytes: a.bytes,
+            kbps: a.kbps,
+        })
+    }
+
+    fn default_record_folder(&self) -> Option<std::path::PathBuf> {
+        Some(vma_io_gst::default_record_folder())
     }
 }
 
