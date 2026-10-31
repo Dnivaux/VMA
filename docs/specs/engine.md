@@ -93,3 +93,35 @@ ce fichier couvre le thread de rendu.
 | Commande → contrôle → plan → rendu avec les vrais threads ; Fade minuté qui bascule seul ; journal écrit, sans perte, et rejouable | `render_loop::commands_reach_the_render_thread_and_the_journal` | CI |
 | Seqlock du plan : jamais de plan déchiré ni de version qui recule (3 lecteurs, 200 000 écritures) | `plan::tests::concurrent_reads_are_never_torn` | CI |
 | **Soak hostile : 10 min, fenêtre malmenée, 0 manquée, 0 répétée** (amendement 3) | `vma --soak 600 --hostile` + [`docs/manual-tests/phase0-soak-hostile.md`](../manual-tests/phase0-soak-hostile.md) | manuel, Linux et Windows |
+
+---
+
+## Phase 2 — Sorties, côté moteur (étape 3, 2026-10-31)
+Voir l'ADR 0006 (§§ 1–3, 5 et « Mise en œuvre côté moteur »).
+
+- **Rendu** : si au moins une sortie est attachée (`OutputHub::active`), après le mixer du
+  Program : `OutputStage` (FTB à 0 tant que la commande n'existe pas, étape 5 ; flash si
+  `--sync-test`), puis copie des plans NV12 dans l'un des 4 tampons `MAP_READ` de l'anneau
+  (`readback.rs`) et mappage à la soumission. Au tick suivant, après `device.poll`, les tampons
+  mappés partent vers `vma-output` dans l'ordre de *n*. Aucun tampon libre → image non relue,
+  `output_dropped`. Phase « étage de sortie » ajoutée à l'histogramme CPU.
+- **`vma-output`** : copie le tampon dans une `OutputFrame` du pool (NV12 tassé : lignes de
+  `width` octets, puis Cb Cr), `unmap`, PTS = `video_pts_ns(n)`, durée jusqu'à `n + 1`, audio
+  `[audio_sample_at(n), audio_sample_at(n + 1))` en `f32` stéréo entrelacé à 48 kHz
+  (silence, ou bip de synchro), puis `try_send` vers la file de chaque sortie.
+- **Sorties** : `OutputHub::attach(id, Box<dyn OutputConsumer>)` / `detach(id)` ; compteurs
+  par sortie (`delivered`, `dropped`, `queued`) et de distribution (`frames`,
+  `pool_exhausted`, `read_errors`).
+- `EngineConfig::sync_test` (ligne de commande à l'étape 5 ou 10).
+
+### Critères d'acceptation (étape 3)
+| Critère | Test | Où |
+|---|---|---|
+| **B3** (moteur) : PTS = f(*n*) et audio exact (blocs, cumul, 1 h, 29,97p = 1 601 / 1 602) aux 6 cadences | `outputs::tests::pts_and_audio_follow_n_at_every_master_rate` (temps simulé) | CI |
+| **B3** (moteur) : trou d'une image non relue → PTS inchangés, audio continu (porte les images sautées), discontinuité au-delà d'1 s | `outputs::tests::audio_is_continuous_and_carries_the_skipped_frames` | CI |
+| **B3** (moteur), vrais threads : à chaque cadence, PTS / durée / fin de l'audio = f(*n*), audio continu, barres de la mire à ±1 en Y' | `tests/outputs.rs::frames_carry_the_pts_and_audio_of_n_at_every_master_rate` | CI |
+| Flash et bip sur le même échantillon, toutes les secondes, aux 6 cadences | `outputs::tests::sync_flash_and_beep_start_on_the_same_sample`, `tests/outputs.rs::sync_test_flashes_and_beeps_every_second` | CI |
+| **B6** (moteur) : une sortie bloquée perd ses images (comptées), l'autre les reçoit toutes, 0 tick manqué, tampon de relecture toujours libre | `tests/outputs.rs::stalled_output_loses_only_its_own_frames` (exécuté seul) | CI |
+| Pas de relecture sans sortie attachée ; arrêt après `detach` | `tests/outputs.rs::frames_are_read_back_only_while_an_output_is_attached` | CI |
+| Coût en 1080p50 (une sortie) | `tests/outputs.rs::output_stage_cost_1080p50` (`#[ignore]`, manuel) : tick p99 0,62 ms, étage 0,011 ms (RTX 5090) | manuel |
+

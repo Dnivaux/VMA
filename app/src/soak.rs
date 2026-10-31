@@ -486,7 +486,12 @@ fn report(options: &SoakOptions, soak: &SoakContext, run: &Run<'_>) -> (String, 
         ("`device.poll`", cpu.poll),
         ("Encodage (uniforms compris)", cpu.encode),
         ("`queue.submit`", cpu.submit),
-    ] {
+    ]
+    .into_iter()
+    .chain(
+        (cpu.output.count > 0)
+            .then_some(("dont étage de sortie (FTB, NV12, relecture)", cpu.output)),
+    ) {
         let _ = writeln!(
             s,
             "| {phase} | {} | {} | {} | {} |",

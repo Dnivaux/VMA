@@ -18,6 +18,8 @@ pub struct RenderStats {
     device_lost: AtomicBool,
     device_lost_ticks: AtomicU64,
     device_lost_reason: OnceLock<String>,
+    outputs_read: AtomicU64,
+    output_dropped: AtomicU64,
 }
 
 /// Point-in-time copy of [`RenderStats`].
@@ -40,6 +42,11 @@ pub struct RenderStatsSnapshot {
     pub device_lost: bool,
     /// Ticks elapsed since the device was lost (no frame rendered for them).
     pub device_lost_ticks: u64,
+    /// Frames converted for the outputs and copied into a readback buffer.
+    pub outputs_read: u64,
+    /// Rendered frames not read back for the outputs: every readback buffer still in use
+    /// (the outputs lag 3 frames or more, ADR 0006 § 1).
+    pub output_dropped: u64,
 }
 
 /// CPU time of one rendered tick, per phase (render thread, not GPU execution time).
@@ -53,6 +60,8 @@ pub(crate) struct TickTimes {
     pub encode: Duration,
     /// `queue.submit`.
     pub submit: Duration,
+    /// Output stage and readback copy, when an output is attached (part of `encode`).
+    pub output: Duration,
 }
 
 #[derive(Debug, Default)]
@@ -61,6 +70,7 @@ struct PhaseHistograms {
     poll: LatencyHistogram,
     encode: LatencyHistogram,
     submit: LatencyHistogram,
+    output: LatencyHistogram,
 }
 
 /// Distribution of the CPU time of the rendered ticks, per phase, since start-up.
@@ -70,6 +80,8 @@ pub struct RenderCpuSummary {
     pub poll: LatencySummary,
     pub encode: LatencySummary,
     pub submit: LatencySummary,
+    /// Ticks that ran the output stage only.
+    pub output: LatencySummary,
 }
 
 impl RenderStats {
@@ -78,6 +90,9 @@ impl RenderStats {
         self.cpu.poll.record(times.poll);
         self.cpu.encode.record(times.encode);
         self.cpu.submit.record(times.submit);
+        if times.output > Duration::ZERO {
+            self.cpu.output.record(times.output);
+        }
         let ns = u64::try_from(times.total.as_nanos()).unwrap_or(u64::MAX);
         self.frames_rendered.fetch_add(1, Ordering::Relaxed);
         self.last_cpu_ns.store(ns, Ordering::Relaxed);
@@ -113,6 +128,14 @@ impl RenderStats {
             .store(fps.to_bits(), Ordering::Relaxed);
     }
 
+    pub(crate) fn record_output_read(&self) {
+        self.outputs_read.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn record_output_drop(&self) {
+        self.output_dropped.fetch_add(1, Ordering::Relaxed);
+    }
+
     pub(crate) fn record_gpu_error(&self) {
         self.gpu_errors.fetch_add(1, Ordering::Relaxed);
     }
@@ -145,6 +168,7 @@ impl RenderStats {
             poll: self.cpu.poll.snapshot(),
             encode: self.cpu.encode.snapshot(),
             submit: self.cpu.submit.snapshot(),
+            output: self.cpu.output.snapshot(),
         }
     }
 
@@ -160,6 +184,8 @@ impl RenderStats {
             gpu_errors: self.gpu_errors.load(Ordering::Relaxed),
             device_lost: self.device_lost.load(Ordering::Acquire),
             device_lost_ticks: self.device_lost_ticks.load(Ordering::Relaxed),
+            outputs_read: self.outputs_read.load(Ordering::Relaxed),
+            output_dropped: self.output_dropped.load(Ordering::Relaxed),
         }
     }
 }
@@ -178,6 +204,7 @@ mod tests {
                 poll: ms(0),
                 encode: ms(1),
                 submit: ms(total - 1),
+                output: Duration::ZERO,
             });
         }
         let cpu = stats.cpu_summary();
@@ -187,6 +214,7 @@ mod tests {
         assert_eq!(cpu.submit.max, ms(10));
         assert_eq!(cpu.encode.max, ms(1));
         assert_eq!(cpu.poll.max, Duration::ZERO);
+        assert_eq!(cpu.output.count, 0, "no output stage, no sample");
         assert_eq!(stats.snapshot().max_cpu, ms(11));
     }
 }

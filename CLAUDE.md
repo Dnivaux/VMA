@@ -33,6 +33,7 @@ cargo +1.95 check --workspace --all-targets # MSRV
 # Tests longs / matériel (#[ignore]) — sur la machine de dev :
 cargo test --release -p vma-engine --test render_loop -- --ignored --nocapture
 VMA_SOAK_SECS=60 cargo test --release -p vma-engine --test render_loop -- --ignored --nocapture
+cargo test --release -p vma-engine --test outputs -- --ignored --nocapture   # coût de l'étage de sortie 1080p50
 
 # Soak dans l'application réelle (rapport Markdown, code 2 si images manquées/répétées) :
 cargo run --release -- --soak 600 --report tests/soak/reports/$(date +%F)-x.md
@@ -53,7 +54,7 @@ Variables wgpu utiles : `WGPU_BACKEND=vulkan|dx12` ; `WGPU_ADAPTER_NAME=Intel` (
 | `crates/core` | Types communs, sérialisables (`FrameRate` rationnel, `Resolution`, `InputId`, `PixelFormat`, `ColorInfo`, `Rgb8`, `InputKind`, `OutputId`, `VideoCodec`, `Container`). **Ne pas modifier sans le signaler** : tout en dépend. |
 | `crates/clock` | Horloge maître à cadence fixe, compteur d'images manquées. |
 | `crates/compositor` | wgpu/WGSL : `Mixer` (calques `Rgba16Float`, Cut / Fade gamma ou linéaire, sortie `Rgba8Unorm`), `OutputStage` (FTB, flash de synchro, NV12 BT.709 limitée pour les sorties), mire, readback (tests). |
-| `crates/engine` | `State` + `Command` (thread `vma-control`, journal JSONL), thread de rendu cadencé par l'horloge (plan seqlock, `Sequencer`), triple buffer vers l'UI, stats. |
+| `crates/engine` | `State` + `Command` (thread `vma-control`, journal JSONL), thread de rendu cadencé par l'horloge (plan seqlock, `Sequencer`), triple buffer vers l'UI, stats ; sorties : anneau de relecture NV12, thread `vma-output` (PTS et audio dérivés de *n*, `OutputHub` / `OutputConsumer`, un thread par sortie). |
 | `crates/ui` | egui : `Switcher` (Preview / Program, transitions, T-Bar, barre d'inputs, raccourcis, réglages), panneau Statistiques. Tests sans fenêtre avec `egui_kittest`. |
 | `app/` | Binaire : assemble fenêtre eframe, moteur, UI. |
 | `crates/{io-gst,io-ndi,io-html,audio,replay,api}` | Squelettes vides pour les phases suivantes. |

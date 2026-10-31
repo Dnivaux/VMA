@@ -5,7 +5,9 @@ use crate::control::{
 };
 use crate::feed::{ATTACH_CAPACITY, FeedRegistry};
 use crate::journal::{self, Journal, JournalStats};
+use crate::outputs::{self, ActiveOutputs, OutputHub, OutputSettings, SyncTest};
 use crate::plan::plan_channel;
+use crate::readback::{RING, Ready, Ring, RingWriter};
 use crate::sequencer::{Composition, RenderFeedback, Sequencer};
 use crate::sources::{RenderSource, SOURCE_CAPACITY, SourceTable};
 use crate::state::{Format, State};
@@ -18,7 +20,9 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 use vma_clock::{ClockStats, FrameClock, SystemTime};
 use vma_compositor::thumbnails::{self, ATLAS_CELLS, ThumbnailPainter};
-use vma_compositor::{FramePipelines, Mix, MixSpace, Mixer, RenderTarget, Source};
+use vma_compositor::{
+    FramePipelines, Mix, MixSpace, Mixer, OutputLook, OutputStage, RenderTarget, Source,
+};
 use vma_core::{FrameRate, InputId, Resolution};
 
 /// Maximum number of Program frames queued on the GPU. Beyond that the tick is skipped
@@ -39,6 +43,9 @@ pub struct EngineConfig {
     pub resolution: Resolution,
     /// Busy-wait margin of the master clock before each deadline (see `vma_clock::SystemTime`).
     pub spin_margin: Duration,
+    /// Sync test on the outputs (`--sync-test`, ADR 0006 § 5): a white frame and a beep every
+    /// second.
+    pub sync_test: bool,
 }
 
 impl Default for EngineConfig {
@@ -47,6 +54,7 @@ impl Default for EngineConfig {
             rate: FrameRate::DEFAULT,
             resolution: Resolution::HD_1080,
             spin_margin: SystemTime::DEFAULT_SPIN_MARGIN,
+            sync_test: false,
         }
     }
 }
@@ -107,7 +115,8 @@ pub struct Readers {
 pub struct RenderEngine {
     config: EngineConfig,
     stop: Arc<AtomicBool>,
-    /// Render first, then control, then journal (it ends when control drops its sender).
+    /// Render first, then output (it ends when render drops its sender), then control, then
+    /// journal (it ends when control drops its sender).
     threads: Vec<JoinHandle<()>>,
     clock_stats: Arc<ClockStats>,
     render_stats: Arc<RenderStats>,
@@ -119,6 +128,7 @@ pub struct RenderEngine {
     feeds: FeedRegistry,
     input_stats: InputStatsReader,
     timelines: Timelines,
+    outputs: OutputHub,
     io_port: Option<IoPort>,
 }
 
@@ -170,6 +180,20 @@ impl RenderEngine {
             Mixer::new(&device, config.resolution),
         ];
         let painter = ThumbnailPainter::new(&device);
+        let stage = OutputStage::new(&device, mixers[0].program());
+        let ring = Ring::new(&device, config.resolution);
+        let (ready_tx, ready_rx) = crossbeam_channel::bounded(RING);
+        // First: if it cannot start, nothing else is running yet. It ends by itself when
+        // `ready_tx` is dropped, on any later error too.
+        let (outputs, active_outputs, output_thread) = outputs::spawn(
+            OutputSettings {
+                rate: config.rate,
+                resolution: config.resolution,
+                sync: config.sync_test.then(|| SyncTest::for_rate(config.rate)),
+            },
+            Arc::clone(&ring),
+            ready_rx,
+        )?;
         let clock = FrameClock::with_spin_margin(config.rate, config.spin_margin);
         let clock_stats = clock.stats();
         let render_stats = Arc::new(RenderStats::default());
@@ -234,6 +258,11 @@ impl RenderEngine {
             program,
             preview,
             thumbs,
+            stage,
+            ring: RingWriter::new(ring),
+            ready_tx,
+            active_outputs,
+            sync: config.sync_test.then(|| SyncTest::for_rate(config.rate)),
             sequencer: Sequencer::new(plan_reader),
             sources: SourceTable::new(sources_rx, retired_tx),
             feedback: Arc::clone(&feedback),
@@ -247,7 +276,10 @@ impl RenderEngine {
             Ok(thread) => thread,
             Err(error) => {
                 stop.store(true, Ordering::Release);
-                for thread in [Some(control_thread), journal_thread].into_iter().flatten() {
+                for thread in [Some(output_thread), Some(control_thread), journal_thread]
+                    .into_iter()
+                    .flatten()
+                {
                     let _ = thread.join();
                 }
                 return Err(error.into());
@@ -259,10 +291,15 @@ impl RenderEngine {
             Self {
                 config,
                 stop,
-                threads: [Some(render_thread), Some(control_thread), journal_thread]
-                    .into_iter()
-                    .flatten()
-                    .collect(),
+                threads: [
+                    Some(render_thread),
+                    Some(output_thread),
+                    Some(control_thread),
+                    journal_thread,
+                ]
+                .into_iter()
+                .flatten()
+                .collect(),
                 clock_stats,
                 render_stats,
                 control_stats,
@@ -273,6 +310,7 @@ impl RenderEngine {
                 feeds: feeds.clone(),
                 input_stats,
                 timelines: timelines.clone(),
+                outputs,
                 io_port: Some(IoPort {
                     requests: io_requests,
                     events: io_events,
@@ -316,6 +354,11 @@ impl RenderEngine {
     /// Per-input statistics of the picture feeds (clonable).
     pub fn input_stats(&self) -> InputStatsReader {
         self.input_stats.clone()
+    }
+
+    /// Attaches outputs to the frames of the output stage (clonable).
+    pub fn outputs(&self) -> OutputHub {
+        self.outputs.clone()
     }
 
     /// Position and duration of the video files (clonable).
@@ -443,6 +486,13 @@ struct RenderWorker {
     /// Program, Preview.
     mixers: [Mixer; 2],
     painter: ThumbnailPainter,
+    /// FTB, flash and NV12 conversion of the Program for the outputs.
+    stage: OutputStage,
+    ring: RingWriter,
+    /// Mapped readback buffers, to `vma-output`.
+    ready_tx: crossbeam_channel::Sender<Ready>,
+    active_outputs: ActiveOutputs,
+    sync: Option<SyncTest>,
     program: Output,
     preview: Output,
     thumbs: Output,
@@ -482,6 +532,9 @@ impl RenderWorker {
                 tracing::error!(error = %e, "GPU poll failed");
             }
             let poll = polled.elapsed();
+            // Readback buffers mapped by that poll, to `vma-output`, in frame order.
+            let ready_tx = &self.ready_tx;
+            self.ring.collect(|ready| ready_tx.try_send(ready).is_ok());
             // Every feed takes its latest picture once per tick, rendered or not, so the
             // per-input statistics count master ticks.
             self.sources.advance(started);
@@ -509,12 +562,13 @@ impl RenderWorker {
                 continue;
             }
 
-            let (encode, submit) = self.render(&composition);
+            let (encode, submit, output) = self.render(&composition);
             self.stats.record_frame(TickTimes {
                 total: started.elapsed(),
                 poll,
                 encode,
                 submit,
+                output,
             });
         }
         tracing::info!("render thread stopped");
@@ -528,9 +582,10 @@ impl RenderWorker {
         }
     }
 
-    /// Renders Program, Preview and (every other tick) the thumbnails in one submission,
-    /// then publishes them. Returns the CPU time spent encoding, then submitting.
-    fn render(&mut self, composition: &Composition) -> (Duration, Duration) {
+    /// Renders Program, Preview, (every other tick) the thumbnails and (with an output
+    /// attached) the output stage in one submission, then publishes them. Returns the CPU
+    /// time spent encoding, submitting, and on the output stage (part of encoding).
+    fn render(&mut self, composition: &Composition) -> (Duration, Duration, Duration) {
         let encoding = Instant::now();
         let mut encoder = self
             .device
@@ -540,14 +595,15 @@ impl RenderWorker {
         // Pictures taken since the last rendered tick, before the passes that draw them.
         self.sources.encode_uploads(&mut encoder);
         let frame = composition.frame;
+        let space = match composition.domain {
+            MixDomain::Gamma => MixSpace::Gamma,
+            MixDomain::Linear => MixSpace::Linear,
+        };
         let program = Mix {
             from: self.source(composition.from, frame),
             to: self.source(composition.to, frame),
             mix: composition.mix,
-            space: match composition.domain {
-                MixDomain::Gamma => MixSpace::Gamma,
-                MixDomain::Linear => MixSpace::Linear,
-            },
+            space,
         };
         let preview = Mix::single(self.source(composition.preview, frame));
         let with_thumbnails = frame.is_multiple_of(2);
@@ -561,6 +617,23 @@ impl RenderWorker {
             if let Some(target) = out.frames.targets.get(out.producer.back()) {
                 mixer.encode(&self.queue, &mut encoder, &mix, target.view());
             }
+        }
+        // After the Program mixer, which wrote the Program this stage reads.
+        let mut output = Duration::ZERO;
+        if self.active_outputs.any() {
+            let started = Instant::now();
+            let look = OutputLook {
+                fade_to_black: 0.0,
+                space,
+                flash: self.sync.is_some_and(|sync| sync.is_flash(frame)),
+            };
+            self.stage.encode(&self.queue, &mut encoder, look);
+            if self.ring.encode(&mut encoder, &self.stage, frame) {
+                self.stats.record_output_read();
+            } else {
+                self.stats.record_output_drop();
+            }
+            output = started.elapsed();
         }
         let thumbs_slot = self.thumbs.producer.back();
         if with_thumbnails
@@ -593,7 +666,7 @@ impl RenderWorker {
         let stats = Arc::clone(&self.stats);
         self.queue
             .on_submitted_work_done(move || stats.gpu_completed());
-        let times = (submitting - encoding, submitting.elapsed());
+        let times = (submitting - encoding, submitting.elapsed(), output);
 
         publish(&mut self.program, frame);
         publish(&mut self.preview, frame);

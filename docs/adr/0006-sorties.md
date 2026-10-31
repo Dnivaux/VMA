@@ -116,6 +116,30 @@ nécessaires (LGPL sauf mention), à documenter dans `docs/dev-setup.md` :
 - Tests RTMP : **MediaMTX** (MIT), binaire téléchargé en CI avec somme de contrôle épinglée,
   jamais lié ni distribué.
 
+## Mise en œuvre côté moteur (étape 3, 2026-10-31)
+Précisions et écarts, à valider par le mainteneur avec l'étape :
+- **Un thread par sortie** (`vma-out-<id>`) avec une file de 3 images, en plus de
+  `vma-output` : `vma-output` fait la copie unique et un `try_send` par sortie, et ne bloque
+  donc jamais, même si le consommateur d'une sortie bloque (B6). Le § 2 prévoyait une file par
+  `appsrc` poussée directement depuis `vma-output` ; un `appsrc` mal réglé (ou un `push` qui
+  attend) aurait alors bloqué toutes les sorties. Une sortie qui bloque encore à l'arrêt est
+  laissée à elle-même au bout d'une seconde (journalisé), l'arrêt ne pend pas.
+- **Image partagée** : `Arc<OutputFrame>` (NV12 tassé + audio), pris dans un pool de 32 images
+  au plus, réutilisées quand plus aucune sortie ne les tient. `io-gst` l'enveloppera dans un
+  `gst::Buffer` sans copie (`Buffer::from_slice`). Pool vide → image perdue pour toutes,
+  comptée (`pool_exhausted`) : une sortie ne doit pas garder plus de quelques images.
+- **Audio continu malgré un trou vidéo** : l'image qui suit une image non relue porte les
+  échantillons des images sautées (jusqu'à 1 s ; au-delà, reprise sur l'image avec un drapeau
+  de discontinuité). Le PTS vidéo, lui, ne bouge pas (§ 3). Évite les trous audio, mal tolérés
+  par les encodeurs AAC et les plateformes.
+- **Bip de synchro** : 1 kHz, 100 ms, −6 dBFS, sur les deux canaux ; flash et bip toutes les
+  `⌈num / den⌉` images (25, 30, 30, 50, 60, 60).
+- **Relecture** : le rappel de mappage (`map_buffer_on_submit`) capture un `Arc` : une petite
+  allocation par image relue sur le rendu, dans la dette déjà notée ci-dessous. wgpu 30 n'expose
+  pas `map_state()` en natif, d'où le rappel.
+- Mesure (RTX 5090, 1080p50, mire, une sortie, 20 s) : tick p50 0,22 ms, p99 0,62 ms ;
+  enregistrement de l'étage de sortie p99 0,011 ms ; 0 image manquée, 0 non relue.
+
 ## Conséquences
 - Temps de rendu par tick : + une passe FTB, une passe de conversion 4:2:0 et une copie vers
   tampon (≈ 3 Mo en 1080p) quand une sortie est active ; mesurés par l'histogramme par phase
