@@ -20,7 +20,7 @@ use vma_engine::{
     AutoPlay, Command, CommandProbe, CommandSender, DeviceId, Effect, Format, InputSpec, MixDomain,
     Source, State, Timeline,
 };
-use vma_ui::{CaptureChoice, FileKind, Images, IoView, Switcher, View};
+use vma_ui::{CaptureChoice, FileKind, Images, IoView, OutputActivity, Switcher, View};
 
 struct Rig {
     switcher: Switcher,
@@ -33,6 +33,11 @@ struct Rig {
     timeline: Option<Timeline>,
     /// Files the switcher asked for (`take_file_request`).
     files: Vec<FileKind>,
+    /// What `vma-io` reports for every running output.
+    activity: Option<OutputActivity>,
+    /// Folder dialogs the switcher asked for (`take_folder_request`).
+    folders: Vec<vma_core::OutputId>,
+    fade_to_black: f32,
 }
 
 impl Rig {
@@ -92,6 +97,9 @@ fn harness(state: State) -> Harness<'static, Rig> {
         devices: Vec::new(),
         timeline: None,
         files: Vec::new(),
+        activity: None,
+        folders: Vec::new(),
+        fade_to_black: 0.0,
     };
     let mut harness = Harness::builder()
         .with_size(Vec2::new(1400.0, 820.0))
@@ -103,6 +111,8 @@ fn harness(state: State) -> Harness<'static, Rig> {
                 let timeline = rig.timeline;
                 let timeline = move |_| timeline;
                 let no_mode = |_| None::<String>;
+                let activity = rig.activity;
+                let activity = move |_| activity;
                 let view = View {
                     state: &rig.state,
                     commands: &rig.commands,
@@ -117,12 +127,16 @@ fn harness(state: State) -> Harness<'static, Rig> {
                         devices: &rig.devices,
                         timeline: &timeline,
                         capture_mode: &no_mode,
+                        output_activity: &activity,
+                        record_folder: Some(std::path::Path::new("/home/op/Vidéos")),
                     },
                     frame: 0,
+                    fade_to_black: rig.fade_to_black,
                     rejection: None,
                 };
                 rig.switcher.show(ui, &view);
                 rig.files.extend(rig.switcher.take_file_request());
+                rig.folders.extend(rig.switcher.take_folder_request());
             },
             rig,
         );
@@ -519,4 +533,243 @@ fn video_controls() {
     h.get_by_label("Pause").click();
     h.run();
     assert_eq!(h.state().sent(), [Command::Pause { input: id(5) }]);
+}
+
+// Outputs (Phase 2 step 5): A11 for the output controls, B13 and B15 on the UI side.
+
+use vma_core::{Container, OutputId};
+use vma_engine::{Event, OutputSpec, OutputStatus, RecordSpec, RtmpSpec, Secret};
+
+const REC: OutputId = State::DEFAULT_RECORDING;
+
+/// `state` with its recording (and an RTMP stream if `stream`) running.
+fn running(mut state: State, stream: bool) -> State {
+    if stream {
+        state
+            .apply(&Command::AddOutput {
+                spec: OutputSpec::Rtmp(RtmpSpec {
+                    url: "rtmp://live.example.net/app".into(),
+                    key: Secret::new("k"),
+                    video_kbps: None,
+                }),
+                name: None,
+            })
+            .unwrap();
+        state
+            .apply(&Command::StartStreaming { slot: None })
+            .unwrap();
+    }
+    state.apply(&Command::StartRecording).unwrap();
+    for o in state.outputs.clone() {
+        state.apply_event(&Event::OutputRunning {
+            output: o.id,
+            run: o.run,
+            encoder: "nvh264enc + avenc_aac".into(),
+            target: None,
+        });
+    }
+    state
+}
+
+#[test]
+fn record_and_stream_buttons() {
+    let mut h = harness(state());
+    h.get_by_label("Enregistrer").click();
+    h.run();
+    assert_eq!(h.state().sent(), [Command::StartRecording]);
+    // No destination yet: « Streamer » does nothing.
+    h.get_by_label("Streamer").click();
+    h.run();
+    assert_eq!(h.state().sent(), []);
+
+    let mut h = harness(running(state(), true));
+    h.state_mut().activity = Some(OutputActivity {
+        running_for: std::time::Duration::from_secs(83),
+        ..OutputActivity::default()
+    });
+    h.run();
+    h.get_by_label("REC 00:01:23").click();
+    h.run();
+    assert_eq!(h.state().sent(), [Command::StopRecording]);
+    h.get_by_label("EN DIRECT 00:01:23").click();
+    h.run();
+    assert_eq!(h.state().sent(), [Command::StopStreaming { slot: None }]);
+}
+
+#[test]
+fn ftb_button() {
+    let mut h = harness(state());
+    click_button(&h, "FTB", 0);
+    h.run();
+    assert_eq!(h.state().sent(), [Command::FadeToBlack]);
+}
+
+fn open_outputs(h: &mut Harness<'_, Rig>) {
+    h.get_by_label("Sorties").click();
+    h.run();
+}
+
+#[test]
+fn a_stream_destination_is_added_with_its_key_hidden() {
+    // B13 (UI side): the key is typed in a password field and shown nowhere.
+    const KEY: &str = "live_93b2e7d4c1";
+    let mut h = harness(state());
+    open_outputs(&mut h);
+    h.get_by_label("+ Destination de stream").click();
+    h.run();
+    for (field, text) in [
+        ("Adresse", "rtmps://live.example.net/app"),
+        ("Clé de stream", KEY),
+    ] {
+        h.get_by_label(field).focus();
+        h.run();
+        h.get_by_label(field).type_text(text);
+        h.run();
+    }
+    assert!(
+        h.query_by_label_contains(KEY).is_none(),
+        "key shown as a label"
+    );
+    assert!(h.query_by_value(KEY).is_none(), "key shown as a value");
+    h.get_by_label("Ajouter").click();
+    h.run();
+    assert_eq!(
+        h.state().sent(),
+        [Command::AddOutput {
+            spec: OutputSpec::Rtmp(RtmpSpec {
+                url: "rtmps://live.example.net/app".into(),
+                key: Secret::new(KEY),
+                video_kbps: None,
+            }),
+            name: None,
+        }]
+    );
+}
+
+#[test]
+fn output_settings_start_stop_and_remove() {
+    let mut h = harness(state());
+    open_outputs(&mut h);
+    h.get_by_label("MP4").click();
+    h.run();
+    let mp4 = OutputSpec::Record(RecordSpec {
+        container: Container::Mp4,
+        ..RecordSpec::default()
+    });
+    h.get_by_label("Appliquer").click();
+    h.run();
+    assert_eq!(
+        h.state().sent(),
+        [Command::UpdateOutput {
+            output: REC,
+            spec: mp4.clone()
+        }]
+    );
+    // Not applied yet (the probe applies nothing): « Démarrer » sends the settings first.
+    h.get_by_label("Démarrer").click();
+    h.run();
+    assert_eq!(
+        h.state().sent(),
+        [
+            Command::UpdateOutput {
+                output: REC,
+                spec: mp4
+            },
+            Command::StartOutput { output: REC }
+        ]
+    );
+    // The folder dialog belongs to the caller; its answer goes into the draft.
+    h.get_by_label("Annuler").click();
+    h.get_by_label("Parcourir…").click();
+    h.run();
+    assert_eq!(h.state().folders, [REC]);
+    h.state_mut()
+        .switcher
+        .set_record_folder(REC, "/media/disque".into());
+    h.run();
+    h.get_by_label("Appliquer").click();
+    h.run();
+    assert_eq!(
+        h.state().sent(),
+        [Command::UpdateOutput {
+            output: REC,
+            spec: OutputSpec::Record(RecordSpec {
+                folder: Some("/media/disque".into()),
+                ..RecordSpec::default()
+            }),
+        }]
+    );
+    h.get_by_label("Supprimer").click();
+    h.run();
+    assert_eq!(h.state().sent(), [Command::RemoveOutput { output: REC }]);
+
+    let mut h = harness(running(state(), false));
+    open_outputs(&mut h);
+    assert!(
+        h.query_by_label("Appliquer").is_none(),
+        "no edit while running"
+    );
+    h.get_by_label("Arrêter").click();
+    h.run();
+    assert_eq!(h.state().sent(), [Command::StopOutput { output: REC }]);
+}
+
+#[test]
+fn output_statistics_show_every_figure() {
+    // B15 (UI side).
+    let state = running(state(), true);
+    let mut failed = state.outputs[1].clone();
+    failed.status = OutputStatus::Failed {
+        reason: "connection refused".into(),
+    };
+    let outputs = [state.outputs[0].clone(), failed];
+    let counters = vma_engine::OutputCountersSnapshot {
+        delivered: 4321,
+        dropped: 7,
+        queued: 2,
+    };
+    let activity = OutputActivity {
+        running_for: std::time::Duration::from_secs(3723),
+        bytes: Some(12_345_678),
+        kbps: Some(40_000),
+    };
+    let h = Harness::builder()
+        .with_size(Vec2::new(400.0, 600.0))
+        .build_ui(move |ui| {
+            let rows: Vec<_> = outputs
+                .iter()
+                .map(|o| vma_ui::OutputStatsRow {
+                    output: o,
+                    counters: o.status.is_on().then_some(counters),
+                    activity: o.status.is_on().then_some(activity),
+                })
+                .collect();
+            vma_ui::output_stats(ui, &rows);
+        });
+    for text in [
+        "Enregistrement",
+        "en cours",
+        "nvh264enc + avenc_aac",
+        "01:02:03",
+        "40,0 Mb/s",
+        "12,3 Mo",
+        "4321",
+        "7",
+        "Stream 1",
+        "erreur",
+        "connection refused",
+    ] {
+        assert!(h.query_by_label(text).is_some(), "« {text} » missing");
+    }
+    for label in [
+        "images envoyées",
+        "images perdues",
+        "file d'attente",
+        "reconnexions",
+    ] {
+        assert!(
+            h.query_by_label_contains(label).is_some(),
+            "« {label} » missing"
+        );
+    }
 }

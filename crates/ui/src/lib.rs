@@ -4,19 +4,22 @@
 //! each frame is drawn from the latest state snapshot. [`MainUi`] wires the engine to the
 //! [`Switcher`] (the mixer surface) and the statistics panel.
 
+mod output_stats;
 mod stats_panel;
 mod switcher;
 mod tally;
 
+pub use output_stats::{OutputStatsRow, output_stats};
 pub use switcher::{CaptureChoice, FileKind, Images, IoView, Switcher, View};
 pub use tally::{TALLY_PREVIEW, TALLY_PROGRAM, Tally};
 
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, TryRecvError};
+use std::time::Duration;
 
 use egui::{Rect, TextureId};
 use vma_compositor::thumbnails::{self, ATLAS_COLUMNS, ATLAS_ROWS};
-use vma_core::InputId;
+use vma_core::{InputId, OutputId};
 use vma_engine::{Command, InputSpec, Readers, RenderEngine, Source};
 
 /// egui textures of every engine output, registered once at startup (one per slot).
@@ -38,12 +41,39 @@ pub trait IoStatus: std::fmt::Debug {
     fn capture_mode(&self, input: InputId) -> Option<String>;
     /// Whether `videoconvert` converts the pictures of `input` (`None`: no pipeline).
     fn converting(&self, input: InputId) -> Option<bool>;
+    /// What a running output is doing (`None` while it does not run).
+    fn output_activity(&self, _output: OutputId) -> Option<OutputActivity> {
+        None
+    }
+    /// Where recordings go when no folder is chosen.
+    fn default_record_folder(&self) -> Option<PathBuf> {
+        None
+    }
+}
+
+/// What `vma-io` reports about a running output (no GStreamer type in the UI).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct OutputActivity {
+    /// Since its pipeline started.
+    pub running_for: Duration,
+    /// Bytes written (recordings).
+    pub bytes: Option<u64>,
+    /// Over the last second, kbit/s.
+    pub kbps: Option<u32>,
+}
+
+/// What a native dialog was opened for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Pick {
+    Input(FileKind),
+    /// The folder of a recording output.
+    RecordFolder(OutputId),
 }
 
 /// File dialog running on its own thread: the UI keeps drawing while it is open.
 #[derive(Debug)]
 struct Picker {
-    kind: FileKind,
+    pick: Pick,
     result: Receiver<Option<PathBuf>>,
 }
 
@@ -122,6 +152,8 @@ impl MainUi {
         let capture_mode = |input| io.capture_mode(input);
         let unavailable = io.unavailable();
         let devices = io.devices();
+        let activity = |output| io.output_activity(output);
+        let record_folder = io.default_record_folder();
         let view = View {
             state: &state,
             commands: &commands,
@@ -136,8 +168,11 @@ impl MainUi {
                 devices: &devices,
                 timeline: &timeline,
                 capture_mode: &capture_mode,
+                output_activity: &activity,
+                record_folder: record_folder.as_deref(),
             },
             frame: self.engine.feedback().last_frame(),
+            fade_to_black: self.engine.feedback().fade_to_black(),
             rejection: rejection.as_deref(),
         };
         self.switcher.show(ui, &view);
@@ -147,12 +182,18 @@ impl MainUi {
         ui.ctx().request_repaint();
     }
 
-    /// Opens the file dialog the switcher asked for, and adds the chosen file as an input.
+    /// Opens the dialog the switcher asked for: a file becomes an input, a folder goes back
+    /// to the recording being edited.
     fn files(&mut self, ctx: &egui::Context) {
-        if let Some(kind) = self.switcher.take_file_request()
+        let wanted = self
+            .switcher
+            .take_file_request()
+            .map(Pick::Input)
+            .or_else(|| self.switcher.take_folder_request().map(Pick::RecordFolder));
+        if let Some(pick) = wanted
             && self.picker.is_none()
         {
-            self.picker = open_dialog(kind, ctx.clone());
+            self.picker = open_dialog(pick, ctx.clone());
         }
         let Some(picker) = &self.picker else {
             return;
@@ -161,9 +202,14 @@ impl MainUi {
             Err(TryRecvError::Empty) => {}
             Err(TryRecvError::Disconnected) | Ok(None) => self.picker = None,
             Ok(Some(path)) => {
-                let spec = match picker.kind {
-                    FileKind::Video => InputSpec::File { path },
-                    FileKind::Image => InputSpec::Image { path },
+                let spec = match picker.pick {
+                    Pick::Input(FileKind::Video) => InputSpec::File { path },
+                    Pick::Input(FileKind::Image) => InputSpec::Image { path },
+                    Pick::RecordFolder(output) => {
+                        self.switcher.set_record_folder(output, path);
+                        self.picker = None;
+                        return;
+                    }
                 };
                 let command = Command::AddInput { spec, name: None };
                 if let Err(e) = self.engine.commands().send(Source::Ui, command) {
@@ -176,11 +222,22 @@ impl MainUi {
 }
 
 /// Runs the native file dialog (`rfd`) on a thread of its own; `None` if it cannot start.
-fn open_dialog(kind: FileKind, ctx: egui::Context) -> Option<Picker> {
+fn open_dialog(pick: Pick, ctx: egui::Context) -> Option<Picker> {
     let (tx, result) = std::sync::mpsc::channel();
     let spawned = std::thread::Builder::new()
         .name("vma-file-dialog".into())
         .spawn(move || {
+            let kind = match pick {
+                Pick::Input(kind) => kind,
+                Pick::RecordFolder(_) => {
+                    let folder = rfd::FileDialog::new()
+                        .set_title("Dossier des enregistrements")
+                        .pick_folder();
+                    let _ = tx.send(folder);
+                    ctx.request_repaint();
+                    return;
+                }
+            };
             let dialog = match kind {
                 FileKind::Video => rfd::FileDialog::new()
                     .set_title("Ajouter une vidéo")
@@ -198,7 +255,7 @@ fn open_dialog(kind: FileKind, ctx: egui::Context) -> Option<Picker> {
             ctx.request_repaint();
         });
     match spawned {
-        Ok(_) => Some(Picker { kind, result }),
+        Ok(_) => Some(Picker { pick, result }),
         Err(e) => {
             tracing::error!(error = %e, "cannot open the file dialog");
             None

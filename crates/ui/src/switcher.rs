@@ -5,15 +5,20 @@
 //! the latest snapshot. It holds no GPU object either (only egui texture ids), so tests run
 //! it headless with a probe instead of an engine.
 
+use std::path::Path;
+
 use egui::{Color32, Key, Rect, RichText, Sense, Stroke, StrokeKind, TextureId, Vec2};
-use vma_core::{InputId, Rgb8};
+use vma_core::{InputId, OutputId, Rgb8};
 use vma_engine::{
     AutoPlay, Command, CommandId, CommandSender, DeviceId, Effect, InputSpec, InputState,
     InputStatus, MAX_NAME_CHARS, MAX_TRANSITION_MS, MixDomain, Playback, RejectionNotice,
     SendError, Source, State, Timeline, TransitionSetting, TransitionState,
 };
 
+use crate::OutputActivity;
 use crate::tally::{TALLY_PREVIEW, TALLY_PROGRAM, Tally};
+
+mod outputs;
 
 /// Width of the transition column.
 const COLUMN_WIDTH: f32 = 150.0;
@@ -91,10 +96,14 @@ pub struct IoView<'a> {
     pub timeline: &'a dyn Fn(InputId) -> Option<Timeline>,
     /// Mode a capture input runs in, as shown (« 1280x720 30p MJPEG »).
     pub capture_mode: &'a dyn Fn(InputId) -> Option<String>,
+    /// What a running output is doing.
+    pub output_activity: &'a dyn Fn(OutputId) -> Option<OutputActivity>,
+    /// Where recordings go when no folder is chosen.
+    pub record_folder: Option<&'a Path>,
 }
 
 impl IoView<'static> {
-    /// No device, no timeline, nothing unavailable.
+    /// No device, no timeline, no output activity, nothing unavailable.
     pub fn empty() -> Self {
         fn no_timeline(_: InputId) -> Option<Timeline> {
             None
@@ -102,11 +111,16 @@ impl IoView<'static> {
         fn no_mode(_: InputId) -> Option<String> {
             None
         }
+        fn no_activity(_: OutputId) -> Option<OutputActivity> {
+            None
+        }
         Self {
             unavailable: None,
             devices: &[],
             timeline: &no_timeline,
             capture_mode: &no_mode,
+            output_activity: &no_activity,
+            record_folder: None,
         }
     }
 }
@@ -129,6 +143,8 @@ pub struct View<'a> {
     pub io: IoView<'a>,
     /// Last frame index processed by the render thread (transition progress).
     pub frame: u64,
+    /// FTB level of the outputs (0 = Program, 1 = black).
+    pub fade_to_black: f32,
     /// Last command refused by the engine.
     pub rejection: Option<&'a RejectionNotice>,
 }
@@ -162,6 +178,7 @@ pub struct Switcher {
     file_request: Option<FileKind>,
     /// Position slider being dragged: input and position (ms), sent on release.
     scrub: Option<(InputId, f64)>,
+    outputs: outputs::OutputsUi,
 }
 
 impl Default for Switcher {
@@ -177,6 +194,7 @@ impl Default for Switcher {
             new_color: [64, 64, 64],
             file_request: None,
             scrub: None,
+            outputs: outputs::OutputsUi::default(),
         }
     }
 }
@@ -204,6 +222,8 @@ impl Switcher {
                     self.settings_open = true;
                 }
                 ui.toggle_value(&mut self.show_stats, "Statistiques");
+                ui.separator();
+                self.output_buttons(ui, view);
                 if let Some(reason) = view.io.unavailable {
                     ui.label(
                         RichText::new("GStreamer introuvable : caméras et vidéos désactivées")
@@ -246,6 +266,7 @@ impl Switcher {
 
         self.input_settings_window(ui, view);
         self.settings_window(ui, view);
+        self.outputs_window(ui, view);
     }
 
     fn send(&mut self, ui: &egui::Ui, view: &View<'_>, command: Command) {
@@ -426,6 +447,8 @@ impl Switcher {
                     ui.add(egui::ProgressBar::new(t.progress(view.frame)).desired_height(4.0));
                 }
             }
+            ui.add_space(8.0);
+            self.ftb_button(ui, view);
             ui.add_space(8.0);
             self.t_bar(ui, view);
         });

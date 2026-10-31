@@ -83,6 +83,32 @@ pub(crate) fn show(
         });
 
     inputs(ui, engine, io);
+    let state = engine.state().load();
+    let hub = engine.outputs();
+    let rows: Vec<_> = state
+        .outputs
+        .iter()
+        .map(|o| crate::OutputStatsRow {
+            output: o,
+            counters: hub.counters(o.id),
+            activity: io.output_activity(o.id),
+        })
+        .collect();
+    crate::output_stats(ui, &rows);
+    if hub.active() > 0 || render.output_dropped > 0 {
+        let distribution = hub.distribution();
+        egui::Grid::new("output_stage_grid")
+            .num_columns(2)
+            .spacing([12.0, 4.0])
+            .show(ui, |ui| {
+                counter(ui, "Images non relues (GPU)", render.output_dropped);
+                counter(
+                    ui,
+                    "Images perdues (pool vide)",
+                    distribution.pool_exhausted,
+                );
+            });
+    }
 
     ui.separator();
     ui.label(RichText::new(adapter).small().weak());
