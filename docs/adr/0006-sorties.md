@@ -167,6 +167,15 @@ Précisions (détail dans `commands.md`, `ui.md` et `io-gst.md`, « Phase 2 ») 
 - Les 3 destinations de stream sont chacune **RTMP ou SRT** (`phase-2.md` § 1 : 1 à 3
   destinations, SRT en plus) ; à confirmer sur la référence (question 17).
 
+## Mise en œuvre du streaming (étape 6, 2026-10-31)
+- **File de 2 s après l'encodeur** (`flvmux` → `queue` → `rtmp2sink`) : la marge réseau porte
+  sur des données encodées, pas sur les images partagées du moteur (§ 2, pas d'`appsrc`
+  *leaky*).
+- Un stream est « en cours » quand du média est parti (> 16 ko), et « perdu » sur erreur, sur
+  5 s sans envoi ou sur 10 s sans connexion ; la reconnexion garde le même run.
+- La clé n'apparaît dans aucune raison ni aucun log de VMA (masquage des messages de
+  GStreamer).
+
 ## Conséquences
 - Temps de rendu par tick : + une passe FTB, une passe de conversion 4:2:0 et une copie vers
   tampon (≈ 3 Mo en 1080p) quand une sortie est active ; mesurés par l'histogramme par phase

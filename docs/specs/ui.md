@@ -148,6 +148,9 @@ refusées, `journal_dropped`.
   (streams). En dessous : images non relues par le rendu et images perdues faute d'image libre
   (pool), affichées dès qu'une sortie est attachée. Durée, débit et taille viennent de
   `vma-io` par `IoStatus::output_activity`.
+- *(Étape 6)* Stream en reconnexion : « reconnexion (essai n) » et la raison, dans la fenêtre
+  Sorties et les Statistiques ; nombre de connexions perdues depuis le démarrage
+  (`OutputActivity::reconnections`).
 - Glyphes « ● » et « ⚠ » absents des polices d'egui : libellés texte (« REC », « (erreur) »).
 
 ## Critères d'acceptation

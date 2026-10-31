@@ -183,6 +183,10 @@ Commandes de `phase-2.md` § 5, mises en œuvre telles quelles ; précisions app
   dans l'état versionné : `RenderFeedback::fade_to_black()` (0 = Program, 1 = noir).
 - Requêtes vers `vma-io` : `IoRequest::StartOutput { output, run, spec }` et
   `StopOutput { output }`.
+- *(Étape 6)* `Reconnecting { attempt, reason }` (raison de la dernière perte) sur
+  `Event::OutputReconnecting` : seulement depuis une sortie qui produit (démarrage, en cours, en
+  reconnexion) ; une perte arrivée après un arrêt est ignorée. Une sortie en reconnexion compte
+  comme active (réglages figés, boutons « en direct »).
 
 ## Critères d'acceptation
 | Critère | Test |

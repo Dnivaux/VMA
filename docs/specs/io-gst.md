@@ -270,3 +270,44 @@ Module `outputs` : `vma-io` exécute `IoRequest::StartOutput { output, run, spec
 | Un enregistrement en cours à la fermeture est finalisé (MP4 lisible en entier) | `a_recording_running_at_exit_is_finalised` | CI + local |
 | Démarrage refusé (dossier absent, RTMP pas encore là) : seule la sortie échoue, avec la raison ; le Program continue | `refused_starts_fail_the_output_only` | CI |
 | Noms de fichier datés, jamais d'écrasement | `file_names_carry_the_date_and_never_overwrite` | CI |
+
+## Phase 2 — Streaming RTMP(S) (étape 6, 2026-10-31)
+```text
+appsrc NV12 ─► … ─► encodeur H.264 (CBR) ─► h264parse ─► queue ─┐
+                                                                 ├─► flvmux streamable ─► queue (2 s) ─► rtmp2sink
+appsrc F32 ─► … ─► AAC ─► aacparse ─► queue ─────────────────────┘
+```
+- **Réglages** (`StreamSettings`, `phase-2.md` § 6) : H.264 à débit constant, 6 Mb/s en
+  1080p50, 4,5 Mb/s à 30p et en dessous, proportionnels à la taille d'image (500 kb/s au
+  minimum) ; GOP 2 s ; pas d'images B ; AAC 160 kb/s. Adresse `rtmp://` ou `rtmps://`
+  (`rtmp2sink` gère les deux), la clé ajoutée comme nom de flux (`adresse/clé`).
+- **Marge réseau** : une file de 2 s de données encodées (quelques centaines de ko) entre le
+  multiplexeur et `rtmp2sink` absorbe la connexion, un accusé lent ou un à-coup du réseau.
+  Agrandir les files en amont aurait retenu des images partagées du moteur (pool de 32).
+- **En cours** quand plus de 16 ko de média sont partis (statistiques de `rtmp2sink`), pas au
+  lancement du pipeline : l'état reste « Démarrage » tant que le serveur n'a rien reçu.
+- **Connexion perdue** : erreur du pipeline (serveur coupé, refus), rien d'envoyé pendant 5 s,
+  ou pas de connexion au bout de 10 s. Le pipeline est détruit, le feed détaché, la sortie passe
+  « en reconnexion » (`IoEvent::OutputReconnecting { attempt, reason }`), puis un nouveau
+  pipeline est construit après 1, 2, 5, puis toutes les 10 s, sans limite (même politique que
+  les inputs) ; il recommence à 0 (nouvelle session RTMP). L'enregistrement n'est pas touché.
+  Une erreur de construction (pas d'encodeur) reste un échec.
+- **Arrêt** pendant une attente de reconnexion : immédiat. Un stream qui ne peut pas finir son
+  flux (connexion coupée pendant l'arrêt) est arrêté quand même au bout de 5 s.
+- **Secrets** : la clé et l'adresse complète sont retirées de toutes les raisons et de tous les
+  logs (`scrub` : les erreurs de GStreamer citent l'adresse) ; `Debug` des réglages et du plan
+  ne les montre pas. Reste hors de notre portée : les traces de GStreamer lui-même
+  (`GST_DEBUG`), à ne pas activer avec une vraie clé.
+- **Débit et octets** des streams : octets envoyés sur la connexion en cours.
+
+### Critères (étape 6)
+| Critère | Test (`vma-io-gst`, `outputs::tests`) | Où |
+|---|---|---|
+| **B7** : 3 destinations démarrées ensemble, chacune relue sous sa clé depuis MediaMTX, 0 image perdue | `three_destinations_stream_at_once` | CI Ubuntu (MediaMTX requis), local avec `VMA_MEDIAMTX` |
+| **B7** : serveur coupé → reconnexion (1 s, puis 2, 5, 10 s), de nouveau en cours, relu ; l'enregistrement voisin sans perte ni trou | `lost_server_reconnects_while_the_recording_runs` (local : perdu en 91 ms, de nouveau en cours après 2,0 s) | idem |
+| Serveur injoignable : essais 1 puis 2, la clé dans aucune raison, aucun état, aucun log | `unreachable_server_is_retried_and_the_key_never_shows` | CI (les 2 OS) |
+| Réglages par défaut, adresse, aucun secret dans `Debug` ; masquage | `output::tests::stream_settings_defaults_and_location`, `secrets_are_scrubbed_from_messages` | CI |
+
+Sans `VMA_MEDIAMTX`, les deux tests MediaMTX sont sautés (message) ; la CI Ubuntu télécharge
+MediaMTX v1.21.2 (somme épinglée) et pose `VMA_REQUIRE_MEDIAMTX` : absent, ils échouent. Sous
+Windows (pas de MediaMTX en CI), ils sont sautés.

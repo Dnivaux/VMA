@@ -761,6 +761,8 @@ mod tests {
         fn run(&mut self) {
             let child = std::process::Command::new(&self.binary)
                 .arg(&self.config)
+                // Whatever it writes (certificates…) goes to the temporary folder.
+                .current_dir(std::env::temp_dir())
                 .stdout(std::process::Stdio::null())
                 .spawn()
                 .expect("MediaMTX starts");
