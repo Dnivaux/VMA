@@ -12,6 +12,10 @@ env:
   GST_WIN_VERSION: "1.26.11"
   GST_WIN_RUNTIME_SHA256: 31cbc21fa0950b5c1e79c80959b2799805cb05a7a35953a13a9f790776137605
   GST_WIN_DEVEL_SHA256: af0a0720692052aaf5fb0cf2847ef34a87016ef0f914328d516f049e6c86f587
+  # openh264enc (CI H.264 fallback, ADR 0006 § 6) built from the gst-plugins-bad sources of
+  # the runner's GStreamer: Ubuntu packages libopenh264 (BSD-2) but not the plugin.
+  GST_BAD_VERSION: "1.24.2"
+  GST_BAD_SHA256: 448e32787bc82b586c6cb2f81c9a8ef404fea4f77f25566fe06e597a3f59136b
 
 jobs:
   fmt:
@@ -67,7 +71,7 @@ jobs:
             libxkbcommon-dev libwayland-dev libx11-dev libxcursor-dev libxrandr-dev libxi-dev \
             libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
             gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad \
-            gstreamer1.0-libav
+            gstreamer1.0-libav libopenh264-dev
       - name: Cache GStreamer installers (Windows)
         if: runner.os == 'Windows'
         uses: actions/cache@v4
@@ -106,6 +110,28 @@ jobs:
           "$root\bin" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
           "PKG_CONFIG_PATH=$root\lib\pkgconfig" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
           "GSTREAMER_1_0_ROOT_MSVC_X86_64=$root\" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+      - name: Build the openh264 plugin (Linux; Ubuntu does not package it)
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          v=$(pkg-config --modversion gstreamer-1.0)
+          test "$v" = "$GST_BAD_VERSION" || { echo "GStreamer $v: update GST_BAD_VERSION / SHA-256"; exit 1; }
+          cd "$RUNNER_TEMP"
+          curl -sSfLO "https://gstreamer.freedesktop.org/src/gst-plugins-bad/gst-plugins-bad-$v.tar.xz"
+          echo "$GST_BAD_SHA256  gst-plugins-bad-$v.tar.xz" | sha256sum -c -
+          tar -xJf "gst-plugins-bad-$v.tar.xz" "gst-plugins-bad-$v/ext/openh264"
+          cd "gst-plugins-bad-$v/ext/openh264"
+          printf '%s\n' "#define PACKAGE \"gst-plugins-bad\"" "#define VERSION \"$v\"" \
+            '#define GST_PACKAGE_NAME "GStreamer Bad Plug-ins (CI build)"' \
+            '#define GST_PACKAGE_ORIGIN "https://gstreamer.freedesktop.org"' \
+            '#define GST_LICENSE "LGPL"' '#define GST_API_VERSION "1.0"' > config.h
+          flags=$(pkg-config --cflags gstreamer-video-1.0 gstreamer-pbutils-1.0 openh264)
+          gcc -c -fPIC -O2 -DHAVE_CONFIG_H -I. $flags gstopenh264plugin.c
+          g++ -c -fPIC -O2 -DHAVE_CONFIG_H -I. $flags gstopenh264enc.cpp gstopenh264dec.cpp
+          mkdir -p "$RUNNER_TEMP/gst-plugins"
+          g++ -shared -o "$RUNNER_TEMP/gst-plugins/libgstopenh264.so" ./*.o \
+            $(pkg-config --libs gstreamer-video-1.0 gstreamer-pbutils-1.0 openh264)
+          echo "GST_PLUGIN_PATH=$RUNNER_TEMP/gst-plugins" >> "$GITHUB_ENV"
       - name: Output encoders present (openh264enc, avenc_aac)
         shell: bash
         run: |

@@ -27,7 +27,9 @@ gst-inspect-1.0 srtsink     # SRT (Phase 2) — absent sur la machine de dev au 
 ```
 Repli logiciel H.264 (Phase 2, utilisé par la CI) : `openh264enc`, du paquet `gst-plugins-bad`
 avec `libopenh264` (BSD-2) — `sudo pacman -S --needed gst-plugins-bad libopenh264`. Sans lui,
-les tests d'enregistrement passent par NVENC ; le repli n'est alors vérifié qu'en CI.
+les tests d'enregistrement passent par NVENC ; le repli n'est alors vérifié qu'en CI. Ubuntu
+empaquette `libopenh264` mais pas le plugin : la CI le compile depuis les sources de
+`gst-plugins-bad` de la version du runner (archive épinglée par SHA-256, `ci.yml`).
 
 NDI (`ndisrc`/`ndisink`, gst-plugins-rs) : procédure à documenter en Phase 3.
 
