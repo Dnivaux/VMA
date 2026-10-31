@@ -606,6 +606,12 @@ fn disk_full_fails_the_output_only() {
     }
     let reason = full.poll().expect("disk full not reported").to_owned();
     eprintln!("after {n} frames: {reason}");
+    // The other output carries on (the failure may come before it wrote anything).
+    for _ in 0..10 {
+        good_feed.consume(frame(format, n, sample, false));
+        sample = audio_sample_at(format.rate, n + 1);
+        n += 1;
+    }
     assert!(good.bytes().unwrap() > 0);
     drop((full_feed, good_feed));
     assert!(full.stop(Duration::from_secs(1)).is_err());

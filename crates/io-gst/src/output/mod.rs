@@ -199,8 +199,10 @@ impl GstOutput {
         let mux = match plan.container {
             Container::Mkv => {
                 let mux = element("matroskamux")?;
-                // No index to write at the end: readable up to the last block after a crash.
-                mux.set_property("streamable", true);
+                // Not "streamable": a normal stop writes the duration and the index (seekable
+                // in every player); after a crash the file is still read up to its last
+                // complete block (B4).
+                mux.set_property("streamable", false);
                 mux.set_property("writing-app", "VMA");
                 mux
             }
