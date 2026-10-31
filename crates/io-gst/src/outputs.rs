@@ -16,9 +16,11 @@ use std::time::{Duration, Instant};
 use arc_swap::ArcSwap;
 use gstreamer::glib;
 use vma_core::OutputId;
-use vma_engine::{IoEvent, OutputHub, OutputSpec, RecordSpec, RtmpSpec};
+use vma_engine::{IoEvent, OutputHub, OutputSpec, RecordSpec, RtmpSpec, SrtMode, SrtSpec};
 
-use crate::output::{GstOutput, OutputFormat, RecordSettings, StreamSettings};
+use crate::output::{
+    GstOutput, OutputFeed, OutputFormat, RecordSettings, SrtSettings, StreamSettings,
+};
 use crate::supervisor::retry_delay;
 
 /// How long a stopping output may take to finalise its file before it is abandoned.
@@ -94,7 +96,47 @@ enum Phase {
 #[derive(Debug, Clone)]
 enum Recipe {
     Record,
-    Stream(StreamSettings),
+    Stream(Target),
+}
+
+/// Where a stream goes.
+#[derive(Debug, Clone)]
+enum Target {
+    Rtmp(StreamSettings),
+    Srt(SrtSettings),
+}
+
+impl Target {
+    fn start(&self, format: OutputFormat) -> Result<(GstOutput, OutputFeed), crate::IoError> {
+        match self {
+            Self::Rtmp(settings) => GstOutput::stream(format, settings),
+            Self::Srt(settings) => GstOutput::srt(format, settings),
+        }
+    }
+
+    /// Where it goes, as shown (no secret).
+    fn shown(&self) -> String {
+        match self {
+            Self::Rtmp(settings) => settings.url.clone(),
+            Self::Srt(settings) => match settings.mode {
+                SrtMode::Caller => settings.uri(),
+                SrtMode::Listener => format!("{} (listening)", settings.uri()),
+            },
+        }
+    }
+
+    /// An SRT listener waits for its receivers: on air as soon as it listens, never « lost »
+    /// for want of one.
+    fn listens(&self) -> bool {
+        matches!(self, Self::Srt(s) if s.mode == SrtMode::Listener)
+    }
+
+    fn kbps(&self) -> u32 {
+        match self {
+            Self::Rtmp(settings) => settings.video_kbps,
+            Self::Srt(settings) => settings.video_kbps,
+        }
+    }
 }
 
 /// One output of `vma-io`.
@@ -174,8 +216,12 @@ impl Outputs {
                 self.unavailable.as_deref().unwrap_or_default()
             )),
             OutputSpec::Record(record) => self.record_settings(record).map(|_| Recipe::Record),
-            OutputSpec::Rtmp(rtmp) => self.stream_settings(rtmp).map(Recipe::Stream),
-            OutputSpec::Srt(_) => Err("SRT is not available yet (Phase 2, step 7)".into()),
+            OutputSpec::Rtmp(rtmp) => self
+                .stream_settings(rtmp)
+                .map(|s| Recipe::Stream(Target::Rtmp(s))),
+            OutputSpec::Srt(srt) => self
+                .srt_settings(srt)
+                .map(|s| Recipe::Stream(Target::Srt(s))),
         };
         let started = recipe.and_then(|recipe| {
             let (pipeline, target) = match (&recipe, spec) {
@@ -184,9 +230,9 @@ impl Outputs {
                     let target = settings.path.display().to_string();
                     (self.attach_record(output, &settings)?, target)
                 }
-                (Recipe::Stream(settings), _) => {
-                    tracing::info!(%output, url = %settings.url, kbps = settings.video_kbps, "starting a stream");
-                    (self.attach_stream(output, settings)?, settings.url.clone())
+                (Recipe::Stream(target), _) => {
+                    tracing::info!(%output, to = %target.shown(), kbps = target.kbps(), "starting a stream");
+                    (self.attach_stream(output, target)?, target.shown())
                 }
                 _ => return Err("inconsistent output settings".to_owned()),
             };
@@ -196,7 +242,12 @@ impl Outputs {
             Ok((recipe, pipeline, target)) => {
                 let now = Instant::now();
                 let encoder = describe(&pipeline);
-                let record = matches!(recipe, Recipe::Record);
+                // On air at once: a recording, an SRT listener. A stream that calls waits for
+                // its media to go out.
+                let record = match &recipe {
+                    Recipe::Record => true,
+                    Recipe::Stream(target) => target.listens(),
+                };
                 self.slots.push(Slot {
                     id: output,
                     run,
@@ -274,6 +325,26 @@ impl Outputs {
         Ok(settings)
     }
 
+    fn srt_settings(&self, spec: &SrtSpec) -> Result<SrtSettings, String> {
+        let passphrase = spec
+            .passphrase
+            .expose()
+            .ok_or("the SRT passphrase is missing")?
+            .to_owned();
+        let mut settings = SrtSettings::new(
+            spec.mode,
+            spec.host.trim().to_owned(),
+            spec.port,
+            spec.latency_ms,
+            passphrase,
+            self.format,
+        );
+        if let Some(kbps) = spec.video_kbps {
+            settings.video_kbps = kbps;
+        }
+        Ok(settings)
+    }
+
     fn attach_record(
         &self,
         output: OutputId,
@@ -288,13 +359,8 @@ impl Outputs {
         Ok(pipeline)
     }
 
-    fn attach_stream(
-        &self,
-        output: OutputId,
-        settings: &StreamSettings,
-    ) -> Result<GstOutput, String> {
-        let (pipeline, feed) =
-            GstOutput::stream(self.format, settings).map_err(|e| e.to_string())?;
+    fn attach_stream(&self, output: OutputId, target: &Target) -> Result<GstOutput, String> {
+        let (pipeline, feed) = target.start(self.format).map_err(|e| e.to_string())?;
         self.hub
             .attach(output, Box::new(feed))
             .map_err(|e| e.to_string())?;
@@ -387,17 +453,27 @@ impl Outputs {
             }
             Phase::Waiting { at } if now < *at => Some(slot),
             Phase::Waiting { .. } => {
-                let Recipe::Stream(settings) = &slot.recipe else {
+                let Recipe::Stream(target) = &slot.recipe else {
                     return None;
                 };
-                match self.attach_stream(id, settings) {
+                let listens = target.listens();
+                match self.attach_stream(id, target) {
                     Ok(pipeline) => {
                         tracing::info!(output = %id, attempt = slot.attempt, "stream reconnecting");
                         slot.phase = Phase::Running {
                             pipeline,
                             started: now,
-                            connected: false,
+                            connected: listens,
                         };
+                        if listens {
+                            slot.attempt = 0;
+                            emit(IoEvent::OutputRunning {
+                                output: id,
+                                run,
+                                encoder: slot.encoder.clone(),
+                                target: slot.target.clone(),
+                            });
+                        }
                         slot.moved = (now, 0);
                         slot.window = (now, 0);
                         Some(slot)
@@ -423,7 +499,8 @@ impl Outputs {
                     }
                     return Some(self.lost(slot, now, reason, emit));
                 }
-                if !stream {
+                let listens = matches!(&slot.recipe, Recipe::Stream(t) if t.listens());
+                if !stream || listens {
                     return Some(slot);
                 }
                 let bytes = pipeline.bytes().unwrap_or(0);
@@ -541,7 +618,8 @@ mod tests {
     use crate::output::tests::{read_back, spawn_engine};
     use vma_core::{Container, FrameRate};
     use vma_engine::{
-        Command, OutputStatus, RenderEngine, RtmpSpec, Secret, Source, State, StateReader,
+        Command, OutputStatus, RenderEngine, RtmpSpec, Secret, Source, SrtMode, SrtSpec, State,
+        StateReader,
     };
 
     const REC: OutputId = State::DEFAULT_RECORDING;
@@ -673,23 +751,6 @@ mod tests {
             "{status:?}"
         );
 
-        send(
-            &engine,
-            Command::AddOutput {
-                spec: OutputSpec::Srt(vma_engine::SrtSpec {
-                    host: "127.0.0.1".into(),
-                    ..vma_engine::SrtSpec::default()
-                }),
-                name: None,
-            },
-        );
-        send(&engine, Command::StartStreaming { slot: None });
-        let stream = OutputId(2);
-        let status = wait_status(&state, stream, |s| matches!(s, OutputStatus::Failed { .. }));
-        assert!(
-            format!("{status:?}").contains("not available yet"),
-            "{status:?}"
-        );
         // The Program keeps running.
         let before = engine.feedback().last_frame();
         std::thread::sleep(Duration::from_millis(100));
@@ -1032,5 +1093,244 @@ mod tests {
             assert!(logs.contains("stream lost"), "{logs}");
             assert!(!logs.contains(KEY), "{logs}");
         }
+    }
+
+    // SRT (Phase 2 step 7).
+
+    /// `srtsink` and `srtsrc` are there; `None` (test skipped) otherwise, except where
+    /// `VMA_REQUIRE_SRT` says they must be (CI).
+    fn srt_available() -> Option<()> {
+        crate::pipeline::tests::init();
+        let present = ["srtsink", "srtsrc", "mpegtsmux", "tsdemux"]
+            .iter()
+            .all(|e| gstreamer::ElementFactory::find(e).is_some());
+        if !present {
+            assert!(
+                std::env::var_os("VMA_REQUIRE_SRT").is_none(),
+                "srtsink / srtsrc missing"
+            );
+            eprintln!("skipped: no SRT elements (gst-plugins-bad)");
+            return None;
+        }
+        Some(())
+    }
+
+    fn free_udp_port() -> u16 {
+        std::net::UdpSocket::bind("127.0.0.1:0")
+            .and_then(|s| s.local_addr())
+            .unwrap()
+            .port()
+    }
+
+    /// A local SRT receiver counting the H.264 pictures it gets.
+    struct Receiver {
+        pipeline: gstreamer::Pipeline,
+        count: Arc<std::sync::atomic::AtomicU64>,
+    }
+
+    impl Receiver {
+        fn start(uri: &str, passphrase: &str) -> Self {
+            use gstreamer as gst;
+            use gstreamer::prelude::*;
+            let pipeline = gst::parse::launch(&format!(
+                "srtsrc name=src uri={uri} ! tsdemux ! video/x-h264 ! queue ! \
+                 appsink name=v sync=false"
+            ))
+            .unwrap()
+            .downcast::<gst::Pipeline>()
+            .unwrap();
+            if !passphrase.is_empty() {
+                pipeline
+                    .by_name("src")
+                    .unwrap()
+                    .set_property("passphrase", passphrase);
+            }
+            let count = Arc::new(std::sync::atomic::AtomicU64::new(0));
+            let counter = Arc::clone(&count);
+            pipeline
+                .by_name("v")
+                .unwrap()
+                .downcast::<gstreamer_app::AppSink>()
+                .unwrap()
+                .set_callbacks(
+                    gstreamer_app::AppSinkCallbacks::builder()
+                        .new_sample(move |s| {
+                            let _ = s.pull_sample();
+                            counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            Ok(gst::FlowSuccess::Ok)
+                        })
+                        .build(),
+                );
+            let _ = pipeline.set_state(gst::State::Playing);
+            Self { pipeline, count }
+        }
+
+        fn count(&self) -> u64 {
+            self.count.load(std::sync::atomic::Ordering::Relaxed)
+        }
+
+        /// Pictures received over the next `window`.
+        fn received(&self, window: Duration) -> u64 {
+            let before = self.count();
+            std::thread::sleep(window);
+            self.count() - before
+        }
+    }
+
+    impl Drop for Receiver {
+        fn drop(&mut self) {
+            use gstreamer::prelude::*;
+            let _ = self.pipeline.set_state(gstreamer::State::Null);
+        }
+    }
+
+    fn srt(mode: SrtMode, port: u16, passphrase: &str) -> Command {
+        Command::AddOutput {
+            spec: OutputSpec::Srt(SrtSpec {
+                mode,
+                host: "127.0.0.1".into(),
+                port,
+                latency_ms: 120,
+                passphrase: Secret::new(passphrase),
+                video_kbps: None,
+            }),
+            name: None,
+        }
+    }
+
+    const PASSPHRASE: &str = "correct horse battery";
+
+    #[test]
+    fn srt_caller_reaches_its_receiver_and_reconnects() {
+        // B8: caller with a passphrase, received and parsed by a local `srtsrc`; the receiver
+        // goes away → reconnecting; it comes back → running and received again.
+        if srt_available().is_none() {
+            return;
+        }
+        let port = free_udp_port();
+        let listen = format!("srt://127.0.0.1:{port}?mode=listener&latency=120");
+        let receiver = Receiver::start(&listen, PASSPHRASE);
+        let mut engine = spawn_engine(FrameRate::FPS_50, false);
+        let io = IoRuntime::start(engine.take_io_port().unwrap()).unwrap();
+        let state = engine.state();
+        send(&engine, srt(SrtMode::Caller, port, PASSPHRASE));
+        let out = OutputId(2);
+        send(&engine, Command::StartOutput { output: out });
+        let status = wait_status(&state, out, |s| {
+            matches!(
+                s,
+                OutputStatus::Running { .. } | OutputStatus::Failed { .. }
+            )
+        });
+        assert!(matches!(status, OutputStatus::Running { .. }), "{status:?}");
+        let n = receiver.received(Duration::from_secs(2));
+        eprintln!("caller: {n} pictures in 2 s");
+        assert!(n >= 25, "{n} pictures in 2 s");
+        assert_eq!(engine.outputs().counters(out).unwrap().dropped, 0);
+
+        drop(receiver);
+        let lost = Instant::now();
+        let status = wait_status(&state, out, |s| {
+            matches!(s, OutputStatus::Reconnecting { .. })
+        });
+        eprintln!("lost after {:?}: {status:?}", lost.elapsed());
+        let receiver = Receiver::start(&listen, PASSPHRASE);
+        wait_status(&state, out, |s| matches!(s, OutputStatus::Running { .. }));
+        eprintln!("running again after {:?}", lost.elapsed());
+        let n = receiver.received(Duration::from_secs(2));
+        assert!(n >= 25, "{n} pictures after the reconnection");
+        assert!(io.output_activity(out).unwrap().reconnections >= 1);
+        send(&engine, Command::StopOutput { output: out });
+        wait_status(&state, out, |s| *s == OutputStatus::Idle);
+    }
+
+    #[test]
+    fn srt_wrong_passphrase_is_refused_and_never_shown() {
+        if srt_available().is_none() {
+            return;
+        }
+        const WRONG: &str = "not the right one";
+        let port = free_udp_port();
+        let receiver = Receiver::start(
+            &format!("srt://127.0.0.1:{port}?mode=listener&latency=120"),
+            PASSPHRASE,
+        );
+        let mut engine = spawn_engine(FrameRate::FPS_25, false);
+        let _io = IoRuntime::start(engine.take_io_port().unwrap()).unwrap();
+        let state = engine.state();
+        send(&engine, srt(SrtMode::Caller, port, WRONG));
+        let out = OutputId(2);
+        send(&engine, Command::StartOutput { output: out });
+        let status = wait_status(&state, out, |s| {
+            matches!(
+                s,
+                OutputStatus::Reconnecting { .. }
+                    | OutputStatus::Failed { .. }
+                    | OutputStatus::Running { .. }
+            )
+        });
+        eprintln!("{status:?}");
+        assert!(
+            matches!(status, OutputStatus::Reconnecting { .. }),
+            "{status:?}"
+        );
+        let text = format!(
+            "{status:?} {}",
+            serde_json::to_string(&*state.load()).unwrap()
+        );
+        assert!(
+            !text.contains(WRONG) && !text.contains(PASSPHRASE),
+            "{text}"
+        );
+        assert_eq!(receiver.count(), 0, "nothing decrypted");
+    }
+
+    #[test]
+    fn srt_listener_waits_for_its_receivers() {
+        // B8: VMA listens; on air at once, nothing lost while nobody calls; a caller then
+        // receives the stream.
+        if srt_available().is_none() {
+            return;
+        }
+        let port = free_udp_port();
+        let mut engine = spawn_engine(FrameRate::FPS_50, false);
+        let io = IoRuntime::start(engine.take_io_port().unwrap()).unwrap();
+        let state = engine.state();
+        send(&engine, srt(SrtMode::Listener, port, ""));
+        let out = OutputId(2);
+        send(&engine, Command::StartOutput { output: out });
+        let status = wait_status(&state, out, |s| {
+            matches!(
+                s,
+                OutputStatus::Running { .. } | OutputStatus::Failed { .. }
+            )
+        });
+        let OutputStatus::Running { target, .. } = &status else {
+            panic!("{status:?}");
+        };
+        assert_eq!(
+            target.as_deref(),
+            Some(format!("srt://127.0.0.1:{port} (listening)").as_str())
+        );
+        std::thread::sleep(Duration::from_secs(1));
+        let alone = engine.outputs().counters(out).unwrap();
+        assert!(alone.delivered >= 40 && alone.dropped == 0, "{alone:?}");
+
+        let receiver = Receiver::start(
+            &format!("srt://127.0.0.1:{port}?mode=caller&latency=120"),
+            "",
+        );
+        let n = receiver.received(Duration::from_secs(3));
+        eprintln!("listener: {n} pictures in 3 s");
+        assert!(n >= 25, "{n} pictures in 3 s");
+        assert!(io.output_activity(out).unwrap().bytes.unwrap_or(0) > 0);
+        assert_eq!(engine.outputs().counters(out).unwrap().dropped, 0);
+        drop(receiver);
+        // Its receiver gone, a listener stays on air.
+        std::thread::sleep(Duration::from_millis(500));
+        assert!(matches!(
+            state.load().output(out).unwrap().status,
+            OutputStatus::Running { .. }
+        ));
     }
 }

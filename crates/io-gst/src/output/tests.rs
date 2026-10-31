@@ -660,3 +660,30 @@ fn secrets_are_scrubbed_from_messages() {
     );
     assert_eq!(scrub("nothing", &[String::new()]), "nothing");
 }
+
+#[test]
+fn srt_settings_defaults_and_location() {
+    let srt = |mode, host: &str| {
+        SrtSettings::new(
+            mode,
+            host.into(),
+            9000,
+            120,
+            "a secret phrase".into(),
+            format(FrameRate::FPS_50, 1920, 1080),
+        )
+    };
+    let caller = srt(SrtMode::Caller, "10.0.0.2");
+    assert_eq!((caller.video_kbps, caller.gop_frames), (8_000, 50));
+    assert_eq!(caller.uri(), "srt://10.0.0.2:9000");
+    assert_eq!(
+        caller.location(),
+        "srt://10.0.0.2:9000?mode=caller&latency=120"
+    );
+    let listener = srt(SrtMode::Listener, "");
+    assert_eq!(listener.location(), "srt://:9000?mode=listener&latency=120");
+    assert_eq!(srt(SrtMode::Caller, "::1").uri(), "srt://[::1]:9000");
+    for text in [format!("{caller:?}"), format!("{:?}", Plan::srt(&caller))] {
+        assert!(!text.contains("a secret phrase"), "{text}");
+    }
+}

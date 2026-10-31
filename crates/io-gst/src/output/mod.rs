@@ -35,7 +35,7 @@ use gstreamer_video as gst_video;
 
 use vma_core::{Container, FrameRate, Resolution, VideoCodec};
 use vma_engine::{
-    AUDIO_CHANNELS, AUDIO_RATE, OutputConsumer, OutputFrame, audio_sample_at, video_pts_ns,
+    AUDIO_CHANNELS, AUDIO_RATE, OutputConsumer, OutputFrame, SrtMode, audio_sample_at, video_pts_ns,
 };
 
 use crate::IoError;
@@ -48,6 +48,8 @@ const RECORD_KBPS_1080P50: u64 = 40_000;
 /// Constant video bit rate of a stream at 1080p50 (`phase-2.md` § 6); 1080p30 and below get
 /// three quarters (4.5 Mb/s).
 const STREAM_KBPS_1080P50: u64 = 6_000;
+/// Constant video bit rate of an SRT output at 1080p50 (`phase-2.md` § 6), scaled the same way.
+const SRT_KBPS_1080P50: u64 = 8_000;
 const AUDIO_KBPS: u32 = 160;
 /// Encoded data a stream may hold while its connection is slow (2 s).
 const NETWORK_SLACK: Duration = Duration::from_secs(2);
@@ -124,19 +126,11 @@ impl StreamSettings {
     /// Defaults of `phase-2.md` § 6: H.264 at a constant 6 Mb/s at 1080p50 (4.5 Mb/s at 30p
     /// and below, both scaled with the picture size), a key frame every 2 s, AAC 160 kb/s.
     pub fn new(url: String, key: String, format: OutputFormat) -> Self {
-        let pixels = u64::from(format.resolution.width()) * u64::from(format.resolution.height());
-        let (num, den) = (
-            u64::from(format.rate.num()),
-            u64::from(format.rate.den().max(1)),
-        );
-        let high_rate = num > 31 * den;
-        let kbps = STREAM_KBPS_1080P50 * pixels / (1920 * 1080);
-        let kbps = if high_rate { kbps } else { kbps * 3 / 4 };
         Self {
             url,
             key,
-            video_kbps: u32::try_from(kbps.max(500)).unwrap_or(u32::MAX),
-            gop_frames: u32::try_from((2 * num).div_ceil(den)).unwrap_or(1),
+            video_kbps: stream_kbps(STREAM_KBPS_1080P50, format),
+            gop_frames: frames_in(2, format),
             audio_kbps: AUDIO_KBPS,
         }
     }
@@ -148,6 +142,103 @@ impl StreamSettings {
             "" => url.to_owned(),
             key => format!("{url}/{key}"),
         }
+    }
+}
+
+/// Constant bit rate of a stream: `at_1080p50` scaled with the picture size, three quarters
+/// at 30p and below; 500 kbit/s at least.
+fn stream_kbps(at_1080p50: u64, format: OutputFormat) -> u32 {
+    let pixels = u64::from(format.resolution.width()) * u64::from(format.resolution.height());
+    let (num, den) = (
+        u64::from(format.rate.num()),
+        u64::from(format.rate.den().max(1)),
+    );
+    let kbps = at_1080p50 * pixels / (1920 * 1080);
+    let kbps = if num > 31 * den { kbps } else { kbps * 3 / 4 };
+    u32::try_from(kbps.max(500)).unwrap_or(u32::MAX)
+}
+
+/// Frames in `secs` seconds at the output rate.
+fn frames_in(secs: u64, format: OutputFormat) -> u32 {
+    let (num, den) = (
+        u64::from(format.rate.num()),
+        u64::from(format.rate.den().max(1)),
+    );
+    u32::try_from((secs * num).div_ceil(den)).unwrap_or(1)
+}
+
+/// An SRT output (MPEG-TS).
+#[derive(Clone, PartialEq, Eq)]
+pub struct SrtSettings {
+    pub mode: SrtMode,
+    /// Receiver to call, or local address to listen on (empty: every interface).
+    pub host: String,
+    pub port: u16,
+    pub latency_ms: u32,
+    /// Empty: no encryption. Never logged.
+    pub passphrase: String,
+    /// Constant video bit rate, kbit/s.
+    pub video_kbps: u32,
+    /// Frames between key frames.
+    pub gop_frames: u32,
+    pub audio_kbps: u32,
+}
+
+impl std::fmt::Debug for SrtSettings {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SrtSettings")
+            .field("mode", &self.mode)
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("latency_ms", &self.latency_ms)
+            .field("passphrase", &"***")
+            .field("video_kbps", &self.video_kbps)
+            .field("gop_frames", &self.gop_frames)
+            .finish_non_exhaustive()
+    }
+}
+
+impl SrtSettings {
+    /// Defaults of `phase-2.md` § 6: H.264 at a constant 8 Mb/s at 1080p50 (scaled like the RTMP
+    /// streams), a key frame every second (a receiver joining decodes sooner), AAC 160 kb/s.
+    pub fn new(
+        mode: SrtMode,
+        host: String,
+        port: u16,
+        latency_ms: u32,
+        passphrase: String,
+        format: OutputFormat,
+    ) -> Self {
+        Self {
+            mode,
+            host,
+            port,
+            latency_ms,
+            passphrase,
+            video_kbps: stream_kbps(SRT_KBPS_1080P50, format),
+            gop_frames: frames_in(1, format),
+            audio_kbps: AUDIO_KBPS,
+        }
+    }
+
+    /// `srt://host:port` (an IPv6 address in brackets); no secret in it.
+    pub fn uri(&self) -> String {
+        let host = self.host.trim();
+        if host.contains(':') && !host.starts_with('[') {
+            format!("srt://[{host}]:{}", self.port)
+        } else {
+            format!("srt://{host}:{}", self.port)
+        }
+    }
+
+    /// What `srtsink` opens: the address with the mode and the latency (a listener binds the
+    /// address of the URI only when its mode is given there). No secret in it.
+    fn location(&self) -> String {
+        let mode = match self.mode {
+            SrtMode::Caller => "caller",
+            SrtMode::Listener => "listener",
+        };
+        format!("{}?mode={mode}&latency={}", self.uri(), self.latency_ms)
     }
 }
 
@@ -179,6 +270,8 @@ pub(crate) enum Mux {
     Mp4,
     /// RTMP.
     Flv,
+    /// MPEG-TS (SRT).
+    Ts,
 }
 
 impl From<Container> for Mux {
@@ -216,6 +309,8 @@ pub(crate) enum Sink {
     File(PathBuf),
     /// `rtmp2sink`; the location carries the key.
     Rtmp(String),
+    /// `srtsink`.
+    Srt(SrtSettings),
     /// `gst-launch` description of the sink bin (tests: a slow or failing sink).
     #[cfg(test)]
     Launch(String),
@@ -226,6 +321,7 @@ impl std::fmt::Debug for Sink {
         match self {
             Self::File(path) => f.debug_tuple("File").field(path).finish(),
             Self::Rtmp(_) => f.write_str("Rtmp(***)"),
+            Self::Srt(srt) => f.debug_tuple("Srt").field(srt).finish(),
             #[cfg(test)]
             Self::Launch(d) => f.debug_tuple("Launch").field(d).finish(),
         }
@@ -255,6 +351,30 @@ impl Plan {
                     .collect(),
             ),
             sink: Sink::Rtmp(location),
+        }
+    }
+
+    fn srt(settings: &SrtSettings) -> Self {
+        Self {
+            video: Video::Encoded {
+                codec: VideoCodec::H264,
+                tuning: VideoTuning {
+                    kbps: settings.video_kbps,
+                    cbr: true,
+                    gop: settings.gop_frames.max(1),
+                },
+            },
+            audio: Audio::Aac {
+                kbps: settings.audio_kbps,
+            },
+            mux: Mux::Ts,
+            secrets: Secrets(
+                Some(settings.passphrase.clone())
+                    .filter(|p| !p.is_empty())
+                    .into_iter()
+                    .collect(),
+            ),
+            sink: Sink::Srt(settings.clone()),
         }
     }
 
@@ -328,6 +448,15 @@ impl GstOutput {
         Self::start(format, &Plan::stream(settings), &mut encoder::probe_element)
     }
 
+    /// Starts an SRT output: calls the receiver, or listens for one (the pictures are dropped
+    /// by `srtsink` while nobody listens). A refused or lost call shows in [`Self::poll`].
+    pub fn srt(
+        format: OutputFormat,
+        settings: &SrtSettings,
+    ) -> Result<(Self, OutputFeed), IoError> {
+        Self::start(format, &Plan::srt(settings), &mut encoder::probe_element)
+    }
+
     pub(crate) fn start(
         format: OutputFormat,
         plan: &Plan,
@@ -354,6 +483,12 @@ impl GstOutput {
                 let mux = element("flvmux")?;
                 mux.set_property("streamable", true);
                 encoder::set(&mux, "metadatacreator", "VMA");
+                mux
+            }
+            Mux::Ts => {
+                let mux = element("mpegtsmux")?;
+                // 7 packets of 188 bytes per buffer: one SRT payload (1316 bytes).
+                mux.set_property("alignment", 7i32);
                 mux
             }
             Mux::Mkv => {
@@ -388,6 +523,19 @@ impl GstOutput {
                 sink.set_property("sync", false);
                 sink
             }
+            Sink::Srt(srt) => {
+                let sink = element("srtsink")?;
+                sink.set_property("uri", srt.location().as_str());
+                if !srt.passphrase.is_empty() {
+                    sink.set_property("passphrase", srt.passphrase.as_str());
+                }
+                // Losses are ours to report and retry (same policy as RTMP), and nobody
+                // listening must not hold the pictures back.
+                encoder::set(&sink, "auto-reconnect", "false");
+                encoder::set(&sink, "wait-for-connection", "false");
+                sink.set_property("sync", false);
+                sink
+            }
             #[cfg(test)]
             Sink::Launch(description) => gst::parse::bin_from_description(description, true)
                 .map_err(|e| IoError::Pipeline(e.to_string()))?
@@ -397,11 +545,12 @@ impl GstOutput {
         // `flvmux` has one pad of each kind, the others numbered request pads.
         let (video_pad, audio_pad) = match plan.mux {
             Mux::Flv => ("video", "audio"),
+            Mux::Ts => ("sink_%d", "sink_%d"),
             Mux::Mkv | Mux::Mp4 => ("video_%u", "audio_%u"),
         };
         link_pad(&video_tail, &mux, video_pad)?;
         link_pad(&audio_tail, &mux, audio_pad)?;
-        if matches!(plan.sink, Sink::Rtmp(_)) {
+        if matches!(plan.sink, Sink::Rtmp(_) | Sink::Srt(_)) {
             // Network slack after the encoder (a few hundred kB): the connection, a slow ack
             // or a short hiccup is absorbed here, not by the engine's shared pictures.
             let slack = element("queue")?;
@@ -442,7 +591,11 @@ impl GstOutput {
                 .unwrap_or_else(|| e.to_string());
             return Err(IoError::Pipeline(format!("cannot start: {reason}")));
         }
-        let counted_sink = matches!(plan.sink, Sink::File(_) | Sink::Rtmp(_)).then(|| sink.clone());
+        let counted_sink = match plan.sink {
+            Sink::File(_) | Sink::Rtmp(_) | Sink::Srt(_) => Some(sink.clone()),
+            #[cfg(test)]
+            Sink::Launch(_) => None,
+        };
         tracing::info!(
             video = %video_encoder.as_ref().map_or("raw".into(), ToString::to_string),
             audio = %audio_encoder.as_ref().map_or("raw".into(), ToString::to_string),
@@ -498,10 +651,30 @@ impl GstOutput {
     /// Bytes written (file) or sent (stream) so far.
     pub fn bytes(&self) -> Option<u64> {
         let sink = self.sink.as_ref()?;
-        if sink.factory().is_some_and(|f| f.name() == "rtmp2sink") {
+        let factory = sink.factory().map(|f| f.name().to_string());
+        match factory.as_deref() {
             // `rtmp2sink`: what went out on the connection (0 before it is up).
-            let stats = sink.property::<Option<gst::Structure>>("stats")?;
-            return stats.get::<u64>("out-bytes-total").ok();
+            Some("rtmp2sink") => {
+                let stats = sink.property::<Option<gst::Structure>>("stats")?;
+                return stats.get::<u64>("out-bytes-total").ok();
+            }
+            // `srtsink`: bytes sent to the receiver called, or to every caller of a listener.
+            Some("srtsink") => {
+                let stats = sink.property::<Option<gst::Structure>>("stats")?;
+                let own = stats.get::<u64>("bytes-sent").unwrap_or(0);
+                let callers: u64 = stats
+                    .get::<gst::glib::ValueArray>("callers")
+                    .map(|callers| {
+                        callers
+                            .iter()
+                            .filter_map(|c| c.get::<gst::Structure>().ok())
+                            .filter_map(|c| c.get::<u64>("bytes-sent").ok())
+                            .sum()
+                    })
+                    .unwrap_or(0);
+                return Some(own + callers);
+            }
+            _ => {}
         }
         // Asked of the sink pad: `filesink` answers there in bytes.
         let pad = sink.static_pad("sink")?;
@@ -760,10 +933,15 @@ fn video_branch(
                 pick(encoder::video_ladder(codec), probe, codec_name(codec))?;
             encoder::tune_video(&encoder, candidate.family, tuning);
             chain.push(encoder);
-            chain.push(element(match codec {
+            let parser = element(match codec {
                 VideoCodec::H264 => "h264parse",
                 VideoCodec::Hevc => "h265parse",
-            })?);
+            })?;
+            if plan.mux == Mux::Ts {
+                // Parameter sets with every key frame: a receiver joining decodes from there.
+                parser.set_property("config-interval", -1i32);
+            }
+            chain.push(parser);
             Some(choice)
         }
         #[cfg(test)]
