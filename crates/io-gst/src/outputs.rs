@@ -794,17 +794,22 @@ mod tests {
             "{} black",
             black.len()
         );
-        // One period apart, but for the frames in flight on the GPU at the loss.
+        // A whole number of periods apart (PTS of n). Before the loss a frame may not have
+        // been read back (often under WARP); at the loss, those in flight on the GPU are lost;
+        // the black ones, made on the CPU, follow each other.
         let period = video_pts_ns(rate, 1);
         for (i, pair) in back.video.windows(2).enumerate() {
             let step = pair[1].0 - pair[0].0;
             let periods = (step as f64 / period as f64).round() as u64;
             assert!(step.abs_diff(periods * period) <= MS, "step {step} at {i}");
+            assert!(periods >= 1, "step {step} at {i}");
+            let black_part = i >= switch;
             let at_loss = i + 1 == switch;
             assert!(
-                periods == 1 || (at_loss && periods <= 6),
-                "{periods} periods at {i}"
+                !black_part || periods == 1,
+                "{periods} periods at {i}, black"
             );
+            assert!(!at_loss || periods <= 6, "{periods} periods at the loss");
         }
         let _ = std::fs::remove_dir_all(dir);
     }

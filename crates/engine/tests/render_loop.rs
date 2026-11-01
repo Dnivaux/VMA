@@ -672,12 +672,23 @@ fn fade_to_black_darkens_the_outputs_not_the_program_view() {
         .iter()
         .position(|s| s.1 < 235)
         .expect("intermediate frames");
-    // Frame indices, not counts: a frame the engine could not read back leaves a gap.
-    assert_eq!(seen[first_black].0 - fading[start].0, 24, "{seen:?}");
-    assert!(
-        fading[start..].windows(2).all(|w| w[1].1 < w[0].1),
-        "darker every frame: {seen:?}"
-    );
+    // Frame indices, not counts: a frame the engine could not read back leaves a gap (often
+    // under WARP), even the first or last of the fade. Tick k (1 to 25) of the fade shows
+    // Y' = 235 − 219 k / 25; the level of the first intermediate frame seen gives its k.
+    let level = |k: u64| 235.0 - 219.0 * k as f64 / 25.0;
+    let (first, y) = fading[start];
+    let k0 = ((235.0 - f64::from(y)) * 25.0 / 219.0).round() as u64;
+    let tick_one = first + 1 - k0;
+    for &(index, y) in &fading[start..] {
+        let k = index + 1 - tick_one;
+        assert!(k < 25, "still fading at tick {k}: {seen:?}");
+        assert!(
+            (f64::from(y) - level(k)).abs() <= 1.0,
+            "frame {index} (tick {k}) at {y}: {seen:?}"
+        );
+    }
+    // Black from tick 25 on, until the return.
+    assert!(seen[first_black].0 + 1 - tick_one >= 25, "{seen:?}");
 }
 
 #[test]
