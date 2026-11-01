@@ -372,7 +372,7 @@ Windows (pas de MediaMTX en CI), ils sont sautés.
   à la place empêchait de relire au-delà du premier fragment un MP4 tué, B5).
   `encoder::aac_priming`, mesuré par encodeur (bip encodé puis décodé par `avdec_aac`) :
   `avenc_aac` 1 024 (1 025 à l'échantillon près de la détection, Linux et CI), `voaacenc`
-  1 600 (CI) ; `mfaacenc` (CI Windows) : à mesurer, 1 024 en attendant. Sans encodeur audio (MKV brut), rien ne change (B3).
+  1 600 (CI), `mfaacenc` 0 (CI Windows : l'encodeur le retire lui-même). Sans encodeur audio (MKV brut), rien ne change (B3).
 
 ### Critères (étape 10)
 | Critère | Test (`vma-io-gst`) | Où |

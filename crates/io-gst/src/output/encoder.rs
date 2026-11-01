@@ -69,7 +69,9 @@ pub(crate) fn aac_priming(element: &str) -> u64 {
         "avenc_aac" => 1_024,
         // gst-plugins-bad (CI Ubuntu, Windows): one frame and 576 samples more.
         "voaacenc" => 1_600,
-        // Not measured yet (Windows CI): one frame, the AAC-LC minimum.
+        // Media Foundation (Windows CI): already removed by the encoder.
+        "mfaacenc" => 0,
+        // Not in the ladder: one frame, the AAC-LC minimum.
         _ => 1_024,
     }
 }

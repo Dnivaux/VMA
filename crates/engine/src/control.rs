@@ -229,7 +229,7 @@ impl ControlStats {
     }
 
     pub fn rejected(&self) -> u64 {
-        self.rejected.load(Ordering::Relaxed)
+        self.rejected.load(Ordering::Acquire)
     }
 }
 
@@ -311,13 +311,14 @@ impl Controller {
                 self.forward(io);
             }
             Err(rejection) => {
-                self.stats.rejected.fetch_add(1, Ordering::Relaxed);
+                // The notice before the count: a reader that sees the count go up finds it.
                 self.stats
                     .last_rejection
                     .store(Some(Arc::new(RejectionNotice {
                         id: envelope.id,
                         reason: rejection.to_string(),
                     })));
+                self.stats.rejected.fetch_add(1, Ordering::Release);
                 tracing::info!(id = %envelope.id, command = ?envelope.command, %rejection, "command refused");
             }
         }
