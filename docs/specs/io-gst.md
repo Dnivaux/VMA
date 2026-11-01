@@ -268,6 +268,7 @@ Module `outputs` : `vma-io` exécute `IoRequest::StartOutput { output, run, spec
 |---|---|---|
 | Jalon : le bouton Enregistrer (commandes seules) donne un fichier lisible dans le dossier choisi, encodeur et fichier dans l'état, activité publiée, compteurs du moteur | `record_button_writes_a_readable_file_into_the_chosen_folder` (vrai moteur, vrai encodeur) | CI + local |
 | Un enregistrement en cours à la fermeture est finalisé (MP4 lisible en entier) | `a_recording_running_at_exit_is_finalised` | CI + local |
+| *(Étape 9)* **B14** de bout en bout : GPU perdu pendant un enregistrement MKV → images noires une période après l'autre jusqu'à la fin du délai, puis finalisé (« à l'arrêt », pas « en erreur ») et lisible jusqu'au bout | `a_recording_through_a_gpu_loss_goes_black_then_is_finalised` (vrai moteur, vrai encodeur, délai 1 s) | CI + local |
 | Démarrage refusé (dossier absent, RTMP pas encore là) : seule la sortie échoue, avec la raison ; le Program continue | `refused_starts_fail_the_output_only` | CI |
 | Noms de fichier datés, jamais d'écrasement | `file_names_carry_the_date_and_never_overwrite` | CI |
 

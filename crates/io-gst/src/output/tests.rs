@@ -253,16 +253,26 @@ fn file_carries_the_pts_and_audio_of_n_at_every_master_rate() {
 }
 
 pub(crate) fn spawn_engine(rate: FrameRate, sync_test: bool) -> RenderEngine {
+    spawn_engine_with(EngineConfig {
+        rate,
+        sync_test,
+        ..EngineConfig::default()
+    })
+    .0
+}
+
+/// [`spawn_engine`] with other settings (320 × 180 whatever `config` says); also returns the
+/// device, to lose it.
+pub(crate) fn spawn_engine_with(config: EngineConfig) -> (RenderEngine, wgpu::Device) {
     let gpu =
         pollster::block_on(vma_compositor::headless::request_gpu()).expect("GPU adapter required");
     let config = EngineConfig {
-        rate,
         resolution: Resolution::new(320, 180).unwrap(),
-        sync_test,
-        ..EngineConfig::default()
+        ..config
     };
+    let rate = config.rate;
     let (engine, _readers) =
-        RenderEngine::spawn(gpu.device, gpu.queue, config, Journal::Disabled).unwrap();
+        RenderEngine::spawn(gpu.device.clone(), gpu.queue, config, Journal::Disabled).unwrap();
     engine
         .commands()
         .send(
@@ -281,7 +291,7 @@ pub(crate) fn spawn_engine(rate: FrameRate, sync_test: bool) -> RenderEngine {
     while !matches!(feedback.on_air(), OnAir::Input(_)) && Instant::now() < end {
         std::thread::sleep(Duration::from_millis(5));
     }
-    engine
+    (engine, gpu.device)
 }
 
 fn wait_delivered(engine: &RenderEngine, id: OutputId, frames: u64) {

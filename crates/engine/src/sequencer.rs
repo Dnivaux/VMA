@@ -70,6 +70,8 @@ pub struct RenderFeedback {
     done_id: AtomicU64,
     /// FTB level of the last tick, 0 to [`FTB_BLACK`].
     ftb: AtomicU64,
+    /// First tick that found the GPU lost, + 1 (0: not lost).
+    device_lost: AtomicU64,
 }
 
 impl RenderFeedback {
@@ -107,6 +109,21 @@ impl RenderFeedback {
     pub fn done(&self) -> Option<u64> {
         let id = self.done_id.load(Ordering::Acquire);
         (id != 0).then_some(id)
+    }
+
+    /// Master frame index of the first tick that found the GPU lost (ADR 0006 § 7).
+    pub fn device_lost_at(&self) -> Option<u64> {
+        self.device_lost.load(Ordering::Acquire).checked_sub(1)
+    }
+
+    /// Called by the render thread on every lost tick: only the first one is kept.
+    pub(crate) fn set_device_lost(&self, frame: u64) {
+        let _ = self.device_lost.compare_exchange(
+            0,
+            frame.saturating_add(1),
+            Ordering::AcqRel,
+            Ordering::Relaxed,
+        );
     }
 }
 

@@ -25,6 +25,8 @@ Options :
   --fullscreen <écran>   montre le Program (après FTB) en plein écran dès le démarrage, sur
                          cet écran : son nom (DP-2, HDMI-A-1… : voir le journal au
                          démarrage ou la fenêtre Sorties) ou son numéro (1 = le premier)
+  --gpu-loss-grace <s>   GPU perdu : durée pendant laquelle les sorties reçoivent du noir
+                         avant d'être finalisées et l'application fermée (défaut : 10)
   --soak <secondes>      soak : tourne N secondes, écrit un rapport, quitte
                          (code 0 = réussi, 2 = images manquées ou répétées)
   --hostile              pendant le soak, agresse la fenêtre en continu
@@ -47,6 +49,8 @@ pub struct Options {
     pub record: Option<PathBuf>,
     /// Full screen from start-up on this screen (name, or number from 1).
     pub fullscreen: Option<String>,
+    /// After a GPU loss, black on the outputs for this long, then finalised.
+    pub gpu_loss_grace: Option<Duration>,
     pub soak: Option<SoakOptions>,
     /// `None` = no journal.
     pub journal_dir: Option<PathBuf>,
@@ -79,6 +83,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> anyhow::Result<Options> 
     let mut spin_margin = None;
     let mut record = None;
     let mut fullscreen = None;
+    let mut gpu_loss_grace = None;
     let mut soak_secs = None;
     let mut hostile = false;
     let mut report = None;
@@ -116,6 +121,9 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> anyhow::Result<Options> 
             }
             "--record" => record = Some(PathBuf::from(value::<String>(&mut args, &arg)?)),
             "--fullscreen" => fullscreen = Some(value::<String>(&mut args, &arg)?),
+            "--gpu-loss-grace" => {
+                gpu_loss_grace = Some(Duration::from_secs(value::<u64>(&mut args, &arg)?));
+            }
             "--soak" => soak_secs = Some(value::<u64>(&mut args, &arg)?),
             "--hostile" => hostile = true,
             "--report" => report = Some(PathBuf::from(value::<String>(&mut args, &arg)?)),
@@ -157,6 +165,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> anyhow::Result<Options> 
         spin_margin,
         record,
         fullscreen,
+        gpu_loss_grace,
         soak,
         journal_dir,
         help,
@@ -255,6 +264,12 @@ mod tests {
             Some("DP-2")
         );
         assert!(parse_str("--fullscreen").is_err());
+        assert_eq!(o.gpu_loss_grace, None);
+        assert_eq!(
+            parse_str("--gpu-loss-grace 3").unwrap().gpu_loss_grace,
+            Some(Duration::from_secs(3))
+        );
+        assert!(parse_str("--gpu-loss-grace 1.5").is_err());
     }
 
     #[test]

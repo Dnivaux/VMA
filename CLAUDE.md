@@ -46,6 +46,8 @@ tests/soak/a6-rates.sh                                    # A6 : un soak de 2 mi
 cargo run --release -- --record /tmp/vma-rec --soak 10 --report /tmp/vma-rec/soak.md
 # Program en plein écran dès le démarrage (nom de l'écran, ou numéro : voir « screens=[…] » au démarrage) :
 cargo run --release -- --fullscreen 2 --soak 600 --report …
+# GPU perdu : noir sur les sorties pendant N s (défaut 10), puis finalisation et sortie en erreur :
+cargo run --release -- --record /tmp/vma-rec --gpu-loss-grace 5
 
 # Regénérer les golden frames après un changement visuel VOULU (puis relire le PNG) :
 VMA_UPDATE_GOLDEN=1 cargo test -p vma-compositor --test golden_test_pattern

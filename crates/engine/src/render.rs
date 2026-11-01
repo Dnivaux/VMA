@@ -5,9 +5,9 @@ use crate::control::{
 };
 use crate::feed::{ATTACH_CAPACITY, FeedRegistry};
 use crate::journal::{self, Journal, JournalStats};
-use crate::outputs::{self, ActiveOutputs, OutputHub, OutputSettings, SyncTest};
+use crate::outputs::{self, ActiveOutputs, Delivery, OutputHub, OutputSettings, SyncTest};
 use crate::plan::plan_channel;
-use crate::readback::{RING, Ready, Ring, RingWriter};
+use crate::readback::{RING, Ring, RingWriter};
 use crate::sequencer::{Composition, RenderFeedback, Sequencer};
 use crate::sources::{RenderSource, SOURCE_CAPACITY, SourceTable};
 use crate::state::{Format, State};
@@ -46,6 +46,13 @@ pub struct EngineConfig {
     /// Sync test on the outputs (`--sync-test`, ADR 0006 § 5): a white frame and a beep every
     /// second.
     pub sync_test: bool,
+    /// After a GPU loss, how long the outputs get black before they are finalised (ADR 0006
+    /// § 7; `--gpu-loss-grace`).
+    pub device_lost_grace: Duration,
+}
+
+impl EngineConfig {
+    pub const DEFAULT_DEVICE_LOST_GRACE: Duration = Duration::from_secs(10);
 }
 
 impl Default for EngineConfig {
@@ -55,6 +62,7 @@ impl Default for EngineConfig {
             resolution: Resolution::HD_1080,
             spin_margin: SystemTime::DEFAULT_SPIN_MARGIN,
             sync_test: false,
+            device_lost_grace: Self::DEFAULT_DEVICE_LOST_GRACE,
         }
     }
 }
@@ -240,6 +248,7 @@ impl RenderEngine {
             sources_tx,
         );
         controller.set_io(io_tx);
+        controller.set_device_lost_grace(config.device_lost_grace);
         let input_stats = controller.input_stats();
         let timelines = Timelines::default();
         let (commands, command_rx) = command_channel();
@@ -498,7 +507,7 @@ struct RenderWorker {
     stage: OutputStage,
     ring: RingWriter,
     /// Mapped readback buffers, to `vma-output`.
-    ready_tx: crossbeam_channel::Sender<Ready>,
+    ready_tx: crossbeam_channel::Sender<Delivery>,
     active_outputs: ActiveOutputs,
     sync: Option<SyncTest>,
     program: Output,
@@ -544,15 +553,23 @@ impl RenderWorker {
             let poll = polled.elapsed();
             // Readback buffers mapped by that poll, to `vma-output`, in frame order.
             let ready_tx = &self.ready_tx;
-            self.ring.collect(|ready| ready_tx.try_send(ready).is_ok());
+            self.ring
+                .collect(|ready| ready_tx.try_send(Delivery::Read(ready)).is_ok());
             // Every feed takes its latest picture once per tick, rendered or not, so the
             // per-input statistics count master ticks.
             self.sources.advance(started);
 
-            // Lost device: keep the clock (and the stats) running, render nothing. Recovery
-            // is the application's job (ADR 0001, « Perte du GPU »).
+            // Lost device: keep the clock (and the stats) running, render nothing; the outputs
+            // get black at the PTS of this tick until `vma-control` finalises them (ADR 0006
+            // § 7). Recovery is the application's job (ADR 0001, « Perte du GPU »).
             if lost {
                 self.stats.record_device_lost_tick();
+                self.feedback.set_device_lost(tick.index);
+                if self.active_outputs.any()
+                    && self.ready_tx.try_send(Delivery::Black(tick.index)).is_err()
+                {
+                    self.stats.record_output_drop();
+                }
                 continue;
             }
 

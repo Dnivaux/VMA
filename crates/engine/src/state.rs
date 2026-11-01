@@ -256,6 +256,8 @@ pub enum Rejection {
     OutputKindChanged,
     #[error("there is already a full-screen output")]
     FullscreenExists,
+    #[error("the GPU is lost: no output can start (restart the application)")]
+    DeviceLost,
     #[error("the secret of {0} is missing (read back from a journal): enter it again")]
     SecretMissing(OutputId),
     #[error("invalid output settings: {0}")]
@@ -342,6 +344,10 @@ pub enum Event {
         run: u64,
         reason: String,
     },
+    /// The GPU was lost at master frame `frame`: the outputs get black (ADR 0006 § 7).
+    DeviceLost { frame: u64 },
+    /// The grace period after the loss is over: every output is finalised.
+    DeviceLostGraceOver,
 }
 
 /// The whole mixer state, versioned. Readers get immutable snapshots (`StateReader`).
@@ -363,6 +369,10 @@ pub struct State {
     /// at once).
     pub outputs: Vec<OutputState>,
     pub ftb: FadeToBlack,
+    /// Master frame at which the GPU was lost: nothing is rendered any more, no output can
+    /// start (ADR 0006 § 7).
+    #[serde(default)]
+    pub device_lost: Option<u64>,
     next_input: u32,
     next_transition: u64,
     next_output: u32,
@@ -422,6 +432,7 @@ impl State {
                 run: 0,
             }],
             ftb: FadeToBlack::default(),
+            device_lost: None,
             next_input: 1,
             next_transition: 1,
             next_output: Self::DEFAULT_RECORDING.0 + 1,
@@ -611,6 +622,26 @@ impl State {
                     reason: reason.clone(),
                 })
             }),
+            Event::DeviceLost { frame } => {
+                let first = self.device_lost.is_none();
+                if first {
+                    self.device_lost = Some(*frame);
+                }
+                first
+            }
+            Event::DeviceLostGraceOver if self.device_lost.is_some() => {
+                // Those producing: a failed one keeps its reason.
+                let ids: Vec<_> = self
+                    .outputs
+                    .iter()
+                    .filter(|o| o.status.is_on())
+                    .map(|o| o.id)
+                    .collect();
+                let change = self.stop_outputs(&ids);
+                io = change.io;
+                change.changed
+            }
+            Event::DeviceLostGraceOver => false,
         };
         if changed {
             self.version += 1;
@@ -844,6 +875,9 @@ impl State {
     /// Starts the outputs of `ids` that are idle or failed; the others are left alone. Refused
     /// as a whole if one of them lacks its secret.
     fn start_outputs(&mut self, ids: &[OutputId]) -> Result<Change, Rejection> {
+        if self.device_lost.is_some() {
+            return Err(Rejection::DeviceLost);
+        }
         let startable = |o: &OutputState| !o.status.is_active();
         for o in self.outputs.iter().filter(|o| ids.contains(&o.id)) {
             if startable(o) && o.spec.secret_missing() {
@@ -2008,6 +2042,70 @@ mod tests {
         assert!(!s.plan().fullscreen);
         // Gone: a new one can be added.
         add_output(&mut s, spec("eDP-1"));
+    }
+
+    #[test]
+    fn a_lost_gpu_refuses_starts_then_finalises_what_runs() {
+        use crate::output_spec::FullscreenSpec;
+        // B14 (ADR 0006 § 7), state side.
+        let mut s = state();
+        let stream = add_output(&mut s, rtmp("k"));
+        let idle = add_output(&mut s, srt());
+        let fs = add_output(&mut s, OutputSpec::Fullscreen(FullscreenSpec::default()));
+        for output in [REC, stream, fs] {
+            s.apply(&Command::StartOutput { output }).unwrap();
+        }
+        running(&mut s, REC);
+        s.apply_event(&Event::OutputReconnecting {
+            output: stream,
+            run: s.output(stream).unwrap().run,
+            attempt: 1,
+            reason: "server gone".into(),
+        });
+        // Nothing to finalise before the loss.
+        let v = s.version;
+        assert!(s.apply_event(&Event::DeviceLostGraceOver).is_empty());
+        assert_eq!(s.version, v);
+
+        // The loss: recorded once, the outputs keep running (they get black).
+        assert!(s.apply_event(&Event::DeviceLost { frame: 1234 }).is_empty());
+        assert_eq!(s.device_lost, Some(1234));
+        assert_eq!(s.version, v + 1);
+        s.apply_event(&Event::DeviceLost { frame: 1300 });
+        assert_eq!((s.device_lost, s.version), (Some(1234), v + 1));
+        assert!(matches!(status(&s, REC), OutputStatus::Running { .. }));
+        for start in [
+            Command::StartOutput { output: idle },
+            Command::StartRecording,
+            Command::StartStreaming { slot: None },
+        ] {
+            assert_eq!(s.apply(&start), Err(Rejection::DeviceLost), "{start:?}");
+        }
+        // The operator may still stop one.
+        s.apply(&Command::StopOutput { output: fs }).unwrap();
+        s.apply(&Command::StartOutput { output: fs }).unwrap_err();
+
+        // Grace over: whatever produces is finalised.
+        let io = s.apply_event(&Event::DeviceLostGraceOver);
+        assert_eq!(
+            io,
+            [
+                IoRequest::StopOutput { output: REC },
+                IoRequest::StopOutput { output: stream },
+            ]
+        );
+        assert_eq!(status(&s, REC), OutputStatus::Stopping);
+        assert_eq!(status(&s, stream), OutputStatus::Stopping);
+        assert_eq!(status(&s, idle), OutputStatus::Idle);
+        s.apply_event(&Event::OutputStopped {
+            output: REC,
+            run: s.output(REC).unwrap().run,
+        });
+        assert_eq!(status(&s, REC), OutputStatus::Idle);
+        // Once is enough.
+        let v = s.version;
+        assert!(s.apply_event(&Event::DeviceLostGraceOver).is_empty());
+        assert_eq!(s.version, v);
     }
 
     #[test]

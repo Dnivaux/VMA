@@ -199,6 +199,15 @@ Commandes de `phase-2.md` § 5, mises en œuvre telles quelles ; précisions app
   marche) : le rendu ne remplit ses images que dans ce cas. Un écran débranché laisse la
   sortie en marche, non affichée (côté UI, voir `ui.md`).
 
+- *(Étape 9)* **Perte du GPU** (ADR 0006 § 7) : `vma-control` lit
+  `RenderFeedback::device_lost_at()` à chaque tour. `Event::DeviceLost { frame }` (une fois,
+  journalisé) remplit `State::device_lost` : les sorties continuent (le rendu leur envoie du
+  noir), tout démarrage est refusé (`Rejection::DeviceLost`, « the GPU is lost: no output can
+  start »), arrêter reste possible. `EngineConfig::device_lost_grace` (10 s) après l'avoir vu,
+  `Event::DeviceLostGraceOver` (une fois, journalisé) arrête toutes les sorties qui produisent
+  (`StopOutput` vers `vma-io`, plein écran tout de suite à l'arrêt) ; une sortie en erreur
+  garde sa raison. Sans perte, cet événement est sans effet.
+
 ## Critères d'acceptation
 | Critère | Test |
 |---|---|
@@ -214,4 +223,5 @@ Commandes de `phase-2.md` § 5, mises en œuvre telles quelles ; précisions app
 | *(Phase 2)* Sorties : démarrage, arrêt, runs, destinations 1–3, refus sans effet | `state::tests` (8 tests) |
 | *(Phase 2)* **B11** côté moteur : FTB de la durée réglée aux 6 cadences, retour, Program inchangé | `control::tests::fade_to_black_*` (temps simulé), `render_loop::fade_to_black_darkens_the_outputs_not_the_program_view` (GPU) |
 | *(Phase 2)* **B13** côté moteur : ni la clé ni la phrase de passe dans le journal, les logs (niveau TRACE) ou l'état sérialisé ; rejeu refusé sans la clé | `control::tests::secrets_never_reach_the_journal_the_logs_nor_the_published_state` |
+| *(Phase 2, étape 9)* **B14** côté état et contrôle : perte journalisée une fois, démarrages refusés, sorties qui produisent finalisées au bout du délai (pas avant, une fois), sorties en erreur ou à l'arrêt intactes | `state::tests::a_lost_gpu_refuses_starts_then_finalises_what_runs`, `control::tests::a_lost_gpu_is_journaled_and_finalises_the_outputs_after_the_grace` (temps simulé) |
 | *(Phase 2, étape 8)* Plein écran : en marche sans `vma-io`, une seule, réglages figés en marche, type figé, arrêt et suppression sans requête, drapeau du plan | `state::tests::the_full_screen_runs_without_io_and_sets_the_plan`, `plan::tests::encoding_round_trips` |

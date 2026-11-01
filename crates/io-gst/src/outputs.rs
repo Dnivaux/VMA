@@ -617,14 +617,15 @@ fn describe(pipeline: &GstOutput) -> String {
 mod tests {
     use super::*;
     use crate::IoRuntime;
-    use crate::output::tests::{read_back, spawn_engine};
+    use crate::output::tests::{read_back, spawn_engine, spawn_engine_with};
     use vma_core::{Container, FrameRate};
     use vma_engine::{
-        Command, OutputStatus, RenderEngine, RtmpSpec, Secret, Source, SrtMode, SrtSpec, State,
-        StateReader,
+        Command, EngineConfig, OutputStatus, RenderEngine, RtmpSpec, Secret, Source, SrtMode,
+        SrtSpec, State, StateReader, video_pts_ns,
     };
 
     const REC: OutputId = State::DEFAULT_RECORDING;
+    const MS: u64 = 1_000_000;
 
     fn folder(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("vma-rec-{}-{name}", std::process::id()));
@@ -733,6 +734,78 @@ mod tests {
         let (back, error) = read_back(Path::new(&target.unwrap()));
         assert_eq!(error, None);
         assert!(back.video.len() >= 15, "{} pictures", back.video.len());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// B14 with a real recording: the GPU is lost mid-run; the file goes on with black
+    /// pictures one period apart until the grace period is over, then it is finalised
+    /// (stopped, not failed) and readable to the end.
+    #[test]
+    fn a_recording_through_a_gpu_loss_goes_black_then_is_finalised() {
+        let rate = FrameRate::FPS_25;
+        let grace = Duration::from_secs(1);
+        let (mut engine, device) = spawn_engine_with(EngineConfig {
+            rate,
+            device_lost_grace: grace,
+            ..EngineConfig::default()
+        });
+        let io = IoRuntime::start(engine.take_io_port().unwrap()).unwrap();
+        let state = engine.state();
+        let dir = folder("gpu-lost");
+        record_into(&engine, Some(dir.clone()), Container::Mkv);
+        send(&engine, Command::StartRecording);
+        let status = wait_status(&state, REC, |s| matches!(s, OutputStatus::Running { .. }));
+        let OutputStatus::Running { target, .. } = status else {
+            unreachable!()
+        };
+        std::thread::sleep(Duration::from_millis(800));
+
+        device.destroy();
+        let end = wait_status(&state, REC, |s| {
+            !matches!(s, OutputStatus::Running { .. } | OutputStatus::Stopping)
+        });
+        assert_eq!(end, OutputStatus::Idle);
+        assert!(state.load().device_lost.is_some());
+        drop(engine);
+        drop(io);
+
+        let (back, error) = read_back(Path::new(&target.unwrap()));
+        assert_eq!(error, None);
+        // Test pattern, then black (first luma byte, after encoding).
+        let switch = back
+            .video
+            .iter()
+            .position(|&(_, y)| y <= 24)
+            .expect("no black picture");
+        let (rendered, black) = back.video.split_at(switch);
+        eprintln!(
+            "{} pictures, then {} black; luma {:?} → {:?}",
+            rendered.len(),
+            black.len(),
+            rendered.last(),
+            black.first()
+        );
+        assert!(rendered.len() >= 15, "{} pictures", rendered.len());
+        assert!(rendered.iter().all(|&(_, y)| y > 40), "{rendered:?}");
+        assert!(black.iter().all(|&(_, y)| y <= 24), "{black:?}");
+        let expected = grace.as_secs_f64() * rate.as_f64();
+        assert!(
+            black.len() as f64 >= expected * 0.8,
+            "{} black",
+            black.len()
+        );
+        // One period apart, but for the frames in flight on the GPU at the loss.
+        let period = video_pts_ns(rate, 1);
+        for (i, pair) in back.video.windows(2).enumerate() {
+            let step = pair[1].0 - pair[0].0;
+            let periods = (step as f64 / period as f64).round() as u64;
+            assert!(step.abs_diff(periods * period) <= MS, "step {step} at {i}");
+            let at_loss = i + 1 == switch;
+            assert!(
+                periods == 1 || (at_loss && periods <= 6),
+                "{periods} periods at {i}"
+            );
+        }
         let _ = std::fs::remove_dir_all(dir);
     }
 

@@ -4,7 +4,8 @@
 //! - `frames_carry_the_pts_and_audio_of_n_at_every_master_rate`: B3 on the engine side;
 //! - `sync_test_flashes_and_beeps_every_second`;
 //! - `stalled_output_loses_only_its_own_frames`: B6 on the engine side (run alone: real time);
-//! - `frames_are_read_back_only_while_an_output_is_attached`.
+//! - `frames_are_read_back_only_while_an_output_is_attached`;
+//! - `a_lost_gpu_sends_black_at_the_pts_of_n_then_finalises`: B14.
 //!
 //! The gap left by a frame that is not read back, and the audio that follows it, are covered
 //! by the unit tests of `outputs.rs` (simulated time).
@@ -33,20 +34,25 @@ const H: u32 = 180;
 
 /// Spawns the engine with a test-pattern input on air; returns the first frame showing it.
 fn spawn(rate: FrameRate, sync_test: bool) -> (RenderEngine, u64) {
+    let (engine, from, _) = spawn_with(EngineConfig {
+        rate,
+        resolution: Resolution::new(W, H).unwrap(),
+        sync_test,
+        ..EngineConfig::default()
+    });
+    (engine, from)
+}
+
+/// [`spawn`] with any settings; also returns the device (to lose it).
+fn spawn_with(config: EngineConfig) -> (RenderEngine, u64, wgpu::Device) {
     let gpu = pollster::block_on(headless::request_gpu()).expect("GPU adapter required");
     eprintln!(
         "adapter: {} ({:?}, {:?})",
         gpu.adapter_info.name, gpu.adapter_info.backend, gpu.adapter_info.device_type
     );
-    let resolution = Resolution::new(W, H).unwrap();
-    let config = EngineConfig {
-        rate,
-        resolution,
-        sync_test,
-        ..EngineConfig::default()
-    };
+    let (rate, resolution) = (config.rate, config.resolution);
     let (engine, _readers) =
-        RenderEngine::spawn(gpu.device, gpu.queue, config, Journal::Disabled).unwrap();
+        RenderEngine::spawn(gpu.device.clone(), gpu.queue, config, Journal::Disabled).unwrap();
     engine
         .commands()
         .send(
@@ -66,7 +72,7 @@ fn spawn(rate: FrameRate, sync_test: bool) -> (RenderEngine, u64) {
         "test pattern never went on air"
     );
     let from = feedback.last_frame() + 1;
-    (engine, from)
+    (engine, from, gpu.device)
 }
 
 fn wait_for(timeout: Duration, mut condition: impl FnMut() -> bool) -> bool {
@@ -93,6 +99,8 @@ struct Seen {
     bars: [u8; 8],
     /// Every Y' is 235 (white flash).
     white: bool,
+    /// Every Y' is 16 and every Cb, Cr 128.
+    black: bool,
     /// Left channel.
     audio: Vec<f32>,
 }
@@ -113,6 +121,7 @@ impl OutputConsumer for Collect {
             discont: frame.discont,
             bars,
             white: luma.iter().all(|&y| y == 235),
+            black: luma.iter().all(|&y| y == 16) && frame.chroma().iter().all(|&c| c == 128),
             audio: frame
                 .audio
                 .iter()
@@ -291,6 +300,114 @@ fn frames_are_read_back_only_while_an_output_is_attached() {
     assert!(hub.counters(OutputId(7)).is_none());
     engine.stop();
     assert!(engine.render_stats().cpu_summary().output.count > 0);
+}
+
+/// B14 (ADR 0006 § 7): the GPU is lost while an output runs. The output keeps getting one
+/// frame per tick, black, with the PTS and audio of *n*; no output can start; after the grace
+/// period the outputs are finalised (here, without `io-gst`, asked to stop).
+#[test]
+fn a_lost_gpu_sends_black_at_the_pts_of_n_then_finalises() {
+    let rate = FrameRate::FPS_50;
+    let grace = Duration::from_millis(800);
+    let (mut engine, _, device) = spawn_with(EngineConfig {
+        rate,
+        resolution: Resolution::new(W, H).unwrap(),
+        device_lost_grace: grace,
+        ..EngineConfig::default()
+    });
+    let rec = vma_engine::State::DEFAULT_RECORDING;
+    let state = engine.state();
+    let rx = collect(&engine, 9);
+    // The recording, as far as the state goes (no `io-gst` here: it stays « starting »).
+    engine
+        .commands()
+        .send(Source::Script, Command::StartRecording)
+        .unwrap();
+    assert!(wait_for(Duration::from_secs(2), || rx.len() >= 10));
+
+    device.destroy();
+    assert!(
+        wait_for(Duration::from_secs(5), || state
+            .load()
+            .device_lost
+            .is_some()),
+        "loss never reported"
+    );
+    let seen_lost = Instant::now();
+    let lost_at = state.load().device_lost.unwrap();
+    let control = engine.control_stats();
+    let refused = control.rejected();
+    engine
+        .commands()
+        .send(Source::Script, Command::StartOutput { output: rec })
+        .unwrap();
+    assert!(wait_for(Duration::from_secs(1), || control.rejected() > refused));
+    let reason = control.last_rejection().unwrap().reason.clone();
+    assert!(reason.contains("GPU"), "{reason}");
+
+    let stopping = |s: &vma_engine::State| {
+        s.output(rec)
+            .is_some_and(|o| o.status == vma_engine::OutputStatus::Stopping)
+    };
+    assert!(
+        !stopping(&state.load()),
+        "finalised before the grace period"
+    );
+    assert!(wait_for(grace + Duration::from_secs(2), || stopping(
+        &state.load()
+    )));
+    let waited = seen_lost.elapsed();
+    assert!(waited + Duration::from_millis(50) >= grace, "{waited:?}");
+    engine.outputs().detach(OutputId(9));
+    let hub = engine.outputs();
+    assert!(wait_for(Duration::from_secs(2), || hub.active() == 0));
+    let distribution = hub.distribution();
+    let seen: Vec<Seen> = rx.try_iter().collect();
+
+    let (rendered, black): (Vec<_>, Vec<_>) = seen.iter().partition(|f| f.index < lost_at);
+    assert!(rendered.iter().all(|f| !f.black), "black before the loss");
+    let last = rendered.last().unwrap().index;
+    let first = black.first().unwrap().index;
+    eprintln!(
+        "lost at {lost_at}: last rendered {last}, first black {first}, {} black frames, {distribution:?}",
+        black.len()
+    );
+    // At most the frames in flight on the GPU are lost at the moment of the loss.
+    assert!(first - last <= 5, "gap {last} → {first}");
+    assert!(black.iter().all(|f| f.black), "not black after the loss");
+    // About one per tick during the grace period.
+    let expected = grace.as_secs_f64() * rate.as_f64();
+    assert!(
+        black.len() as f64 >= expected * 0.8,
+        "{} black",
+        black.len()
+    );
+    assert_eq!(distribution.black, black.len() as u64, "{distribution:?}");
+    // Timestamps of n, audio continuous across the loss.
+    for pair in seen.windows(2) {
+        let (a, b) = (&pair[0], &pair[1]);
+        assert!(b.index > a.index);
+        assert_eq!(
+            b.audio_first_sample,
+            a.audio_first_sample + a.audio_samples,
+            "{} → {}",
+            a.index,
+            b.index
+        );
+        assert!(!b.discont, "frame {}", b.index);
+    }
+    for f in &seen {
+        assert_eq!(f.pts_ns, video_pts_ns(rate, f.index));
+        assert_eq!(
+            f.duration_ns,
+            video_pts_ns(rate, f.index + 1) - video_pts_ns(rate, f.index)
+        );
+        assert_eq!(
+            f.audio_first_sample + f.audio_samples,
+            audio_sample_at(rate, f.index + 1)
+        );
+    }
+    engine.stop();
 }
 
 /// Cost of the output stage on the render thread, 1080p50 with one output attached (test

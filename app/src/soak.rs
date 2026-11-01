@@ -275,6 +275,17 @@ fn run(
         std::thread::sleep(next.saturating_duration_since(Instant::now()));
     };
     let elapsed = started.elapsed();
+    if end == End::DeviceLost {
+        // The outputs get black, then are finalised (ADR 0006 § 7): report on what they wrote.
+        let lost = Instant::now();
+        while !crate::gpu_loss_handled(
+            &soak.state.load(),
+            lost.elapsed(),
+            soak.config.device_lost_grace,
+        ) {
+            std::thread::sleep(STEP);
+        }
+    }
 
     if options.hostile {
         // Leave the window in a sane state.
@@ -566,8 +577,8 @@ fn report(options: &SoakOptions, soak: &SoakContext, run: &Run<'_>) -> (String, 
     if !outputs.is_empty() {
         let _ = writeln!(
             s,
-            "## Sorties\nImages non relues par le rendu : {} ; perdues faute d'image libre (pool) : {} ; distribuées : {}.\n\n| Sortie | État | Encodeur | Envoyées | Perdues | File | Fichier / écran | Taille |\n|---|---|---|---|---|---|---|---|",
-            r.output_dropped, distribution.pool_exhausted, distribution.frames
+            "## Sorties\nImages non relues par le rendu : {} ; perdues faute d'image libre (pool) : {} ; distribuées : {} (dont noires, GPU perdu : {}).\n\n| Sortie | État | Encodeur | Envoyées | Perdues | File | Fichier / écran | Taille |\n|---|---|---|---|---|---|---|---|",
+            r.output_dropped, distribution.pool_exhausted, distribution.frames, distribution.black
         );
         for o in &outputs {
             let counters = soak.outputs.counters(o.id).unwrap_or_default();

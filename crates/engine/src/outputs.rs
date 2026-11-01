@@ -8,6 +8,8 @@
 //! - Video: `PTS(n)` from the frame index; a frame that was not read back leaves a gap, the
 //!   following PTS do not move. Audio stays continuous: the frame after a gap carries the
 //!   samples of the frames it skipped (up to one second, then a discontinuity).
+//! - GPU lost (ADR 0006 § 7): the render thread sends [`Delivery::Black`] on every tick, and
+//!   the outputs get a black picture with the PTS and audio of *n*, until they are finalised.
 
 use crate::readback::{Nv12Layout, Ready, Ring};
 use crossbeam_channel::{Receiver, Sender, TrySendError};
@@ -29,6 +31,9 @@ pub const BEEP_SAMPLES: u64 = AUDIO_RATE as u64 / 10;
 const BEEP_LEVEL: f64 = 0.5;
 /// Frames kept for reuse; a frame still held by a consumer is not reused.
 const POOL_MAX: usize = 32;
+/// Black in NV12, BT.709 limited range.
+const BLACK_LUMA: u8 = 16;
+const BLACK_CHROMA: u8 = 128;
 /// How long shutdown waits for a consumer to finish its current frame.
 const CONSUMER_JOIN_TIMEOUT: Duration = Duration::from_secs(1);
 
@@ -231,11 +236,22 @@ impl OutputCounters {
     }
 }
 
+/// What the render thread hands to `vma-output` for one tick.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Delivery {
+    /// A mapped readback buffer.
+    Read(Ready),
+    /// The GPU is lost: frame `n` is black.
+    Black(u64),
+}
+
 /// Counters of `vma-output` itself.
 #[derive(Debug, Default)]
 pub struct DistributionStats {
-    /// Frames read back and distributed.
+    /// Frames distributed (read back, or black).
     frames: AtomicU64,
+    /// Of which black, generated after a GPU loss.
+    black: AtomicU64,
     /// Frames lost because every pooled frame was still held by the outputs.
     pool_exhausted: AtomicU64,
     /// Read-back buffers that could not be read (device lost).
@@ -246,6 +262,7 @@ pub struct DistributionStats {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct DistributionSnapshot {
     pub frames: u64,
+    pub black: u64,
     pub pool_exhausted: u64,
     pub read_errors: u64,
 }
@@ -318,6 +335,7 @@ impl OutputHub {
         let s = &self.shared.stats;
         DistributionSnapshot {
             frames: s.frames.load(Ordering::Relaxed),
+            black: s.black.load(Ordering::Relaxed),
             pool_exhausted: s.pool_exhausted.load(Ordering::Relaxed),
             read_errors: s.read_errors.load(Ordering::Relaxed),
         }
@@ -353,7 +371,7 @@ pub(crate) struct OutputSettings {
 pub(crate) fn spawn(
     settings: OutputSettings,
     ring: Arc<Ring>,
-    frames: Receiver<Ready>,
+    frames: Receiver<Delivery>,
 ) -> std::io::Result<(OutputHub, ActiveOutputs, JoinHandle<()>)> {
     let shared = Arc::new(HubShared::default());
     let (tx, control) = crossbeam_channel::unbounded();
@@ -391,12 +409,13 @@ struct Distributor {
 }
 
 impl Distributor {
-    fn run(mut self, frames: &Receiver<Ready>, control: &Receiver<HubMessage>) {
+    fn run(mut self, frames: &Receiver<Delivery>, control: &Receiver<HubMessage>) {
         let mut control = control.clone();
         loop {
             crossbeam_channel::select! {
                 recv(frames) -> ready => match ready {
-                    Ok(ready) => self.distribute(ready),
+                    Ok(Delivery::Read(ready)) => self.distribute(ready),
+                    Ok(Delivery::Black(n)) => self.distribute_black(n),
                     Err(_) => break,
                 },
                 recv(control) -> message => match message {
@@ -429,16 +448,44 @@ impl Distributor {
             self.pool.extend(frame);
             return;
         }
+        if let Some(frame) = frame {
+            self.send(frame, ready.frame);
+        }
+    }
+
+    /// Frame `n` after a GPU loss: black, same timestamps and audio as a rendered one.
+    fn distribute_black(&mut self, n: u64) {
+        let mut frame = self.take_frame();
+        let Some(out) = frame.as_mut().and_then(Arc::get_mut) else {
+            self.shared
+                .stats
+                .pool_exhausted
+                .fetch_add(1, Ordering::Relaxed);
+            return;
+        };
+        // Pooled frames are allocated once: this only rewrites them (a few MB per tick).
+        let luma = (out.luma_stride() * out.resolution.height() as usize).min(out.nv12.len());
+        let (y, cbcr) = out.nv12.split_at_mut(luma);
+        y.fill(BLACK_LUMA);
+        cbcr.fill(BLACK_CHROMA);
+        self.shared.stats.black.fetch_add(1, Ordering::Relaxed);
+        if let Some(frame) = frame {
+            self.send(frame, n);
+        }
+    }
+
+    /// Stamps `frame` (unique, its picture written) as frame `n` and hands it to every output.
+    fn send(&mut self, mut frame: Arc<OutputFrame>, n: u64) {
+        let Some(out) = Arc::get_mut(&mut frame) else {
+            self.pool.push(frame);
+            return;
+        };
         let rate = self.settings.rate;
-        let n = ready.frame;
         out.index = n;
         out.pts_ns = video_pts_ns(rate, n);
         out.duration_ns = video_pts_ns(rate, n.saturating_add(1)).saturating_sub(out.pts_ns);
         self.audio.fill(n, out);
         self.shared.stats.frames.fetch_add(1, Ordering::Relaxed);
-        let Some(frame) = frame else {
-            return;
-        };
         for output in &self.attached {
             match output.tx.try_send(Arc::clone(&frame)) {
                 Ok(()) => {

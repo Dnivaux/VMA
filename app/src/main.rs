@@ -7,11 +7,26 @@ mod soak;
 use anyhow::Context as _;
 use std::process::ExitCode;
 use std::sync::{Arc, OnceLock};
-use vma_engine::{EngineConfig, Journal, RenderEngine, RenderStats};
+use std::time::{Duration, Instant};
+use vma_engine::{EngineConfig, Journal, RenderEngine, RenderStats, State, StateReader};
 use vma_ui::MainUi;
 
 /// Exit code of a soak run that completed with missed or repeated frames.
 const EXIT_SOAK_FAILED: u8 = 2;
+/// GPU lost: how long after the grace period the window waits for `vma-io` to finalise the
+/// outputs before it closes anyway (closing finalises them too, without waiting).
+const FINALISE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// GPU lost (ADR 0006 § 7), `lost_for` ago: whether the application may close. Not while an
+/// output still gets black or is being finalised (the full screen shows nothing any more),
+/// unless finalising takes too long.
+fn gpu_loss_handled(state: &State, lost_for: Duration, grace: Duration) -> bool {
+    let busy = state
+        .outputs
+        .iter()
+        .any(|o| o.status.is_active() && !o.spec.is_fullscreen());
+    !busy || lost_for >= grace + FINALISE_TIMEOUT
+}
 
 fn main() -> anyhow::Result<ExitCode> {
     let options = cli::parse(std::env::args().skip(1))?;
@@ -40,6 +55,9 @@ fn main() -> anyhow::Result<ExitCode> {
     };
     if let Some(margin) = options.spin_margin {
         config.spin_margin = margin;
+    }
+    if let Some(grace) = options.gpu_loss_grace {
+        config.device_lost_grace = grace;
     }
 
     let native_options = eframe::NativeOptions {
@@ -115,6 +133,10 @@ struct App<'a> {
     render_stats: Arc<RenderStats>,
     ui_probe: Arc<soak::UiProbe>,
     device_lost: &'a OnceLock<String>,
+    state: StateReader,
+    device_lost_grace: Duration,
+    /// When this window first saw the GPU lost.
+    lost_since: Option<Instant>,
 }
 
 impl<'a> App<'a> {
@@ -224,6 +246,7 @@ impl<'a> App<'a> {
         }
 
         let render_stats = engine.render_stats();
+        let state = engine.state();
         let ui_probe = Arc::new(soak::UiProbe::default());
         let soak_context = soak_options.map(|options| {
             (
@@ -264,6 +287,9 @@ impl<'a> App<'a> {
             render_stats,
             ui_probe,
             device_lost,
+            state,
+            device_lost_grace: config.device_lost_grace,
+            lost_since: None,
         })
     }
 }
@@ -362,18 +388,67 @@ impl vma_ui::IoStatus for Io {
 impl eframe::App for App<'_> {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.ui_probe.frame();
-        // GPU lost (ADR 0001): the window cannot render any more either. Close it; `main`
-        // then exits with an error so that the operator (or a supervisor) restarts us.
+        // GPU lost (ADR 0001, ADR 0006 § 7): the window cannot render any more either. Once
+        // the outputs are finalised, close it; `main` then exits with an error so that the
+        // operator (or a supervisor) restarts us.
         if self.device_lost.get().is_none() && self.render_stats.snapshot().device_lost {
-            let reason = self
-                .render_stats
-                .device_lost_reason()
-                .unwrap_or("unknown")
-                .to_owned();
-            tracing::error!(%reason, "GPU device lost: closing the window");
-            let _ = self.device_lost.set(reason);
-            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+            let now = Instant::now();
+            let since = *self.lost_since.get_or_insert_with(|| {
+                tracing::error!(grace = ?self.device_lost_grace, "GPU device lost: the window closes once the outputs are finalised");
+                now
+            });
+            if gpu_loss_handled(&self.state.load(), now - since, self.device_lost_grace) {
+                let reason = self
+                    .render_stats
+                    .device_lost_reason()
+                    .unwrap_or("unknown")
+                    .to_owned();
+                tracing::error!(%reason, "GPU device lost: closing the window");
+                let _ = self.device_lost.set(reason);
+                ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+            }
         }
         self.ui.show(ui);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+    use vma_engine::{Command, Event, FullscreenSpec, OutputSpec};
+
+    #[test]
+    fn after_a_gpu_loss_the_window_waits_for_the_outputs() {
+        let grace = Duration::from_secs(10);
+        let mut state = State::new(vma_engine::Format {
+            rate: vma_core::FrameRate::FPS_50,
+            resolution: vma_core::Resolution::HD_1080,
+        });
+        let fullscreen = OutputSpec::Fullscreen(FullscreenSpec::default());
+        state
+            .apply(&Command::AddOutput {
+                spec: fullscreen,
+                name: None,
+            })
+            .unwrap();
+        let fs = state.outputs.last().unwrap().id;
+        state.apply(&Command::StartOutput { output: fs }).unwrap();
+        // Only the full screen on: nothing to finalise, close at once.
+        assert!(gpu_loss_handled(&state, Duration::ZERO, grace));
+
+        state.apply(&Command::StartRecording).unwrap();
+        state.apply_event(&Event::DeviceLost { frame: 10 });
+        assert!(!gpu_loss_handled(&state, grace, grace), "still black");
+        state.apply_event(&Event::DeviceLostGraceOver);
+        assert!(!gpu_loss_handled(&state, grace, grace), "being finalised");
+        // `vma-io` never answers: closing finalises anyway.
+        assert!(gpu_loss_handled(&state, grace + FINALISE_TIMEOUT, grace));
+        let run = state.output(State::DEFAULT_RECORDING).unwrap().run;
+        state.apply_event(&Event::OutputStopped {
+            output: State::DEFAULT_RECORDING,
+            run,
+        });
+        assert!(gpu_loss_handled(&state, grace, grace));
     }
 }

@@ -3,12 +3,12 @@
 //! Producers (UI, API) send [`Command`]s through a bounded channel and never wait. The
 //! control thread applies them in order, publishes a snapshot for readers and a
 //! [`RenderPlan`](crate::RenderPlan) for the render thread, journals every command, and turns
-//! the render thread's feedback (transition started / done) into state events.
+//! the render thread's feedback (transition started / done, GPU lost) into state events.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread::JoinHandle;
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use arc_swap::{ArcSwap, ArcSwapOption};
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, TrySendError};
@@ -258,6 +258,11 @@ pub(crate) struct Controller {
     io: Option<Sender<IoRequest>>,
     seen_started: u64,
     seen_done: u64,
+    /// GPU loss (ADR 0006 § 7): the outputs are finalised `device_lost_grace` after it was
+    /// seen here.
+    device_lost_grace: Duration,
+    device_lost_since: Option<Instant>,
+    grace_over: bool,
 }
 
 impl Controller {
@@ -289,6 +294,9 @@ impl Controller {
                 io: None,
                 seen_started: 0,
                 seen_done: 0,
+                device_lost_grace: crate::EngineConfig::DEFAULT_DEVICE_LOST_GRACE,
+                device_lost_since: None,
+                grace_over: false,
             },
             reader,
         )
@@ -332,6 +340,10 @@ impl Controller {
     /// Where accepted commands send their [`IoRequest`]s (none: they are only logged).
     pub(crate) fn set_io(&mut self, io: Sender<IoRequest>) {
         self.io = Some(io);
+    }
+
+    pub(crate) fn set_device_lost_grace(&mut self, grace: Duration) {
+        self.device_lost_grace = grace;
     }
 
     /// Applies an event reported by `vma-io`.
@@ -454,6 +466,27 @@ impl Controller {
         {
             self.seen_done = id;
             self.event(Event::TransitionDone { id });
+        }
+        self.poll_device(Instant::now());
+    }
+
+    /// GPU loss: reported once, then the outputs are finalised after the grace period (the
+    /// render thread sends them black meanwhile).
+    pub(crate) fn poll_device(&mut self, now: Instant) {
+        if self.device_lost_since.is_none()
+            && let Some(frame) = self.feedback.device_lost_at()
+        {
+            self.device_lost_since = Some(now);
+            tracing::error!(frame, grace = ?self.device_lost_grace, "GPU lost: the outputs get black, then are finalised");
+            self.event(Event::DeviceLost { frame });
+        }
+        if let Some(since) = self.device_lost_since
+            && !self.grace_over
+            && now.saturating_duration_since(since) >= self.device_lost_grace
+        {
+            self.grace_over = true;
+            tracing::warn!("GPU lost: finalising the outputs");
+            self.event(Event::DeviceLostGraceOver);
         }
     }
 
@@ -653,6 +686,45 @@ mod tests {
                 .map(|e| e.line + "\n")
                 .collect::<String>()
         }
+    }
+
+    #[test]
+    fn a_lost_gpu_is_journaled_and_finalises_the_outputs_after_the_grace() {
+        // B14 (ADR 0006 § 7), control side, in simulated time.
+        use crate::state::OutputStatus;
+        let rec = State::DEFAULT_RECORDING;
+        let mut rig = Rig::new(FrameRate::FPS_50);
+        rig.controller
+            .set_device_lost_grace(Duration::from_millis(500));
+        rig.send(Command::StartRecording);
+        let status = |rig: &Rig| rig.reader.load().output(rec).unwrap().status.clone();
+        let t0 = Instant::now();
+        rig.controller.poll_device(t0);
+        assert_eq!(rig.reader.load().device_lost, None);
+
+        rig.feedback.set_device_lost(77);
+        rig.feedback.set_device_lost(78);
+        rig.controller.poll_device(t0);
+        assert_eq!(rig.reader.load().device_lost, Some(77));
+        rig.controller.poll_device(t0 + Duration::from_millis(499));
+        assert_eq!(status(&rig), OutputStatus::Starting, "black, not stopped");
+        rig.controller.poll_device(t0 + Duration::from_millis(500));
+        assert_eq!(status(&rig), OutputStatus::Stopping);
+        let version = rig.reader.load().version;
+        rig.controller.poll_device(t0 + Duration::from_secs(5));
+        assert_eq!(rig.reader.load().version, version, "finalised once");
+
+        let journal = rig.journal_text();
+        let events: Vec<_> = journal
+            .lines()
+            .filter(|l| l.contains("DeviceLost"))
+            .collect();
+        assert_eq!(events.len(), 2, "{journal}");
+        assert!(
+            events[0].contains(r#""DeviceLost":{"frame":77}"#),
+            "{journal}"
+        );
+        assert!(events[1].contains("DeviceLostGraceOver"), "{journal}");
     }
 
     #[test]

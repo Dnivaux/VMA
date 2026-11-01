@@ -181,6 +181,28 @@ Précisions (détail dans `commands.md`, `ui.md` et `io-gst.md`, « Phase 2 ») 
   de la politique commune (visible) ; une sortie en écoute ne bloque jamais le moteur
   (`wait-for-connection=false`) et reste « en cours » sans appelant.
 
+## Mise en œuvre de la perte du GPU (étape 9, 2026-11-01)
+§ 7 tel quel ; précisions (détail dans `engine.md` et `commands.md`, « Phase 2 ») :
+- **Le noir** : à chaque tick où le device est perdu, le rendu envoie `Delivery::Black(n)` à
+  `vma-output` (même canal que les tampons relus, si une sortie est attachée) ; `vma-output`
+  remplit une image de son pool (allouée une fois) en noir NV12 limité (Y' 16, Cb Cr 128) et
+  la distribue avec le PTS, la durée et l'audio de *n*, comme une image relue. Compteur
+  `black` de la distribution, dans le rapport de soak.
+- **À l'instant de la perte**, les images encore sur le GPU (3 au plus, ≈ 60 ms à 50p) ne sont
+  jamais relues : un trou, PTS inchangés et audio continu, comme toute image non relue
+  (questions 14–15).
+- **`vma-control`** voit la perte par `RenderFeedback::device_lost_at()` : événement
+  `DeviceLost { frame }` (journalisé, `State::device_lost`), démarrages refusés
+  (`Rejection::DeviceLost`) ; au bout du délai (`EngineConfig::device_lost_grace`, 10 s,
+  `--gpu-loss-grace`), `DeviceLostGraceOver` arrête toutes les sorties qui produisent
+  (finalisation normale par `vma-io`, état final « à l'arrêt », pas « en erreur »).
+- **L'application** garde la fenêtre (figée : elle partage le device) jusqu'à ce qu'aucune
+  sortie autre que le plein écran ne soit active, puis la ferme et sort en erreur. Si `vma-io`
+  ne confirme pas dans les 10 s qui suivent le délai, elle ferme quand même (la fermeture
+  finalise aussi les sorties, étape 5). « Sur ordre de l'opérateur » : fermer la fenêtre, qui
+  finalise tout de suite ; l'UI ne peut plus être dessinée pour un arrêt sortie par sortie.
+- **Plein écran** : rien à faire, il partage le device perdu (il garde sa dernière image).
+
 ## Conséquences
 - Temps de rendu par tick : + une passe FTB, une passe de conversion 4:2:0 et une copie vers
   tampon (≈ 3 Mo en 1080p) quand une sortie est active ; mesurés par l'histogramme par phase

@@ -120,6 +120,13 @@ Voir l'ADR 0006 (§§ 1–3, 5 et « Mise en œuvre côté moteur »).
   (`encode_rgba8`) dans l'emplacement libre, dans la même soumission, et publie. Sans sortie
   attachée, ni NV12 ni relecture (`encode_nv12` et l'anneau seulement si `OutputHub::active`).
 
+- *(Étape 9)* **Perte du GPU avec sorties actives** (ADR 0006 § 7 et « Mise en œuvre de la
+  perte du GPU ») : à chaque tick perdu, `RenderFeedback::device_lost_at()` garde le premier
+  *n* perdu et, si une sortie est attachée, le rendu envoie `Delivery::Black(n)` à
+  `vma-output`, qui distribue une image noire NV12 (Y' 16, Cb Cr 128) avec le PTS et l'audio
+  de *n* (compteur `black`). `EngineConfig::device_lost_grace` (10 s) : délai avant la
+  finalisation des sorties par `vma-control` (`commands.md`).
+
 ### Critères d'acceptation (étape 3)
 | Critère | Test | Où |
 |---|---|---|
@@ -130,5 +137,6 @@ Voir l'ADR 0006 (§§ 1–3, 5 et « Mise en œuvre côté moteur »).
 | **B6** (moteur) : une sortie bloquée perd ses images (comptées), l'autre les reçoit toutes, 0 tick manqué, tampon de relecture toujours libre | `tests/outputs.rs::stalled_output_loses_only_its_own_frames` (exécuté seul) | CI |
 | Pas de relecture sans sortie attachée ; arrêt après `detach` | `tests/outputs.rs::frames_are_read_back_only_while_an_output_is_attached` | CI |
 | *(Étape 8)* **B12** (moteur) : images du plein écran publiées seulement en marche, Program après FTB (noir à l'écran, blanc dans la vue Program de l'UI), aucune relecture pour le plein écran seul | `render_loop::fullscreen_frames_show_the_program_after_ftb_while_on` (RTX 5090, Intel ARL) | CI |
+| *(Étape 9)* **B14** (moteur) : GPU perdu (`Device::destroy`) avec une sortie attachée → une image par tick, noire, PTS / durée / audio de *n*, audio continu à travers la perte (≤ 5 images non relues à l'instant de la perte) ; démarrage refusé ; sorties finalisées après le délai, pas avant | `tests/outputs.rs::a_lost_gpu_sends_black_at_the_pts_of_n_then_finalises` (RTX 5090, Intel ARL) | CI |
 | Coût en 1080p50 (une sortie) | `tests/outputs.rs::output_stage_cost_1080p50` (`#[ignore]`, manuel) : tick p99 0,62 ms, étage 0,011 ms (RTX 5090) | manuel |
 
