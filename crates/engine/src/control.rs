@@ -936,6 +936,14 @@ mod tests {
             .finish();
         let mut rig = Rig::new(FrameRate::FPS_50);
         tracing::subscriber::with_default(subscriber, || {
+            // With a single scoped subscriber, tracing caches the interest of a log line for
+            // the thread that registers it: another test thread (no subscriber) hitting the
+            // refusal line first would make it « never ». Register it from here (a rig of
+            // its own), then recompute: once registered, nobody else can.
+            Rig::new(FrameRate::FPS_50).send(Command::RemoveOutput {
+                output: vma_core::OutputId(99),
+            });
+            tracing::callsite::rebuild_interest_cache();
             let rtmp = OutputSpec::Rtmp(RtmpSpec {
                 url: "rtmps://live.example.net/app".into(),
                 key: Secret::new(KEY),
