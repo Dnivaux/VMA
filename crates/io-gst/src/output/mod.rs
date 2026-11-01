@@ -13,6 +13,10 @@
 //! - Timestamps come from the frame index *n* only: frame *k* of the output (counted from the
 //!   first frame it received) has `video_pts_ns(k)`, audio sample *s* has `s / 48 kHz`. A frame
 //!   the engine could not read back leaves a gap of one period; the audio stays continuous.
+//! - An AAC encoder primes its output (one frame, 1 024 samples, played by every decoder
+//!   before the first real sample, `encoder::aac_priming`): the audio fed to it starts that
+//!   many samples later, at time 0, so that picture *k* and audio sample `audio_sample_at(k)`
+//!   are played together (B1). Both tracks start at 0; the first 21 ms of sound are lost.
 //! - No clock (ADR 0006 § 3): the engine paces the frames; the muxer waits for both streams.
 //! - The feed pushes with `block=true` into short `appsrc` queues: a slow output blocks its
 //!   own thread, and the engine counts the frames it then loses (B6).
@@ -602,10 +606,14 @@ impl GstOutput {
             mux = ?plan.mux,
             "output started"
         );
+        let priming = audio_encoder
+            .as_ref()
+            .map_or(0, |e| encoder::aac_priming(e.element));
         let feed = OutputFeed {
             video: video_src.clone(),
             audio: audio_src.clone(),
             rate: format.rate,
+            priming,
             origin: None,
             audio_started: false,
             closed: false,
@@ -753,6 +761,9 @@ pub struct OutputFeed {
     video: gst_app::AppSrc,
     audio: gst_app::AppSrc,
     rate: FrameRate,
+    /// Samples of priming of the audio encoder (0 without one): the audio starts as much
+    /// later, at time 0.
+    priming: u64,
     origin: Option<Origin>,
     audio_started: bool,
     /// The pipeline refused a buffer (stopping, failed): nothing more is pushed.
@@ -774,7 +785,7 @@ impl OutputConsumer for OutputFeed {
         let rate = self.rate;
         let origin = *self.origin.get_or_insert(Origin {
             frame: frame.index,
-            sample: audio_sample_at(rate, frame.index),
+            sample: audio_sample_at(rate, frame.index) + self.priming,
         });
         let Some(k) = frame.index.checked_sub(origin.frame) else {
             return;

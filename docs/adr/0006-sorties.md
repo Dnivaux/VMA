@@ -203,6 +203,14 @@ Précisions (détail dans `commands.md`, `ui.md` et `io-gst.md`, « Phase 2 ») 
   finalise tout de suite ; l'UI ne peut plus être dessinée pour un arrêt sortie par sortie.
 - **Plein écran** : rien à faire, il partage le device perdu (il garde sa dernière image).
 
+## Amorçage des encodeurs AAC (étape 10, 2026-11-01)
+Écart au § 3 trouvé par l'analyseur de synchro : un encodeur AAC fait précéder le son de
+1 024 échantillons d'amorçage que les décodeurs jouent (rien ne les signale dans nos
+conteneurs). Le son des sorties encodées arrivait donc 21,3 ms après l'image. Corrigé dans
+`io-gst` : l'audio donné à l'encodeur commence 1 024 échantillons plus loin, au temps 0
+(détail dans `io-gst.md`, étape 10). Les PTS vidéo restent ceux de *n* ; le son joué à
+l'instant de l'image *k* est celui de `audio_sample_at(k)`, comme le § 3 le veut.
+
 ## Conséquences
 - Temps de rendu par tick : + une passe FTB, une passe de conversion 4:2:0 et une copie vers
   tampon (≈ 3 Mo en 1080p) quand une sortie est active ; mesurés par l'histogramme par phase

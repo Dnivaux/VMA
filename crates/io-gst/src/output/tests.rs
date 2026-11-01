@@ -697,3 +697,76 @@ fn srt_settings_defaults_and_location() {
         assert!(!text.contains("a secret phrase"), "{text}");
     }
 }
+
+/// The priming of every AAC encoder of the ladder present here, as a decoder plays it: a beep
+/// after 4 800 silent samples comes out `aac_priming` samples later (B1: the video of the
+/// outputs is delayed by as much).
+#[test]
+fn aac_priming_matches_the_encoders() {
+    init();
+    let Ok(_) = gst::ElementFactory::make("avdec_aac").build() else {
+        eprintln!("skipped: no avdec_aac to decode with");
+        return;
+    };
+    let mut measured = 0;
+    for candidate in super::encoder::AAC {
+        if gst::ElementFactory::find(candidate.element).is_none() {
+            eprintln!("{}: not installed", candidate.element);
+            continue;
+        }
+        let pipeline = gst::parse::launch(&format!(
+            "appsrc name=src format=time caps=audio/x-raw,format=F32LE,rate=48000,channels=2,layout=interleaved \
+             ! audioconvert ! {} ! aacparse ! avdec_aac ! audioconvert \
+             ! audio/x-raw,format=F32LE,channels=1,layout=interleaved ! appsink name=sink sync=false",
+            candidate.element
+        ))
+        .unwrap()
+        .downcast::<gst::Pipeline>()
+        .unwrap();
+        let src = pipeline
+            .by_name("src")
+            .unwrap()
+            .downcast::<gst_app::AppSrc>()
+            .unwrap();
+        let sink = pipeline
+            .by_name("sink")
+            .unwrap()
+            .downcast::<gst_app::AppSink>()
+            .unwrap();
+        pipeline.set_state(gst::State::Playing).unwrap();
+        let mut samples: Vec<f32> = vec![0.0; 2 * 4_800];
+        for i in 0..4_800 {
+            let v = (0.5 * (std::f64::consts::TAU * f64::from(i) / 48.0).sin()) as f32;
+            samples.extend([v, v]);
+        }
+        samples.extend(std::iter::repeat_n(0.0, 2 * 9_600));
+        let bytes: Vec<u8> = samples.iter().flat_map(|s| s.to_le_bytes()).collect();
+        let mut buffer = gst::Buffer::from_mut_slice(bytes);
+        buffer.make_mut().set_pts(gst::ClockTime::from_nseconds(0));
+        src.push_buffer(buffer).unwrap();
+        src.end_of_stream().unwrap();
+        let mut decoded: Vec<f32> = Vec::new();
+        while let Ok(sample) = sink.pull_sample() {
+            let map = sample.buffer().unwrap().map_readable().unwrap();
+            decoded.extend(
+                map.as_chunks::<4>()
+                    .0
+                    .iter()
+                    .map(|b| f32::from_le_bytes(*b)),
+            );
+        }
+        pipeline.set_state(gst::State::Null).unwrap();
+        // sin reaches 0.25 on sample 4 of the beep.
+        let onset = decoded.iter().position(|v| v.abs() >= 0.25).unwrap() as u64;
+        let priming = onset.saturating_sub(4_800 + 4);
+        eprintln!("{}: priming {priming} samples", candidate.element);
+        let expected = super::encoder::aac_priming(candidate.element);
+        assert!(
+            priming.abs_diff(expected) <= 4,
+            "{}: {priming} samples, not {expected}",
+            candidate.element
+        );
+        measured += 1;
+    }
+    assert!(measured > 0, "no AAC encoder");
+}

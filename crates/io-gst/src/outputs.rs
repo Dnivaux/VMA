@@ -814,6 +814,52 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    /// B1 tooling: a recording made with `--sync-test` (real encoders), read back by the
+    /// sync analyser: one flash a second, each with its beep, within one frame.
+    #[test]
+    fn sync_test_recording_has_its_beeps_on_its_flashes() {
+        let rate = FrameRate::FPS_50;
+        let mut engine = spawn_engine(rate, true);
+        let io = IoRuntime::start(engine.take_io_port().unwrap()).unwrap();
+        let state = engine.state();
+        let dir = folder("sync");
+        record_into(&engine, Some(dir.clone()), Container::Mkv);
+        send(&engine, Command::StartRecording);
+        let status = wait_status(&state, REC, |s| matches!(s, OutputStatus::Running { .. }));
+        let OutputStatus::Running { target, encoder } = status else {
+            unreachable!()
+        };
+        std::thread::sleep(Duration::from_millis(4_500));
+        send(&engine, Command::StopRecording);
+        wait_status(&state, REC, |s| *s == OutputStatus::Idle);
+        drop(engine);
+        drop(io);
+
+        let path = PathBuf::from(target.unwrap());
+        let uri = format!("file://{}", path.display()).replace('\\', "/");
+        let uri = if uri.starts_with("file:///") {
+            uri
+        } else {
+            uri.replacen("file://", "file:///", 1)
+        };
+        let analyser = crate::SyncAnalyser::start(&uri, rate).unwrap();
+        let end = Instant::now() + Duration::from_secs(20);
+        while !analyser.ended() && Instant::now() < end {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let sync = analyser.stop();
+        eprintln!("{encoder}: {sync:?}");
+        assert!(sync.ended && sync.last_error.is_none(), "{sync:?}");
+        assert!(sync.flashes >= 4, "{sync:?}");
+        assert_eq!(sync.offsets_ns.len() as u64, sync.flashes, "{sync:?}");
+        assert_eq!(sync.unpaired_beeps, 0, "{sync:?}");
+        // B1 asks for one frame; the AAC priming is compensated, so only the millisecond of
+        // Matroska remains.
+        assert!(sync.worst_ns().unwrap() <= 2 * MS as i64, "{sync:?}");
+        assert_eq!(sync.video_gaps, 0, "{sync:?}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     #[test]
     fn refused_starts_fail_the_output_only() {
         let mut engine = spawn_engine(FrameRate::FPS_25, false);
@@ -1030,6 +1076,41 @@ mod tests {
         for id in streams {
             wait_status(&state, id, |s| *s == OutputStatus::Idle);
         }
+    }
+
+    /// B1 tooling, live: a `--sync-test` stream read back from the server by the sync
+    /// analyser, as the 1 h soak does: a flash a second, each with its beep, within the
+    /// millisecond of FLV; no interruption.
+    #[test]
+    fn sync_analyser_reads_a_live_stream_back() {
+        let Some(server) = Server::start() else {
+            return;
+        };
+        crate::pipeline::tests::init();
+        let rate = FrameRate::FPS_50;
+        let mut engine = spawn_engine(rate, true);
+        let io = IoRuntime::start(engine.take_io_port().unwrap()).unwrap();
+        let state = engine.state();
+        send(&engine, rtmp(&server.url(), "sync"));
+        send(&engine, Command::StartStreaming { slot: None });
+        wait_status(&state, OutputId(2), |s| {
+            matches!(s, OutputStatus::Running { .. })
+        });
+        let analyser = crate::SyncAnalyser::start(&format!("{}/sync", server.url()), rate).unwrap();
+        // The server announces the stream once it has probed it (≈ 2 s), then 5 flashes.
+        let end = Instant::now() + Duration::from_secs(20);
+        while analyser.snapshot().offsets_ns.len() < 5 && Instant::now() < end {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let sync = analyser.stop();
+        drop(engine);
+        drop(io);
+        eprintln!("{sync:?}");
+        assert!(sync.offsets_ns.len() >= 5, "{sync:?}");
+        assert!(sync.worst_ns().unwrap() <= 2 * MS as i64, "{sync:?}");
+        assert_eq!(sync.unpaired_beeps, 0, "{sync:?}");
+        assert!(sync.unpaired_flashes <= 1, "{sync:?}");
+        assert_eq!((sync.interruptions, sync.video_gaps), (0, 0), "{sync:?}");
     }
 
     #[test]

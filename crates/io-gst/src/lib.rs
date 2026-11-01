@@ -9,6 +9,8 @@
 //! - Outputs ([`GstOutput`], Phase 2): one pipeline per output (encoder ladder, MKV / MP4),
 //!   fed by the engine's distribution through an [`OutputFeed`]. `vma-io` starts and stops
 //!   them on the requests of `vma-control` ([`IoRuntime::output_activity`]).
+//! - [`SyncAnalyser`] (`--sync-test`, B1): reads a stream or file back and measures beep −
+//!   flash.
 //! - Capture devices: listed by a device monitor ([`IoRuntime::devices`]), opened in the mode
 //!   closest to the master format ([`CaptureMode`], [`IoRuntime::pipeline_info`]).
 
@@ -21,6 +23,7 @@ mod pipeline;
 mod runtime;
 pub mod still;
 mod supervisor;
+mod sync;
 
 pub use devices::CaptureDevice;
 pub use feeds::{Feeds, PictureOut, VideoFormat};
@@ -30,6 +33,7 @@ pub use output::{
 };
 pub use outputs::{OutputActivity, default_record_folder};
 pub use runtime::{IoRuntime, PipelineInfo};
+pub use sync::{SyncAnalyser, SyncSnapshot};
 
 /// Errors of `io-gst`.
 #[derive(Debug, thiserror::Error)]

@@ -346,3 +346,38 @@ Windows (pas de MediaMTX en CI), ils sont sautés.
 | **B8** mauvaise phrase de passe : refusée (reconnexion), rien de déchiffré, aucune phrase dans l'état | `srt_wrong_passphrase_is_refused_and_never_shown` | idem |
 | **B8** écoute : en cours seule, sans perte ; un appelant `srtsrc` reçoit le flux ; son départ ne la fait pas tomber | `srt_listener_waits_for_its_receivers` | idem |
 | Réglages, adresse, IPv6, aucun secret dans `Debug` | `output::tests::srt_settings_defaults_and_location` | CI |
+
+## Phase 2 — Analyseur de synchro et amorçage AAC (étape 10, 2026-11-01)
+- **`SyncAnalyser`** (`sync.rs`, thread `vma-sync`) : relit une URI (`rtmp://…`,
+  `file:///…`) produite avec `--sync-test` par `uridecodebin` **avec décodeurs logiciels**
+  (`force-sw-decoders` : un décodeur matériel peut rendre des images en mémoire GPU que
+  `videoconvert` ne lit pas, quand un flux en direct démarre avant que la branche soit reliée).
+  Images réduites à 32 × 18 en GRAY8 ; **flash** = image presque toute blanche (moyenne ≥ 200,
+  minimum ≥ 170), comptée sur sa première image ; **bip** = premier échantillon ≥ 0,25 (moitié
+  du niveau du bip) après ≥ 200 ms en dessous. Chaque flash est apparié au bip à ± 500 ms
+  près, dans l'ordre où ils arrivent (vidéo et audio d'un fichier sont décodés à leur rythme) ;
+  ce qui reste seul est compté. Un flux pris en cours commence sa vidéo à une image clé, après
+  son audio : ce qu'une piste a plus d'une image avant le début de l'autre n'est pas compté.
+  Source en direct arrêtée (erreur, fin) → rouverte toutes les secondes ; une
+  **interruption** est comptée si des images étaient arrivées. Résultat (`SyncSnapshot`) :
+  images, trous (> 1,5 période), flashs, bips, décalages bip − flash, non appariés,
+  interruptions, dernière erreur.
+- **Amorçage des encodeurs AAC** (trouvé par l'analyseur) : la première trame d'un encodeur
+  AAC se décode en 1 024 échantillons d'amorçage, et aucun décodeur ne les retire (GStreamer
+  ne signale ce délai ni en MKV, ni en MP4, ni en FLV). Sans correction, le son des sorties
+  encodées arrivait **21,3 ms après l'image** (plus d'une image à 50p). Correction : la sortie
+  donne à l'encodeur l'audio à partir de l'échantillon `audio_sample_at(n₀) + amorçage`, à
+  partir du temps 0 ; image *k* et échantillon `audio_sample_at(k)` sont ainsi joués ensemble,
+  les deux pistes commencent à 0 et les 21 premières ms de son sont perdues (retarder la vidéo
+  à la place empêchait de relire au-delà du premier fragment un MP4 tué, B5).
+  `encoder::aac_priming` : 1 024 pour chaque encodeur ; mesuré pour `avenc_aac` (1 025, à
+  l'échantillon près de la détection) ; `voaacenc` et `mfaacenc` sont vérifiés par le test là
+  où ils sont installés (la CI Windows). Sans encodeur audio (MKV brut), rien ne change (B3).
+
+### Critères (étape 10)
+| Critère | Test (`vma-io-gst`) | Où |
+|---|---|---|
+| Appariement flash / bip dans les deux ordres, abandon d'un flash seul, distance max, réouverture ; début d'une piste après l'autre ; front du bip ; reconnaissance du flash | `sync::tests` (4 tests) | CI |
+| Amorçage de chaque encodeur AAC présent = `aac_priming` (± 4 échantillons) : bip encodé puis décodé | `output::tests::aac_priming_matches_the_encoders` | CI (les 2 OS) |
+| Enregistrement `--sync-test` (vrais encodeurs) relu par l'analyseur : chaque flash a son bip, décalage ≤ 2 ms (milliseconde de Matroska), aucun trou | `outputs::tests::sync_test_recording_has_its_beeps_on_its_flashes` | CI + local (≤ 0,8 ms) |
+| Flux RTMP `--sync-test` relu depuis MediaMTX : 5 flashs appariés, ≤ 2 ms, aucune interruption ni trou | `outputs::tests::sync_analyser_reads_a_live_stream_back` (exécuté seul) | CI Ubuntu (MediaMTX) ; local (−0,6 à +0,4 ms) |

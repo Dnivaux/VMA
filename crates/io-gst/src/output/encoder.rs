@@ -59,6 +59,18 @@ pub(crate) fn video_ladder(codec: VideoCodec) -> &'static [Candidate] {
     }
 }
 
+/// Samples of priming an AAC encoder puts before the first input sample (the first frame it
+/// outputs decodes to them), as decoders play them: the output feeds it audio starting as
+/// much later (`OutputFeed`). AAC-LC primes one frame (1 024 samples) in every encoder
+/// measured (`aac_priming_matches_the_encoders` checks each one present).
+pub(crate) fn aac_priming(element: &str) -> u64 {
+    match element {
+        // Measured: avenc_aac (gst-libav 1.26, Linux).
+        "avenc_aac" | "voaacenc" | "mfaacenc" => 1_024,
+        _ => 1_024,
+    }
+}
+
 /// An encoder that was not retained, and why.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Skipped {
