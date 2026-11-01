@@ -95,6 +95,18 @@ pub enum OutputSpec {
     Record(RecordSpec),
     Rtmp(RtmpSpec),
     Srt(SrtSpec),
+    /// The Program, full screen on a screen of this computer (Phase 2 step 8). Shown by the
+    /// UI, not by `io-gst`.
+    Fullscreen(FullscreenSpec),
+}
+
+/// The full-screen output.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct FullscreenSpec {
+    /// Name of the screen, as the windowing system gives it (« DP-2 », « HDMI-A-1 »…);
+    /// `None`: the first screen of the list. A screen that is not connected leaves the output
+    /// on, not shown, until it comes back.
+    pub screen: Option<String>,
 }
 
 /// A local recording (defaults: `phase-2.md` § 6).
@@ -182,12 +194,26 @@ pub enum InvalidSpec {
     SrtLatency(u32),
     #[error("the SRT passphrase must have 10 to 79 characters")]
     SrtPassphrase,
+    #[error("the screen name is empty")]
+    Screen,
 }
 
 impl OutputSpec {
     /// Streams (RTMP, SRT) take one of the [`STREAM_SLOTS`] destinations.
     pub fn is_stream(&self) -> bool {
-        !self.is_recording()
+        matches!(self, Self::Rtmp(_) | Self::Srt(_))
+    }
+
+    /// Shown by the UI on a screen: no `io-gst` pipeline, no encoder.
+    pub fn is_fullscreen(&self) -> bool {
+        matches!(self, Self::Fullscreen(_))
+    }
+
+    /// Recording, stream and full screen cannot turn into one another.
+    pub(crate) fn same_kind(&self, other: &Self) -> bool {
+        self.is_recording() == other.is_recording()
+            && self.is_stream() == other.is_stream()
+            && self.is_fullscreen() == other.is_fullscreen()
     }
 
     pub fn is_recording(&self) -> bool {
@@ -197,7 +223,7 @@ impl OutputSpec {
     /// The secret of the spec is not known (read back from a journal).
     pub fn secret_missing(&self) -> bool {
         match self {
-            Self::Record(_) => false,
+            Self::Record(_) | Self::Fullscreen(_) => false,
             Self::Rtmp(rtmp) => rtmp.key.expose().is_none(),
             Self::Srt(srt) => srt.passphrase.expose().is_none(),
         }
@@ -207,6 +233,7 @@ impl OutputSpec {
     pub fn default_name(&self, slot: Option<u8>) -> String {
         match (self, slot) {
             (Self::Record(_), _) => "Enregistrement".into(),
+            (Self::Fullscreen(_), _) => "Plein écran".into(),
             (_, Some(slot)) => format!("Stream {slot}"),
             (_, None) => "Stream".into(),
         }
@@ -217,6 +244,7 @@ impl OutputSpec {
             Self::Record(r) => r.video_kbps,
             Self::Rtmp(r) => r.video_kbps,
             Self::Srt(s) => s.video_kbps,
+            Self::Fullscreen(_) => None,
         };
         if let Some(kbps) = kbps
             && !VIDEO_KBPS_RANGE.contains(&kbps)
@@ -225,6 +253,10 @@ impl OutputSpec {
         }
         match self {
             Self::Record(_) => Ok(()),
+            Self::Fullscreen(f) => match &f.screen {
+                Some(name) if name.trim().is_empty() => Err(InvalidSpec::Screen),
+                _ => Ok(()),
+            },
             Self::Rtmp(rtmp) => {
                 let url = rtmp.url.trim().to_ascii_lowercase();
                 let host = url

@@ -36,6 +36,7 @@ use vma_engine::{
     Command, EngineConfig, Format, FrameReader, InputSpec, InputStatus, Journal, OnAir,
     OutputConsumer, OutputFrame, RenderEngine, Source, State,
 };
+use vma_engine::{FullscreenSpec, OutputSpec};
 
 struct Spawned {
     engine: RenderEngine,
@@ -43,6 +44,7 @@ struct Spawned {
     reader: FrameReader,
     preview: FrameReader,
     thumbnails: FrameReader,
+    fullscreen: FrameReader,
     device: wgpu::Device,
     queue: wgpu::Queue,
     adapter: String,
@@ -94,6 +96,7 @@ fn spawn_with_journal(rate: FrameRate, resolution: Resolution, journal: Journal)
         reader: readers.program,
         preview: readers.preview,
         thumbnails: readers.thumbnails,
+        fullscreen: readers.fullscreen,
         device: gpu.device,
         queue: gpu.queue,
         adapter,
@@ -479,6 +482,7 @@ enum Out {
     Program,
     Preview,
     Thumbnails,
+    Fullscreen,
 }
 
 /// Waits for a frame at or after `min_frame` on `out`, then reads it back whole. The reader
@@ -490,6 +494,7 @@ fn read_frame(spawned: &mut Spawned, out: Out, min_frame: u64) -> (Vec<u8>, u32)
             Out::Program => &mut spawned.reader,
             Out::Preview => &mut spawned.preview,
             Out::Thumbnails => &mut spawned.thumbnails,
+            Out::Fullscreen => &mut spawned.fullscreen,
         };
         reader.update();
         if reader.current_frame_index() >= min_frame {
@@ -673,6 +678,92 @@ fn fade_to_black_darkens_the_outputs_not_the_program_view() {
         fading[start..].windows(2).all(|w| w[1].1 < w[0].1),
         "darker every frame: {seen:?}"
     );
+}
+
+#[test]
+fn fullscreen_frames_show_the_program_after_ftb_while_on() {
+    // B12 (engine side): the full-screen frames are published only while the output is on,
+    // carry the FTB (the UI's Program view does not), and need no read-back.
+    let mut spawned = spawn_with_journal(
+        FrameRate::FPS_50,
+        Resolution::new(320, 180).unwrap(),
+        Journal::Disabled,
+    );
+    let commands = spawned.engine.commands();
+    let feedback = spawned.engine.feedback();
+    let state = spawned.engine.state();
+    let send = |command| commands.send(Source::Ui, command).unwrap();
+    send(Command::AddInput {
+        spec: InputSpec::Color { color: Rgb8::WHITE },
+        name: None,
+    });
+    assert!(wait_for(Duration::from_secs(2), || matches!(
+        feedback.on_air(),
+        OnAir::Input(_)
+    )));
+    std::thread::sleep(Duration::from_millis(100));
+    assert!(!spawned.fullscreen.update(), "nothing published while off");
+
+    send(Command::AddOutput {
+        spec: OutputSpec::Fullscreen(FullscreenSpec {
+            screen: Some("DP-2".into()),
+        }),
+        name: None,
+    });
+    assert!(wait_for(Duration::from_secs(2), || state
+        .load()
+        .outputs
+        .iter()
+        .any(|o| o.spec.is_fullscreen())));
+    let fs = state.load().outputs.last().unwrap().id;
+    send(Command::StartOutput { output: fs });
+    let from = feedback.last_frame() + 2;
+    let centre = |spawned: &mut Spawned, out, from| {
+        let (img, w) = read_frame(spawned, out, from);
+        pixel(&img, w, w / 2, 90)
+    };
+    assert_eq!(centre(&mut spawned, Out::Fullscreen, from), [255; 4]);
+
+    send(Command::SetFadeToBlackDuration { ms: 0 });
+    send(Command::FadeToBlack);
+    assert!(wait_for(Duration::from_secs(3), || feedback
+        .fade_to_black()
+        == 1.0));
+    let from = feedback.last_frame() + 1;
+    assert_eq!(
+        centre(&mut spawned, Out::Fullscreen, from),
+        [0, 0, 0, 255],
+        "black on the screen"
+    );
+    assert_eq!(
+        centre(&mut spawned, Out::Program, from),
+        [255; 4],
+        "white in the UI's Program view"
+    );
+    send(Command::FadeToBlack);
+    assert!(wait_for(Duration::from_secs(3), || feedback
+        .fade_to_black()
+        == 0.0));
+    let from = feedback.last_frame() + 1;
+    assert_eq!(centre(&mut spawned, Out::Fullscreen, from), [255; 4]);
+
+    send(Command::StopOutput { output: fs });
+    assert!(wait_for(Duration::from_secs(2), || !state
+        .load()
+        .output(fs)
+        .unwrap()
+        .status
+        .is_on()));
+    // The plan reaches the render thread on its next tick.
+    std::thread::sleep(Duration::from_millis(100));
+    spawned.fullscreen.update();
+    let last = spawned.fullscreen.current_frame_index();
+    std::thread::sleep(Duration::from_millis(200));
+    assert!(!spawned.fullscreen.update(), "published after the stop");
+    assert_eq!(spawned.fullscreen.current_frame_index(), last);
+    let render = spawned.engine.render_stats().snapshot();
+    assert_eq!(render.outputs_read, 0, "no read-back for the screen alone");
+    spawned.engine.stop();
 }
 
 /// Adds an input fed from outside (a file spec: no `io-gst` yet, so nothing opens it) and

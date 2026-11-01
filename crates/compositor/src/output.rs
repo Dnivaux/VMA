@@ -212,6 +212,18 @@ impl OutputStage {
         encoder: &mut wgpu::CommandEncoder,
         look: OutputLook,
     ) {
+        self.encode_look(queue, encoder, look);
+        self.encode_nv12(encoder);
+    }
+
+    /// Records the FTB / flash pass alone (`Program` → `out16`): enough for the full-screen
+    /// output ([`OutputStage::encode_rgba8`]).
+    pub fn encode_look(
+        &self,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        look: OutputLook,
+    ) {
         let uniforms = LookUniforms {
             gain: look.gain(),
             flash: u32::from(look.flash),
@@ -225,6 +237,10 @@ impl OutputStage {
             &self.look_bind_group,
             self.out16.view(),
         );
+    }
+
+    /// Records the NV12 conversion of `out16` (after [`OutputStage::encode_look`]).
+    pub fn encode_nv12(&self, encoder: &mut wgpu::CommandEncoder) {
         draw_fullscreen(
             encoder,
             "nv12.y.pass",
@@ -241,7 +257,7 @@ impl OutputStage {
         );
     }
 
-    /// Records the conversion of `out16` (after [`OutputStage::encode`]) to `out`, a
+    /// Records the conversion of `out16` (after [`OutputStage::encode_look`]) to `out`, a
     /// [`PROGRAM_FORMAT`] view of the Program size (full-screen output).
     pub fn encode_rgba8(&self, encoder: &mut wgpu::CommandEncoder, out: &wgpu::TextureView) {
         draw_fullscreen(

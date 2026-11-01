@@ -114,6 +114,12 @@ Voir l'ADR 0006 (§§ 1–3, 5 et « Mise en œuvre côté moteur »).
   `pool_exhausted`, `read_errors`).
 - `EngineConfig::sync_test` (ligne de commande à l'étape 5 ou 10).
 
+- *(Étape 8)* **Plein écran** : `Readers::fullscreen`, un quatrième `FrameReader` (triple
+  buffer `Rgba8Unorm`, même invariant). Quand le plan dit `fullscreen`, le rendu enregistre la
+  passe FTB / flash (`OutputStage::encode_look`) puis la conversion `out16` → `Rgba8Unorm`
+  (`encode_rgba8`) dans l'emplacement libre, dans la même soumission, et publie. Sans sortie
+  attachée, ni NV12 ni relecture (`encode_nv12` et l'anneau seulement si `OutputHub::active`).
+
 ### Critères d'acceptation (étape 3)
 | Critère | Test | Où |
 |---|---|---|
@@ -123,5 +129,6 @@ Voir l'ADR 0006 (§§ 1–3, 5 et « Mise en œuvre côté moteur »).
 | Flash et bip sur le même échantillon, toutes les secondes, aux 6 cadences | `outputs::tests::sync_flash_and_beep_start_on_the_same_sample`, `tests/outputs.rs::sync_test_flashes_and_beeps_every_second` | CI |
 | **B6** (moteur) : une sortie bloquée perd ses images (comptées), l'autre les reçoit toutes, 0 tick manqué, tampon de relecture toujours libre | `tests/outputs.rs::stalled_output_loses_only_its_own_frames` (exécuté seul) | CI |
 | Pas de relecture sans sortie attachée ; arrêt après `detach` | `tests/outputs.rs::frames_are_read_back_only_while_an_output_is_attached` | CI |
+| *(Étape 8)* **B12** (moteur) : images du plein écran publiées seulement en marche, Program après FTB (noir à l'écran, blanc dans la vue Program de l'UI), aucune relecture pour le plein écran seul | `render_loop::fullscreen_frames_show_the_program_after_ftb_while_on` (RTX 5090, Intel ARL) | CI |
 | Coût en 1080p50 (une sortie) | `tests/outputs.rs::output_stage_cost_1080p50` (`#[ignore]`, manuel) : tick p99 0,62 ms, étage 0,011 ms (RTX 5090) | manuel |
 

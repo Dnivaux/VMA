@@ -138,9 +138,23 @@ Checklist proposée : [`docs/manual-tests/observation-reference-phase2.md`](../m
 En attendant, les valeurs du § 6 sont utilisées.
 
 ## 8. Risques et limites connus
-- **Wayland** : un client ne peut pas choisir l'écran d'une fenêtre plein écran ; sous
-  Hyprland, la fenêtre passe en plein écran sur l'écran où elle se trouve (à y déplacer à la
-  main ou par une règle du compositeur). Documenté dans la checklist.
+- **Wayland** : un client ne peut pas *placer* une fenêtre, mais il peut demander le plein
+  écran sur un écran donné (`xdg_toplevel.set_fullscreen(output)`, ce que fait winit pour
+  `with_monitor`) ; le compositeur reste libre de refuser. Repli : une règle du compositeur
+  sur l'identifiant d'application `vma-program`. Documenté dans la checklist.
+- **Essais du 2026-11-01** (Hyprland 0.56, **un seul écran**, occupé en même temps par une
+  autre application en plein écran) : deux soaks de 6 et 9 s avec `--fullscreen 1` → fenêtre
+  « VMA — Program » rafraîchie à 59,5 et 59,9 Hz, 49,8 et 49,9 images du Program par seconde,
+  1 puis 0 image sautée, 0 image manquée au rendu, fenêtre principale presque plus redessinée
+  (14 frames). Dans les essais suivants, la fenêtre « VMA — Program » a été **juxtaposée** à la
+  fenêtre principale au lieu de passer en plein écran (refus probable : une autre fenêtre déjà
+  en plein écran sur l'espace de travail), et aucune des deux n'était redessinée (plus de
+  rappels de trame du compositeur ; le thread UI attendait dans la boucle winit, pas bloqué).
+  Conclusion limitée : le chemin rendu → fenêtre fonctionne à la cadence maître ; placement,
+  fluidité et UI sur un vrai écran secondaire : checklist B12.
+- **Un seul écran** : la fenêtre plein écran couvre la fenêtre principale ; sous Wayland, une
+  fenêtre cachée n'est en principe plus redessinée. Pour en sortir : fermer la fenêtre plein
+  écran (raccourci du compositeur) ; elle se masque d'elle-même dès que la sortie s'arrête.
 - **Plein écran et rafraîchissement** : un écran à 60 Hz affichant un maître 50p saccade
   (une image répétée toutes les 5) ; régler l'écran à la cadence maître si possible. La
   présentation de deux surfaces sur le thread UI peut réduire sa fréquence : à mesurer (B12),

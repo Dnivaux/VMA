@@ -48,6 +48,8 @@ pub struct RenderPlan {
     pub transition: Option<PlanTransition>,
     pub domain: MixDomain,
     pub ftb: PlanFtb,
+    /// A full-screen output is on: the render thread fills its frames.
+    pub fullscreen: bool,
 }
 
 const WORDS: usize = 8;
@@ -83,7 +85,9 @@ impl RenderPlan {
             from,
             to,
             bits | (domain << 56),
-            u64::from(self.ftb.black) | (u64::from(self.ftb.frames) << 1),
+            u64::from(self.ftb.black)
+                | (u64::from(self.ftb.frames) << 1)
+                | (u64::from(self.fullscreen) << 40),
         ]
     }
 
@@ -130,6 +134,7 @@ impl RenderPlan {
                 black: ftb & 1 == 1,
                 frames: ((ftb >> 1) & 0xffff_ffff) as u32,
             },
+            fullscreen: (ftb >> 40) & 1 == 1,
         }
     }
 }
@@ -239,6 +244,7 @@ mod tests {
                 black: n.is_multiple_of(3),
                 frames: n * 11,
             },
+            fullscreen: n.is_multiple_of(4),
         }
     }
 
@@ -261,6 +267,7 @@ mod tests {
                 black: true,
                 frames: u32::MAX,
             },
+            fullscreen: true,
             ..RenderPlan::default()
         };
         assert_eq!(RenderPlan::decode(edge.encode()), edge);

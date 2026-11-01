@@ -222,6 +222,8 @@ impl Outputs {
             OutputSpec::Srt(srt) => self
                 .srt_settings(srt)
                 .map(|s| Recipe::Stream(Target::Srt(s))),
+            // Shown by the UI: `vma-control` never asks for it.
+            OutputSpec::Fullscreen(_) => Err("the full screen has no pipeline".to_owned()),
         };
         let started = recipe.and_then(|recipe| {
             let (pipeline, target) = match (&recipe, spec) {

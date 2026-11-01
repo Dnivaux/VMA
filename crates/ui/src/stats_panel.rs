@@ -12,6 +12,7 @@ pub(crate) fn show(
     engine: &RenderEngine,
     io: &dyn IoStatus,
     reader: &FrameReader,
+    fullscreen: &crate::FullscreenStats,
     adapter: &str,
 ) {
     let clock = engine.clock_stats().snapshot();
@@ -106,6 +107,25 @@ pub(crate) fn show(
                     ui,
                     "Images perdues (pool vide)",
                     distribution.pool_exhausted,
+                );
+            });
+    }
+    let shown = fullscreen.snapshot();
+    if shown.painted > 0 {
+        egui::Grid::new("fullscreen_grid")
+            .num_columns(2)
+            .spacing([12.0, 4.0])
+            .show(ui, |ui| {
+                row(
+                    ui,
+                    "Plein écran : images affichées",
+                    format!("{} ({} rafraîchissements)", shown.shown, shown.painted),
+                );
+                counter(ui, "Plein écran : images sautées", shown.skipped);
+                row(
+                    ui,
+                    "Plein écran : écart max",
+                    ms(Duration::from_nanos(shown.max_gap_ns)),
                 );
             });
     }

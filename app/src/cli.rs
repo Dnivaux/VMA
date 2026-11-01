@@ -22,6 +22,9 @@ Options :
   --spin-margin-us <µs>  marge d'attente active de l'horloge maître (défaut : 1000)
   --record <dossier>     enregistre le Program dès le démarrage, dans ce dossier
                          (sans l'option : bouton « Enregistrer », dossier Vidéos)
+  --fullscreen <écran>   montre le Program (après FTB) en plein écran dès le démarrage, sur
+                         cet écran : son nom (DP-2, HDMI-A-1… : voir le journal au
+                         démarrage ou la fenêtre Sorties) ou son numéro (1 = le premier)
   --soak <secondes>      soak : tourne N secondes, écrit un rapport, quitte
                          (code 0 = réussi, 2 = images manquées ou répétées)
   --hostile              pendant le soak, agresse la fenêtre en continu
@@ -42,6 +45,8 @@ pub struct Options {
     pub spin_margin: Option<Duration>,
     /// Record from start-up into this folder.
     pub record: Option<PathBuf>,
+    /// Full screen from start-up on this screen (name, or number from 1).
+    pub fullscreen: Option<String>,
     pub soak: Option<SoakOptions>,
     /// `None` = no journal.
     pub journal_dir: Option<PathBuf>,
@@ -73,6 +78,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> anyhow::Result<Options> 
     let mut input_resolution = None;
     let mut spin_margin = None;
     let mut record = None;
+    let mut fullscreen = None;
     let mut soak_secs = None;
     let mut hostile = false;
     let mut report = None;
@@ -109,6 +115,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> anyhow::Result<Options> 
                 spin_margin = Some(Duration::from_micros(us));
             }
             "--record" => record = Some(PathBuf::from(value::<String>(&mut args, &arg)?)),
+            "--fullscreen" => fullscreen = Some(value::<String>(&mut args, &arg)?),
             "--soak" => soak_secs = Some(value::<u64>(&mut args, &arg)?),
             "--hostile" => hostile = true,
             "--report" => report = Some(PathBuf::from(value::<String>(&mut args, &arg)?)),
@@ -149,6 +156,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> anyhow::Result<Options> 
         inputs,
         spin_margin,
         record,
+        fullscreen,
         soak,
         journal_dir,
         help,
@@ -238,6 +246,15 @@ mod tests {
             Some(PathBuf::from("/media/rec"))
         );
         assert!(parse_str("--record").is_err());
+        assert_eq!(o.fullscreen, None);
+        assert_eq!(
+            parse_str("--fullscreen DP-2")
+                .unwrap()
+                .fullscreen
+                .as_deref(),
+            Some("DP-2")
+        );
+        assert!(parse_str("--fullscreen").is_err());
     }
 
     #[test]

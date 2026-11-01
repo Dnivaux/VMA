@@ -28,6 +28,8 @@ pub struct Composition {
     pub preview: Option<InputId>,
     /// Outputs only (not the UI's Program view): 0 = Program, 1 = black.
     pub fade_to_black: f32,
+    /// A full-screen output is on.
+    pub fullscreen: bool,
 }
 
 impl Composition {
@@ -166,6 +168,7 @@ impl Sequencer {
             domain: plan.domain,
             preview: plan.preview,
             fade_to_black: ftb_ratio(ftb),
+            fullscreen: plan.fullscreen,
         };
         if let Some(t) = plan.transition {
             let progress = match t.progress {
@@ -244,6 +247,7 @@ mod tests {
             }),
             domain: MixDomain::Gamma,
             ftb: PlanFtb::default(),
+            fullscreen: false,
         }
     }
 

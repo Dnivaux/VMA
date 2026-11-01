@@ -47,3 +47,15 @@ En attendant les réponses, VMA utilise la valeur entre parenthèses (`phase-2.m
     plus)
 18. Le bouton d'enregistrement fonctionne-t-il sans aucun réglage préalable (dossier et format
     par défaut) ? (oui)
+
+## Choix de l'étape 8 : sortie plein écran (à confirmer)
+19. Sur l'écran plein écran, la touche **Échap** (ou un double-clic) arrête-t-elle la sortie ?
+    (non : c'est l'écran du public ; arrêt depuis l'interface, ou en fermant la fenêtre)
+20. L'écran choisi est **débranché** pendant la sortie : la sortie s'arrête-t-elle, ou
+    reste-t-elle « en marche » et revient-elle seule quand l'écran est rebranché ? Passe-t-elle
+    alors sur un autre écran ? (reste en marche, non affichée, revient seule ; jamais sur un
+    autre écran)
+21. Peut-on avoir **plusieurs** sorties plein écran (un écran chacune) ? (une seule en
+    Phase 2)
+22. Le **curseur** de la souris est-il masqué sur l'écran plein écran ? Une image d'une autre
+    proportion que l'écran est-elle bordée de noir (sans déformation) ? (oui, oui)

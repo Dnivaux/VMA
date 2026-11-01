@@ -99,12 +99,13 @@ pub(crate) fn status_label(status: &OutputStatus) -> String {
     }
 }
 
-/// « Enregistrement », « RTMP », « SRT ».
+/// « Enregistrement », « RTMP », « SRT », « Plein écran ».
 pub(crate) fn kind_label(spec: &OutputSpec) -> &'static str {
     match spec {
         OutputSpec::Record(_) => "Enregistrement",
         OutputSpec::Rtmp(_) => "RTMP",
         OutputSpec::Srt(_) => "SRT",
+        OutputSpec::Fullscreen(_) => "Plein écran",
     }
 }
 

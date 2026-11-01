@@ -44,6 +44,8 @@ tests/soak/a6-rates.sh                                    # A6 : un soak de 2 mi
 # Journal des commandes : logs/commands-AAAA-MM-JJ.jsonl par défaut (--journal-dir, --no-journal)
 # Enregistrer le Program dès le démarrage (sinon bouton « Enregistrer », dossier Vidéos) :
 cargo run --release -- --record /tmp/vma-rec --soak 10 --report /tmp/vma-rec/soak.md
+# Program en plein écran dès le démarrage (nom de l'écran, ou numéro : voir « screens=[…] » au démarrage) :
+cargo run --release -- --fullscreen 2 --soak 600 --report …
 
 # Regénérer les golden frames après un changement visuel VOULU (puis relire le PNG) :
 VMA_UPDATE_GOLDEN=1 cargo test -p vma-compositor --test golden_test_pattern
@@ -57,8 +59,8 @@ Variables wgpu utiles : `WGPU_BACKEND=vulkan|dx12` ; `WGPU_ADAPTER_NAME=Intel` (
 | `crates/clock` | Horloge maître à cadence fixe, compteur d'images manquées. |
 | `crates/compositor` | wgpu/WGSL : `Mixer` (calques `Rgba16Float`, Cut / Fade gamma ou linéaire, sortie `Rgba8Unorm`), `OutputStage` (FTB, flash de synchro, NV12 BT.709 limitée pour les sorties), mire, readback (tests). |
 | `crates/engine` | `State` + `Command` (thread `vma-control`, journal JSONL), thread de rendu cadencé par l'horloge (plan seqlock, `Sequencer`), triple buffer vers l'UI, stats ; sorties : `OutputSpec` / `Secret` (jamais écrit : `***`), état et runs des sorties, FTB, anneau de relecture NV12, thread `vma-output` (PTS et audio dérivés de *n*, `OutputHub` / `OutputConsumer`, un thread par sortie). |
-| `crates/ui` | egui : `Switcher` (Preview / Program, transitions, T-Bar, FTB, barre d'inputs, raccourcis, réglages, boutons Enregistrer / Streamer, fenêtre Sorties), panneau Statistiques (dont `output_stats`). Tests sans fenêtre avec `egui_kittest`. |
-| `app/` | Binaire : assemble fenêtre eframe, moteur, UI. |
+| `crates/ui` | egui : `Switcher` (Preview / Program, transitions, T-Bar, FTB, barre d'inputs, raccourcis, réglages, boutons Enregistrer / Streamer, fenêtre Sorties), fenêtre plein écran (`fullscreen` : viewport différé, `Screens`), panneau Statistiques (dont `output_stats`). Tests sans fenêtre avec `egui_kittest`. |
+| `app/` | Binaire : assemble fenêtre eframe (sur sa propre boucle winit, pour lister les écrans : `screens.rs`), moteur, UI. |
 | `crates/io-gst` | `vma-io` : pipelines d'entrée (capture, fichiers, images fixes), et de sortie (`GstOutput` + `OutputFeed` : échelle d'encodeurs, MKV / MP4), démarrées / arrêtées sur requête de `vma-control` (`outputs`). |
 | `crates/{io-ndi,io-html,audio,replay,api}` | Squelettes vides pour les phases suivantes. |
 | `docs/adr/` | Décisions d'architecture (une par fichier, à faire valider). 0001 archi (acceptée avec amendements), 0002 décisions produit. |

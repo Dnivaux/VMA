@@ -107,6 +107,8 @@ pub struct Readers {
     pub preview: FrameReader,
     /// Thumbnail atlas, refreshed every other tick (see `vma_compositor::thumbnails`).
     pub thumbnails: FrameReader,
+    /// The Program after FTB, for the full-screen output: published only while it is on.
+    pub fullscreen: FrameReader,
 }
 
 /// Handle on the running engine: the `vma-render` and `vma-control` threads (and
@@ -177,6 +179,7 @@ impl RenderEngine {
         let (preview, preview_reader) = output(targets("preview"));
         let (thumbs, thumbs_reader) =
             output([0, 1, 2].map(|i| thumbnails::new_atlas(&device, &format!("thumbnails[{i}]"))));
+        let (fullscreen, fullscreen_reader) = output(targets("fullscreen"));
         let mixers = [
             Mixer::new(&device, config.resolution),
             Mixer::new(&device, config.resolution),
@@ -260,6 +263,7 @@ impl RenderEngine {
             program,
             preview,
             thumbs,
+            fullscreen,
             stage,
             ring: RingWriter::new(ring),
             ready_tx,
@@ -329,6 +333,7 @@ impl RenderEngine {
                 program: program_reader,
                 preview: preview_reader,
                 thumbnails: thumbs_reader,
+                fullscreen: fullscreen_reader,
             },
         ))
     }
@@ -499,6 +504,8 @@ struct RenderWorker {
     program: Output,
     preview: Output,
     thumbs: Output,
+    /// Program after FTB, for the full-screen output.
+    fullscreen: Output,
     sequencer: Sequencer,
     sources: SourceTable,
     feedback: Arc<RenderFeedback>,
@@ -586,8 +593,9 @@ impl RenderWorker {
     }
 
     /// Renders Program, Preview, (every other tick) the thumbnails and (with an output
-    /// attached) the output stage in one submission, then publishes them. Returns the CPU
-    /// time spent encoding, submitting, and on the output stage (part of encoding).
+    /// attached, or the full screen on) the output stage in one submission, then publishes
+    /// them. Returns the CPU time spent encoding, submitting, and on the output stage (part of
+    /// encoding).
     fn render(&mut self, composition: &Composition) -> (Duration, Duration, Duration) {
         let encoding = Instant::now();
         let mut encoder = self
@@ -623,21 +631,38 @@ impl RenderWorker {
         }
         // After the Program mixer, which wrote the Program this stage reads.
         let mut output = Duration::ZERO;
-        if self.active_outputs.any() {
+        let attached = self.active_outputs.any();
+        let fullscreen = composition
+            .fullscreen
+            .then(|| {
+                self.fullscreen
+                    .frames
+                    .targets
+                    .get(self.fullscreen.producer.back())
+            })
+            .flatten();
+        if attached || fullscreen.is_some() {
             let started = Instant::now();
             let look = OutputLook {
                 fade_to_black: composition.fade_to_black,
                 space,
                 flash: self.sync.is_some_and(|sync| sync.is_flash(frame)),
             };
-            self.stage.encode(&self.queue, &mut encoder, look);
-            if self.ring.encode(&mut encoder, &self.stage, frame) {
-                self.stats.record_output_read();
-            } else {
-                self.stats.record_output_drop();
+            self.stage.encode_look(&self.queue, &mut encoder, look);
+            if attached {
+                self.stage.encode_nv12(&mut encoder);
+                if self.ring.encode(&mut encoder, &self.stage, frame) {
+                    self.stats.record_output_read();
+                } else {
+                    self.stats.record_output_drop();
+                }
+            }
+            if let Some(target) = fullscreen {
+                self.stage.encode_rgba8(&mut encoder, target.view());
             }
             output = started.elapsed();
         }
+        let fullscreen = fullscreen.is_some();
         let thumbs_slot = self.thumbs.producer.back();
         if with_thumbnails
             && let (Some(atlas), Some(cells)) = (
@@ -675,6 +700,9 @@ impl RenderWorker {
         publish(&mut self.preview, frame);
         if with_thumbnails {
             publish(&mut self.thumbs, frame);
+        }
+        if fullscreen {
+            publish(&mut self.fullscreen, frame);
         }
         times
     }

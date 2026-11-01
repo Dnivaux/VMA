@@ -141,6 +141,8 @@ pub struct View<'a> {
     pub commands: &'a CommandSender,
     pub images: Images<'a>,
     pub io: IoView<'a>,
+    /// Screens connected now, for the full-screen output (empty: not known).
+    pub screens: &'a [crate::Screen],
     /// Last frame index processed by the render thread (transition progress).
     pub frame: u64,
     /// FTB level of the outputs (0 = Program, 1 = black).

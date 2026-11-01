@@ -1,6 +1,6 @@
-//! Outputs in the switcher (Phase 2 step 5): the record / stream / FTB buttons and the
-//! « Sorties » window (one recording, up to 3 stream destinations). Every action is a
-//! `Command`; settings are edited in a local draft and sent with « Appliquer ».
+//! Outputs in the switcher (Phase 2 steps 5 and 8): the record / stream / FTB buttons and the
+//! « Sorties » window (one recording, up to 3 stream destinations, one full screen). Every
+//! action is a `Command`; settings are edited in a local draft and sent with « Appliquer ».
 //!
 //! Secrets (stream key, SRT passphrase) are typed in password fields: never shown, never in
 //! a label.
@@ -9,14 +9,16 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use egui::{Color32, RichText, Vec2};
+use vma_core::FrameRate;
 use vma_core::{Container, OutputId, VideoCodec};
 use vma_engine::{
-    Command, MAX_OUTPUTS, MAX_TRANSITION_MS, OutputSpec, OutputState, OutputStatus, RecordSpec,
-    RtmpSpec, STREAM_SLOTS, Secret, SrtMode, SrtSpec, VIDEO_KBPS_RANGE,
+    Command, FullscreenSpec, MAX_OUTPUTS, MAX_TRANSITION_MS, OutputSpec, OutputState, OutputStatus,
+    RecordSpec, RtmpSpec, STREAM_SLOTS, Secret, SrtMode, SrtSpec, VIDEO_KBPS_RANGE,
 };
 
 use super::{Switcher, View, WARNING};
 use crate::output_stats::{duration, kind_label, status_label};
+use crate::{Screen, default_screen, screen_index};
 
 /// Fill of a button whose output is on.
 const ON_AIR: Color32 = Color32::from_rgb(200, 40, 40);
@@ -214,12 +216,14 @@ impl Switcher {
         });
         match &output.status {
             OutputStatus::Running { encoder, target } => {
-                ui.label(
-                    RichText::new(crate::output_stats::short_encoder(encoder))
-                        .small()
-                        .monospace(),
-                )
-                .on_hover_text(encoder);
+                if !encoder.is_empty() {
+                    ui.label(
+                        RichText::new(crate::output_stats::short_encoder(encoder))
+                            .small()
+                            .monospace(),
+                    )
+                    .on_hover_text(encoder);
+                }
                 if let Some(target) = target {
                     ui.add(egui::Label::new(RichText::new(target).small()).wrap());
                 }
@@ -230,6 +234,15 @@ impl Switcher {
             _ => {}
         }
 
+        if let OutputSpec::Fullscreen(f) = &output.spec {
+            screen_notices(
+                ui,
+                view.screens,
+                f,
+                view.state.format.rate,
+                output.status.is_on(),
+            );
+        }
         if output.status.is_active() {
             self.outputs.forget(id);
             ui.label(RichText::new(summary(&output.spec)).small().weak());
@@ -241,7 +254,7 @@ impl Switcher {
 
         let record_folder = view.io.record_folder;
         let draft = self.outputs.draft(id, &output.spec);
-        let browse = spec_editor(ui, draft, record_folder);
+        let browse = spec_editor(ui, draft, record_folder, view.screens);
         let changed = *draft != output.spec;
         let draft = draft.clone();
         if browse {
@@ -295,7 +308,7 @@ impl Switcher {
         let streams = state.outputs.iter().filter(|o| o.spec.is_stream()).count();
         if let Some(mut spec) = self.outputs.new_stream.take() {
             ui.label(RichText::new("Nouvelle destination").strong());
-            spec_editor(ui, &mut spec, None);
+            spec_editor(ui, &mut spec, None, &[]);
             let mut keep = true;
             ui.horizontal(|ui| {
                 if ui.button("Ajouter").clicked() {
@@ -330,6 +343,24 @@ impl Switcher {
                     key: Secret::none(),
                     video_kbps: None,
                 }));
+            }
+            let has_fullscreen = state.outputs.iter().any(|o| o.spec.is_fullscreen());
+            if !has_fullscreen
+                && ui
+                    .add_enabled(!full, egui::Button::new("+ Plein écran"))
+                    .on_hover_text("Le Program (après FTB) en plein écran sur un écran")
+                    .clicked()
+            {
+                self.send(
+                    ui,
+                    view,
+                    Command::AddOutput {
+                        spec: OutputSpec::Fullscreen(FullscreenSpec {
+                            screen: default_screen(view.screens),
+                        }),
+                        name: None,
+                    },
+                );
             }
             let has_recording = state.outputs.iter().any(|o| o.spec.is_recording());
             if !has_recording
@@ -369,6 +400,55 @@ fn summary(spec: &OutputSpec) -> String {
             s.latency_ms,
             rate(s.video_kbps)
         ),
+        OutputSpec::Fullscreen(f) => format!(
+            "Program après FTB · écran {}",
+            f.screen.as_deref().unwrap_or("par défaut")
+        ),
+    }
+}
+
+/// Under a full-screen output: its screen missing, alone, or at a refresh the Program does
+/// not fall evenly on.
+fn screen_notices(
+    ui: &mut egui::Ui,
+    screens: &[Screen],
+    spec: &FullscreenSpec,
+    rate: FrameRate,
+    on: bool,
+) {
+    let warn = |ui: &mut egui::Ui, text: String| {
+        ui.add(egui::Label::new(RichText::new(text).color(WARNING).small()).wrap());
+    };
+    if screens.is_empty() {
+        return;
+    }
+    let Some(screen) = screen_index(screens, spec.screen.as_deref()).and_then(|i| screens.get(i))
+    else {
+        let name = spec.screen.as_deref().unwrap_or_default();
+        warn(
+            ui,
+            if on {
+                format!("Écran « {name} » non branché : la sortie n'est pas affichée")
+            } else {
+                format!("Écran « {name} » non branché")
+            },
+        );
+        return;
+    };
+    if screens.len() == 1 {
+        warn(
+            ui,
+            "Un seul écran : la sortie couvrira cette fenêtre".into(),
+        );
+    }
+    if screen.judders_at(rate) {
+        warn(
+            ui,
+            format!(
+                "{} : le Program à {rate} y tombe inégalement (saccades) ; régler l'écran sur un multiple de la cadence",
+                screen.label()
+            ),
+        );
     }
 }
 
@@ -398,12 +478,37 @@ fn spec_editor(
     ui: &mut egui::Ui,
     spec: &mut OutputSpec,
     record_folder: Option<&std::path::Path>,
+    screens: &[Screen],
 ) -> bool {
     let mut browse = false;
     egui::Grid::new("spec")
         .num_columns(2)
         .spacing([8.0, 4.0])
         .show(ui, |ui| match spec {
+            OutputSpec::Fullscreen(fullscreen) => {
+                let label = ui.label("Écran");
+                let shown = match screen_index(screens, fullscreen.screen.as_deref()) {
+                    Some(i) => screens.get(i).map(Screen::label).unwrap_or_default(),
+                    None => match &fullscreen.screen {
+                        Some(name) => format!("{name} (non branché)"),
+                        None => "premier écran".into(),
+                    },
+                };
+                egui::ComboBox::from_id_salt("screen")
+                    .selected_text(shown)
+                    .width(260.0)
+                    .show_ui(ui, |ui| {
+                        for screen in screens {
+                            let chosen = fullscreen.screen.as_deref() == Some(&screen.name);
+                            if ui.selectable_label(chosen, screen.label()).clicked() {
+                                fullscreen.screen = Some(screen.name.clone());
+                            }
+                        }
+                    })
+                    .response
+                    .labelled_by(label.id);
+                ui.end_row();
+            }
             OutputSpec::Record(record) => {
                 let label = ui.label("Dossier");
                 ui.horizontal(|ui| {
@@ -507,7 +612,7 @@ fn spec_editor(
                         secret(ui, "Phrase de passe", &mut srt.passphrase);
                         bitrate(ui, &mut srt.video_kbps);
                     }
-                    OutputSpec::Record(_) => {}
+                    OutputSpec::Record(_) | OutputSpec::Fullscreen(_) => {}
                 }
             }
         });
@@ -519,6 +624,7 @@ fn kbps_of(spec: &OutputSpec) -> Option<u32> {
         OutputSpec::Record(r) => r.video_kbps,
         OutputSpec::Rtmp(r) => r.video_kbps,
         OutputSpec::Srt(s) => s.video_kbps,
+        OutputSpec::Fullscreen(_) => None,
     }
 }
 

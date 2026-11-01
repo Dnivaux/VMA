@@ -188,6 +188,17 @@ Commandes de `phase-2.md` § 5, mises en œuvre telles quelles ; précisions app
   reconnexion) ; une perte arrivée après un arrêt est ignorée. Une sortie en reconnexion compte
   comme active (réglages figés, boutons « en direct »).
 
+- *(Étape 8)* **Plein écran** : `OutputSpec::Fullscreen { screen: Option<String> }`, le nom de
+  l'écran tel que le système le donne (« DP-2 », « HDMI-A-1 »), `None` = le premier de la
+  liste ; nom vide refusé. **Une seule** sortie plein écran (`FullscreenExists` : un seul
+  lecteur de ses images) ; ce n'est pas une destination de stream (pas de numéro). Pas de
+  pipeline ni d'encodeur : `StartOutput` la met **tout de suite** en `Running { encoder: "",
+  target: Some(écran) }` sans requête à `vma-io`, `StopOutput` la remet tout de suite à
+  `Idle` ; `StartRecording` / `StartStreaming` ne la touchent pas. Elle ne change pas de type
+  (`OutputKindChanged`). Le plan du rendu porte `fullscreen` (une sortie plein écran en
+  marche) : le rendu ne remplit ses images que dans ce cas. Un écran débranché laisse la
+  sortie en marche, non affichée (côté UI, voir `ui.md`).
+
 ## Critères d'acceptation
 | Critère | Test |
 |---|---|
@@ -203,3 +214,4 @@ Commandes de `phase-2.md` § 5, mises en œuvre telles quelles ; précisions app
 | *(Phase 2)* Sorties : démarrage, arrêt, runs, destinations 1–3, refus sans effet | `state::tests` (8 tests) |
 | *(Phase 2)* **B11** côté moteur : FTB de la durée réglée aux 6 cadences, retour, Program inchangé | `control::tests::fade_to_black_*` (temps simulé), `render_loop::fade_to_black_darkens_the_outputs_not_the_program_view` (GPU) |
 | *(Phase 2)* **B13** côté moteur : ni la clé ni la phrase de passe dans le journal, les logs (niveau TRACE) ou l'état sérialisé ; rejeu refusé sans la clé | `control::tests::secrets_never_reach_the_journal_the_logs_nor_the_published_state` |
+| *(Phase 2, étape 8)* Plein écran : en marche sans `vma-io`, une seule, réglages figés en marche, type figé, arrêt et suppression sans requête, drapeau du plan | `state::tests::the_full_screen_runs_without_io_and_sets_the_plan`, `plan::tests::encoding_round_trips` |

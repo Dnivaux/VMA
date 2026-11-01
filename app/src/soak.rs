@@ -59,6 +59,8 @@ pub struct SoakContext {
     pub clock: Arc<ClockStats>,
     pub render: Arc<RenderStats>,
     pub ui: Arc<UiProbe>,
+    /// What the full-screen window showed (B12).
+    pub fullscreen: Arc<vma_ui::FullscreenStats>,
     pub state: StateReader,
     pub input_stats: InputStatsReader,
     /// Counters of the outputs (B15).
@@ -564,7 +566,7 @@ fn report(options: &SoakOptions, soak: &SoakContext, run: &Run<'_>) -> (String, 
     if !outputs.is_empty() {
         let _ = writeln!(
             s,
-            "## Sorties\nImages non relues par le rendu : {} ; perdues faute d'image libre (pool) : {} ; distribuées : {}.\n\n| Sortie | État | Encodeur | Envoyées | Perdues | File | Fichier | Taille |\n|---|---|---|---|---|---|---|---|",
+            "## Sorties\nImages non relues par le rendu : {} ; perdues faute d'image libre (pool) : {} ; distribuées : {}.\n\n| Sortie | État | Encodeur | Envoyées | Perdues | File | Fichier / écran | Taille |\n|---|---|---|---|---|---|---|---|",
             r.output_dropped, distribution.pool_exhausted, distribution.frames
         );
         for o in &outputs {
@@ -581,6 +583,7 @@ fn report(options: &SoakOptions, soak: &SoakContext, run: &Run<'_>) -> (String, 
             // The file size is read here, after the run, not on a real-time thread.
             let size = target
                 .as_deref()
+                .filter(|_| o.spec.is_recording())
                 .and_then(|t| std::fs::metadata(t).ok())
                 .map_or_else(|| "—".into(), |m| format!("{:.1} Mo", m.len() as f64 / 1e6));
             let mark = if counters.dropped == 0 { "" } else { " ❌" };
@@ -612,6 +615,20 @@ fn report(options: &SoakOptions, soak: &SoakContext, run: &Run<'_>) -> (String, 
         "| Plus long blocage UI | {} |\n\nUn blocage de l'UI (déplacement, minimisation) ne doit pas affecter le Program.\n",
         ms(ui_max_gap)
     );
+    let shown = soak.fullscreen.snapshot();
+    if shown.painted > 0 {
+        let per_s = |n: u64| n as f64 / elapsed.as_secs_f64().max(1e-9);
+        let _ = writeln!(
+            s,
+            "## Plein écran (B12)\n| Mesure | Valeur |\n|---|---|\n| Rafraîchissements de la fenêtre | {} ({:.1} Hz) |\n| Images du Program affichées | {} ({:.2} i/s) |\n| Images du Program sautées | {} |\n| Plus long écart entre deux rafraîchissements | {} |\n\nSautées : images publiées par le rendu que la fenêtre n'a jamais montrées (elle s'est rafraîchie moins souvent que la cadence maître) ; 0 attendu sur un écran dont la fréquence est au moins la cadence maître. Informatif : n'entre pas dans le verdict (checklist `docs/manual-tests/phase2-outputs.md`).\n",
+            shown.painted,
+            per_s(shown.painted),
+            shown.shown,
+            per_s(shown.shown),
+            shown.skipped,
+            ms(Duration::from_nanos(shown.max_gap_ns))
+        );
+    }
 
     if options.hostile {
         let _ = writeln!(

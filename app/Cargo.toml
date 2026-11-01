@@ -16,6 +16,7 @@ vma-io-gst.workspace = true
 eframe = { workspace = true, features = ["wgpu", "default_fonts", "wayland", "x11", "accesskit"] }
 egui.workspace = true
 egui-wgpu.workspace = true
+winit.workspace = true
 wgpu.workspace = true
 anyhow.workspace = true
 tracing.workspace = true

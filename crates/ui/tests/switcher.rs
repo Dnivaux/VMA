@@ -20,7 +20,7 @@ use vma_engine::{
     AutoPlay, Command, CommandProbe, CommandSender, DeviceId, Effect, Format, InputSpec, MixDomain,
     Source, State, Timeline,
 };
-use vma_ui::{CaptureChoice, FileKind, Images, IoView, OutputActivity, Switcher, View};
+use vma_ui::{CaptureChoice, FileKind, Images, IoView, OutputActivity, Screen, Switcher, View};
 
 struct Rig {
     switcher: Switcher,
@@ -38,6 +38,8 @@ struct Rig {
     /// Folder dialogs the switcher asked for (`take_folder_request`).
     folders: Vec<vma_core::OutputId>,
     fade_to_black: f32,
+    /// Screens the application lists.
+    screens: Vec<Screen>,
 }
 
 impl Rig {
@@ -100,6 +102,7 @@ fn harness(state: State) -> Harness<'static, Rig> {
         activity: None,
         folders: Vec::new(),
         fade_to_black: 0.0,
+        screens: Vec::new(),
     };
     let mut harness = Harness::builder()
         .with_size(Vec2::new(1400.0, 820.0))
@@ -130,6 +133,7 @@ fn harness(state: State) -> Harness<'static, Rig> {
                         output_activity: &activity,
                         record_folder: Some(std::path::Path::new("/home/op/Vidéos")),
                     },
+                    screens: &rig.screens,
                     frame: 0,
                     fade_to_black: rig.fade_to_black,
                     rejection: None,
@@ -783,4 +787,134 @@ fn output_statistics_show_every_figure() {
             "« {label} » missing"
         );
     }
+}
+
+fn screens() -> Vec<Screen> {
+    vec![
+        Screen {
+            name: "eDP-1".into(),
+            width: 2560,
+            height: 1600,
+            refresh_mhz: Some(60_000),
+        },
+        Screen {
+            name: "DP-2".into(),
+            width: 1920,
+            height: 1080,
+            refresh_mhz: Some(50_000),
+        },
+    ]
+}
+
+/// `state` with a full-screen output on screen `screen`, started if `on`.
+fn with_fullscreen(mut state: State, screen: &str, on: bool) -> (State, OutputId) {
+    state
+        .apply(&Command::AddOutput {
+            spec: OutputSpec::Fullscreen(FullscreenSpec {
+                screen: Some(screen.into()),
+            }),
+            name: None,
+        })
+        .unwrap();
+    let id = state.outputs.last().unwrap().id;
+    if on {
+        state.apply(&Command::StartOutput { output: id }).unwrap();
+    }
+    (state, id)
+}
+
+use vma_engine::FullscreenSpec;
+
+#[test]
+fn fullscreen_output_screen_choice_start_and_stop() {
+    // A11 (UI side) for the full screen: add, choose the screen, start, stop.
+    let mut h = harness(state());
+    h.state_mut().screens = screens();
+    open_outputs(&mut h);
+    h.get_by_label("+ Plein écran").click();
+    h.run();
+    // The second screen is offered first (the first is often the operator's).
+    assert_eq!(
+        h.state().sent(),
+        [Command::AddOutput {
+            spec: OutputSpec::Fullscreen(FullscreenSpec {
+                screen: Some("DP-2".into())
+            }),
+            name: None,
+        }]
+    );
+
+    let (fs_state, fs) = with_fullscreen(state(), "DP-2", false);
+    let mut h = harness(fs_state);
+    h.state_mut().screens = screens();
+    open_outputs(&mut h);
+    assert!(
+        h.query_by_label("+ Plein écran").is_none(),
+        "one full screen"
+    );
+    h.get_by_label("Écran").click();
+    h.run();
+    h.get_by_label("eDP-1 · 2560 × 1600 · 60 Hz").click();
+    h.run();
+    // The recording's card comes first.
+    click_button(&h, "Appliquer", 1);
+    h.run();
+    let edp = OutputSpec::Fullscreen(FullscreenSpec {
+        screen: Some("eDP-1".into()),
+    });
+    assert_eq!(
+        h.state().sent(),
+        [Command::UpdateOutput {
+            output: fs,
+            spec: edp.clone()
+        }]
+    );
+    click_button(&h, "Démarrer", 1);
+    h.run();
+    assert_eq!(
+        h.state().sent(),
+        [
+            Command::UpdateOutput {
+                output: fs,
+                spec: edp
+            },
+            Command::StartOutput { output: fs }
+        ]
+    );
+
+    let (fs_state, fs) = with_fullscreen(state(), "DP-2", true);
+    let mut h = harness(fs_state);
+    h.state_mut().screens = screens();
+    open_outputs(&mut h);
+    assert!(h.query_by_label_contains("non branché").is_none());
+    assert!(
+        h.query_by_label_contains("saccades").is_none(),
+        "50 Hz for 50p"
+    );
+    h.get_all_by_label("Arrêter").last().unwrap().click();
+    h.run();
+    assert_eq!(h.state().sent(), [Command::StopOutput { output: fs }]);
+}
+
+#[test]
+fn fullscreen_output_warns_about_its_screen() {
+    // Screen unplugged while the output is on: on, but not shown.
+    let mut h = harness(with_fullscreen(state(), "HDMI-A-1", true).0);
+    h.state_mut().screens = screens();
+    open_outputs(&mut h);
+    assert!(
+        h.query_by_label("Écran « HDMI-A-1 » non branché : la sortie n'est pas affichée")
+            .is_some()
+    );
+    // 60 Hz for a 50p Program: uneven.
+    let mut h = harness(with_fullscreen(state(), "eDP-1", false).0);
+    h.state_mut().screens = screens();
+    open_outputs(&mut h);
+    assert!(h.query_by_label_contains("saccades").is_some());
+    assert!(h.query_by_label_contains("Un seul écran").is_none());
+    // A single screen: the output covers the UI.
+    let mut h = harness(with_fullscreen(state(), "DP-2", false).0);
+    h.state_mut().screens = screens()[1..].to_vec();
+    open_outputs(&mut h);
+    assert!(h.query_by_label_contains("Un seul écran").is_some());
 }

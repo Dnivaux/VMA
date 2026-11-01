@@ -4,11 +4,16 @@
 //! each frame is drawn from the latest state snapshot. [`MainUi`] wires the engine to the
 //! [`Switcher`] (the mixer surface) and the statistics panel.
 
+mod fullscreen;
 mod output_stats;
 mod stats_panel;
 mod switcher;
 mod tally;
 
+pub use fullscreen::{
+    FULLSCREEN_APP_ID, FullscreenStats, FullscreenStatsSnapshot, Screen, Screens, default_screen,
+    screen_index,
+};
 pub use output_stats::{OutputStatsRow, output_stats};
 pub use switcher::{CaptureChoice, FileKind, Images, IoView, Switcher, View};
 pub use tally::{TALLY_PREVIEW, TALLY_PROGRAM, Tally};
@@ -20,7 +25,9 @@ use std::time::Duration;
 use egui::{Rect, TextureId};
 use vma_compositor::thumbnails::{self, ATLAS_COLUMNS, ATLAS_ROWS};
 use vma_core::{InputId, OutputId};
-use vma_engine::{Command, InputSpec, Readers, RenderEngine, Source};
+use vma_engine::{Command, FrameReader, InputSpec, Readers, RenderEngine, Source};
+
+use crate::fullscreen::FullscreenWindow;
 
 /// egui textures of every engine output, registered once at startup (one per slot).
 #[derive(Debug, Clone, Copy)]
@@ -28,6 +35,7 @@ pub struct OutputTextures {
     pub program: [TextureId; 3],
     pub preview: [TextureId; 3],
     pub thumbnails: [TextureId; 3],
+    pub fullscreen: [TextureId; 3],
 }
 
 /// What the UI needs from `vma-io` (capture devices, files). Implemented by the application
@@ -83,8 +91,12 @@ struct Picker {
 #[derive(Debug)]
 pub struct MainUi {
     engine: RenderEngine,
-    readers: Readers,
+    program: FrameReader,
+    preview: FrameReader,
+    thumbnails: FrameReader,
     textures: OutputTextures,
+    fullscreen: FullscreenWindow,
+    screens: Screens,
     switcher: Switcher,
     adapter: String,
     /// Dropped after the engine: `vma-control` stops sending requests to `vma-io` first.
@@ -99,10 +111,22 @@ impl MainUi {
         textures: OutputTextures,
         adapter: String,
         io: Box<dyn IoStatus>,
+        screens: Screens,
     ) -> Self {
+        let Readers {
+            program,
+            preview,
+            thumbnails,
+            fullscreen,
+        } = readers;
+        let resolution = engine.config().resolution;
         Self {
             engine,
-            readers,
+            program,
+            preview,
+            thumbnails,
+            fullscreen: FullscreenWindow::new(fullscreen, textures.fullscreen, resolution),
+            screens,
             textures,
             switcher: Switcher::default(),
             adapter,
@@ -111,12 +135,17 @@ impl MainUi {
         }
     }
 
+    /// What the full-screen window showed (statistics panel, soak report).
+    pub fn fullscreen_stats(&self) -> std::sync::Arc<FullscreenStats> {
+        self.fullscreen.stats()
+    }
+
     /// Draws one UI frame.
     pub fn show(&mut self, ui: &mut egui::Ui) {
         // Take the newest frames before recording anything that samples them (ADR 0001).
-        self.readers.program.update();
-        self.readers.preview.update();
-        self.readers.thumbnails.update();
+        self.program.update();
+        self.preview.update();
+        self.thumbnails.update();
 
         if self.switcher.show_stats {
             egui::Panel::right("stats")
@@ -127,14 +156,15 @@ impl MainUi {
                         ui,
                         &self.engine,
                         self.io.as_ref(),
-                        &self.readers.program,
+                        &self.program,
+                        &self.fullscreen.stats(),
                         &self.adapter,
                     );
                 });
         }
 
         let pick = |set: &[TextureId; 3], slot: usize| set.get(slot).copied().unwrap_or_default();
-        let thumbs = &self.readers.thumbnails;
+        let thumbs = &self.thumbnails;
         let thumbnail_uv = |input| {
             let cell = thumbs.cell_of(input)?;
             let (x, y, w, h) = thumbnails::cell_rect(cell)?;
@@ -145,6 +175,7 @@ impl MainUi {
             ))
         };
         let state = self.engine.state().load();
+        let screens = self.screens.list();
         let stats = self.engine.control_stats();
         let rejection = stats.last_rejection();
         let commands = self.engine.commands();
@@ -160,8 +191,8 @@ impl MainUi {
             state: &state,
             commands: &commands,
             images: Images {
-                program: pick(&self.textures.program, self.readers.program.current_slot()),
-                preview: pick(&self.textures.preview, self.readers.preview.current_slot()),
+                program: pick(&self.textures.program, self.program.current_slot()),
+                preview: pick(&self.textures.preview, self.preview.current_slot()),
                 thumbnails: pick(&self.textures.thumbnails, thumbs.current_slot()),
                 thumbnail_uv: &thumbnail_uv,
             },
@@ -173,11 +204,14 @@ impl MainUi {
                 output_activity: &activity,
                 record_folder: record_folder.as_deref(),
             },
+            screens: &screens,
             frame: self.engine.feedback().last_frame(),
             fade_to_black: self.engine.feedback().fade_to_black(),
             rejection: rejection.as_deref(),
         };
         self.switcher.show(ui, &view);
+        self.fullscreen
+            .show(ui.ctx(), &state, &self.engine.state(), &screens, &commands);
         self.files(ui.ctx());
 
         // Program and Preview change every tick: keep repainting at the display rate.

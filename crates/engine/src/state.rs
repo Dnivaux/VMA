@@ -72,8 +72,8 @@ pub enum OutputStatus {
     Idle,
     /// Asked to `io-gst`, not confirmed yet.
     Starting,
-    /// `encoder`: the encoders retained (and why a fallback, if any); `target`: the file of a
-    /// recording.
+    /// `encoder`: the encoders retained (and why a fallback, if any; empty for the full
+    /// screen); `target`: the file of a recording, the screen of the full screen.
     Running {
         encoder: String,
         target: Option<String>,
@@ -252,8 +252,10 @@ pub enum Rejection {
     OutputActive(OutputId),
     #[error("{0} is still stopping")]
     OutputStopping(OutputId),
-    #[error("a recording cannot become a stream, nor the reverse")]
+    #[error("an output cannot change kind (recording, stream, full screen)")]
     OutputKindChanged,
+    #[error("there is already a full-screen output")]
+    FullscreenExists,
     #[error("the secret of {0} is missing (read back from a journal): enter it again")]
     SecretMissing(OutputId),
     #[error("invalid output settings: {0}")]
@@ -490,6 +492,10 @@ impl State {
             preview: self.preview,
             transition,
             domain: self.mix_domain,
+            fullscreen: self
+                .outputs
+                .iter()
+                .any(|o| o.spec.is_fullscreen() && o.status.is_on()),
             ftb: PlanFtb {
                 black: self.ftb.active,
                 frames: TransitionSetting::fade(self.ftb.duration_ms)
@@ -778,6 +784,10 @@ impl State {
             return Err(Rejection::TooManyOutputs);
         }
         spec.validate()?;
+        // One Program picture for the screen (one reader of its triple buffer).
+        if spec.is_fullscreen() && self.outputs.iter().any(|o| o.spec.is_fullscreen()) {
+            return Err(Rejection::FullscreenExists);
+        }
         let slot = if spec.is_stream() {
             let free = (1..=STREAM_SLOTS).find(|s| self.stream(*s).is_none());
             Some(free.ok_or(Rejection::NoStreamSlot)?)
@@ -806,7 +816,7 @@ impl State {
         if current.status.is_active() {
             return Err(Rejection::OutputActive(output));
         }
-        if current.spec.is_stream() != spec.is_stream() {
+        if !current.spec.same_kind(spec) {
             return Err(Rejection::OutputKindChanged);
         }
         spec.validate()?;
@@ -823,7 +833,7 @@ impl State {
             .position(|o| o.id == output)
             .ok_or(Rejection::UnknownOutput(output))?;
         let removed = self.outputs.remove(position);
-        let io = if removed.status.is_active() {
+        let io = if removed.status.is_active() && !removed.spec.is_fullscreen() {
             vec![IoRequest::StopOutput { output }]
         } else {
             Vec::new()
@@ -846,8 +856,16 @@ impl State {
                 let run = self.next_run;
                 self.next_run += 1;
                 o.run = run;
-                o.status = OutputStatus::Starting;
                 change.changed = true;
+                if let OutputSpec::Fullscreen(f) = &o.spec {
+                    // The UI shows it from the next state on; no pipeline, no encoder.
+                    o.status = OutputStatus::Running {
+                        encoder: String::new(),
+                        target: f.screen.clone(),
+                    };
+                    continue;
+                }
+                o.status = OutputStatus::Starting;
                 change.io.push(IoRequest::StartOutput {
                     output: o.id,
                     run,
@@ -862,7 +880,11 @@ impl State {
     fn stop_outputs(&mut self, ids: &[OutputId]) -> Change {
         let mut change = Change::default();
         for o in self.outputs.iter_mut().filter(|o| ids.contains(&o.id)) {
-            if o.status.is_on() {
+            if o.status.is_on() && o.spec.is_fullscreen() {
+                // Nothing to finalise: the window closes with the next state.
+                o.status = OutputStatus::Idle;
+                change.changed = true;
+            } else if o.status.is_on() {
                 o.status = OutputStatus::Stopping;
                 change.io.push(IoRequest::StopOutput { output: o.id });
                 change.changed = true;
@@ -1912,6 +1934,80 @@ mod tests {
             encoder: "nvh264enc + avenc_aac".into(),
             target: None,
         });
+    }
+
+    #[test]
+    fn the_full_screen_runs_without_io_and_sets_the_plan() {
+        use crate::output_spec::FullscreenSpec;
+        let spec = |screen: &str| {
+            OutputSpec::Fullscreen(FullscreenSpec {
+                screen: Some(screen.into()),
+            })
+        };
+        let mut s = state();
+        let fs = add_output(&mut s, spec("DP-2"));
+        assert_eq!(s.output(fs).unwrap().name, "Plein écran");
+        assert_eq!(s.output(fs).unwrap().slot, None, "not a stream destination");
+        assert!(!s.plan().fullscreen);
+        // One full screen (one reader of its frames).
+        let again = Command::AddOutput {
+            spec: spec("HDMI-A-1"),
+            name: None,
+        };
+        assert_eq!(s.apply(&again), Err(Rejection::FullscreenExists));
+        let blank = OutputSpec::Fullscreen(FullscreenSpec {
+            screen: Some(" ".into()),
+        });
+        assert_eq!(
+            s.apply(&Command::UpdateOutput {
+                output: fs,
+                spec: blank
+            }),
+            Err(Rejection::InvalidOutput(InvalidSpec::Screen))
+        );
+        assert_eq!(
+            s.apply(&Command::UpdateOutput {
+                output: fs,
+                spec: OutputSpec::Record(RecordSpec::default()),
+            }),
+            Err(Rejection::OutputKindChanged)
+        );
+
+        // On at once, nothing asked of `io-gst`; the recording and streams are not touched.
+        let io = s.apply(&Command::StartOutput { output: fs }).unwrap();
+        assert!(io.is_empty(), "{io:?}");
+        assert_eq!(
+            status(&s, fs),
+            OutputStatus::Running {
+                encoder: String::new(),
+                target: Some("DP-2".into()),
+            }
+        );
+        assert!(s.plan().fullscreen);
+        assert_eq!(status(&s, REC), OutputStatus::Idle);
+        s.apply(&Command::StartRecording).unwrap();
+        s.apply(&Command::StopRecording).unwrap();
+        assert!(s.plan().fullscreen, "StopRecording leaves it on");
+        assert_eq!(
+            s.apply(&Command::UpdateOutput {
+                output: fs,
+                spec: spec("eDP-1")
+            }),
+            Err(Rejection::OutputActive(fs))
+        );
+
+        // Off at once, again without `io-gst`.
+        let io = s.apply(&Command::StopOutput { output: fs }).unwrap();
+        assert!(io.is_empty(), "{io:?}");
+        assert_eq!(status(&s, fs), OutputStatus::Idle);
+        assert!(!s.plan().fullscreen);
+
+        s.apply(&Command::StartOutput { output: fs }).unwrap();
+        let io = s.apply(&Command::RemoveOutput { output: fs }).unwrap();
+        assert!(io.is_empty(), "{io:?}");
+        assert!(!s.plan().fullscreen);
+        // Gone: a new one can be added.
+        add_output(&mut s, spec("eDP-1"));
     }
 
     #[test]

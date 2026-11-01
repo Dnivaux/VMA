@@ -153,6 +153,46 @@ refusées, `journal_dropped`.
   (`OutputActivity::reconnections`).
 - Glyphes « ● » et « ⚠ » absents des polices d'egui : libellés texte (« REC », « (erreur) »).
 
+## Phase 2 — Sortie plein écran (étape 8, 2026-11-01)
+- **Fenêtre Sorties** : « + Plein écran » (une seule) ajoute la sortie sur l'écran proposé par
+  défaut : le **deuxième** de la liste s'il y en a plusieurs (le premier est souvent celui de
+  l'opérateur), sinon le seul. Sa carte : liste déroulante **Écran** (« DP-2 · 1920 × 1080 ·
+  50 Hz »), puis Démarrer / Appliquer / Annuler / Supprimer comme les autres sorties ; en
+  marche, l'écran et **Arrêter**. Avertissements sous la carte : écran **non branché** (« la
+  sortie n'est pas affichée » si elle est en marche), **un seul écran** (« la sortie couvrira
+  cette fenêtre »), fréquence de l'écran qui n'est pas un multiple de la cadence maître
+  (« saccades » : 60 Hz pour du 50p ; 59,94p sur 60 Hz n'est pas signalé, une image répétée
+  toutes les 17 s).
+- **Liste des écrans** : egui ne la donne pas. L'application fait tourner eframe sur **sa
+  propre boucle winit** (`eframe::create_native`, enveloppée par `app/src/screens.rs`) et
+  interroge le système au démarrage puis au plus une fois par seconde
+  (`ActiveEventLoop::available_monitors`, liste tenue par winit : peu coûteux) ; l'UI la lit
+  dans `vma_ui::Screens`. Nom de l'écran donné par le système (sinon « Écran n »), taille en
+  pixels, fréquence ; l'index dans la liste est celui que prend `ViewportBuilder::with_monitor`.
+  Liste journalisée au démarrage et à chaque changement (`screens=[…]`).
+- **Fenêtre plein écran** (`fullscreen.rs`) : un *viewport* egui **différé** (sa fonction de
+  dessin tourne à son propre rythme, même quand la fenêtre principale ne se redessine pas),
+  ouvert tant que la sortie est en marche **et** son écran branché, plein écran sans bordure
+  sur cet écran (`with_monitor` : `xdg_toplevel.set_fullscreen(output)` sous Wayland), sans
+  barre des tâches, **sans prendre le focus** (le clavier reste à la fenêtre principale),
+  titre « VMA — Program », identifiant d'application **`vma-program`** (règles du
+  compositeur). Image du Program **après FTB** (lecteur `Readers::fullscreen`), proportions
+  conservées, bandes noires, curseur masqué. Elle prend l'image la plus récente au début de
+  chacune de ses frames (invariant ADR 0001 : sa frame précédente est soumise avant que sa
+  fonction ne soit rappelée).
+- **Fermeture** : par le système (Alt+F4, raccourci du compositeur) → `StopOutput`, journalisé.
+  egui ne ferme la fenêtre que quand la fenêtre principale cesse de la montrer ; sur un seul
+  écran, la fenêtre principale qu'elle couvre n'est plus redessinée (Wayland) : la fenêtre
+  plein écran lit donc l'état elle-même et **se masque** dès que la sortie n'est plus en marche
+  (et se réaffiche si elle repart avant d'avoir été fermée). Échap ne l'arrête **pas** (écran
+  du public ; à confirmer, question 19 de la checklist d'observation).
+- **Statistiques** : section plein écran (dès la première image affichée) — images du Program
+  affichées et rafraîchissements de la fenêtre, images **sautées** (publiées par le rendu,
+  jamais montrées : rouge si non nul), plus long écart entre deux rafraîchissements. Mêmes
+  chiffres dans le rapport de soak (section « Plein écran (B12) », informative).
+- **Ligne de commande** : `--fullscreen <écran>` (nom, ou numéro à partir de 1) ajoute et
+  démarre la sortie au lancement (commandes `Script`, journalisées).
+
 ## Critères d'acceptation
 | Critère | Test |
 |---|---|
@@ -167,4 +207,6 @@ refusées, `journal_dropped`.
 | *(Phase 2)* Enregistrer, Streamer, FTB, Sorties (Démarrer / Appliquer / Arrêter / Supprimer, dossier, destination ajoutée) émettent la bonne `Command` (A11) | `switcher::record_and_stream_buttons`, `ftb_button`, `output_settings_start_stop_and_remove`, `a_stream_destination_is_added_with_its_key_hidden` |
 | *(Phase 2)* **B13** côté UI : la clé tapée n'apparaît ni en libellé ni en valeur | `switcher::a_stream_destination_is_added_with_its_key_hidden` |
 | *(Phase 2)* **B15** côté UI : état, encodeur, durée, débit, taille, envoyées / perdues, file, reconnexions | `switcher::output_statistics_show_every_figure` |
+| *(Phase 2, étape 8)* Plein écran : ajout sur le 2ᵉ écran, choix de l'écran, Démarrer (réglages d'abord), Arrêter ; avertissements écran absent, écran unique, fréquence | `switcher::fullscreen_output_screen_choice_start_and_stop`, `fullscreen_output_warns_about_its_screen`, `fullscreen::tests` (4 tests : écran par nom, saccades, images sautées, proportions) |
+| *(Phase 2, étape 8)* **B12** : plein écran réel sur un écran secondaire | checklist `docs/manual-tests/phase2-outputs.md` |
 | Utilisation réelle : chaque type d'input, Quick Play, Cut, 4 boutons, T-Bar, contrôles vidéo, à la souris et au clavier ; sélecteur de fichier natif (Linux, Windows) | checklist `docs/manual-tests/phase1-inputs.md` |

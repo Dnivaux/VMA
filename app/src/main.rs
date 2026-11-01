@@ -1,6 +1,7 @@
 //! VMA — main binary: wires the window, the engine and the UI together.
 
 mod cli;
+mod screens;
 mod soak;
 
 use anyhow::Context as _;
@@ -52,20 +53,47 @@ fn main() -> anyhow::Result<ExitCode> {
 
     let device_lost = OnceLock::new();
     let soak_handle = OnceLock::new();
-    eframe::run_native(
-        "VMA",
-        native_options,
-        Box::new(|cc| {
-            let journal = match &options.journal_dir {
-                Some(dir) => Journal::Directory(dir.clone()),
-                None => Journal::Disabled,
-            };
-            let app = App::new(cc, config, journal, &options, &device_lost, &soak_handle)?;
-            Ok(Box::new(app))
-        }),
-    )
-    .map_err(|e| anyhow::anyhow!("{e}"))
-    .context("window / GPU initialisation failed")?;
+    // eframe on our own event loop, to list the screens (full-screen output). Its errors end
+    // the loop: kept here to be returned.
+    let started = OnceLock::new();
+    let event_loop = winit::event_loop::EventLoop::<eframe::UserEvent>::with_user_event()
+        .build()
+        .context("window system unavailable")?;
+    let screens = vma_ui::Screens::default();
+    let mut app = screens::WithScreens::new(
+        eframe::create_native(
+            "VMA",
+            native_options,
+            Box::new(|cc| {
+                let journal = match &options.journal_dir {
+                    Some(dir) => Journal::Directory(dir.clone()),
+                    None => Journal::Disabled,
+                };
+                let app = App::new(
+                    cc,
+                    config,
+                    journal,
+                    &options,
+                    &device_lost,
+                    &soak_handle,
+                    screens.clone(),
+                );
+                let _ = started.set(app.as_ref().map(|_| ()).map_err(|e| format!("{e:#}")));
+                Ok(Box::new(app?))
+            }),
+            &event_loop,
+        ),
+        screens.clone(),
+    );
+    event_loop
+        .run_app(&mut app)
+        .context("window event loop failed")?;
+    drop(app);
+    match started.into_inner() {
+        Some(Ok(())) => {}
+        Some(Err(e)) => anyhow::bail!("start-up failed: {e}"),
+        None => anyhow::bail!("window / GPU initialisation failed (see the log)"),
+    }
 
     let soak_passed = soak_handle
         .into_inner()
@@ -97,6 +125,7 @@ impl<'a> App<'a> {
         options: &cli::Options,
         device_lost: &'a OnceLock<String>,
         soak_handle: &OnceLock<soak::SoakHandle>,
+        screens: vma_ui::Screens,
     ) -> anyhow::Result<Self> {
         let (inputs, record, soak_options) = (
             &options.inputs,
@@ -186,14 +215,18 @@ impl<'a> App<'a> {
                 program: register(&readers.program),
                 preview: register(&readers.preview),
                 thumbnails: register(&readers.thumbnails),
+                fullscreen: register(&readers.fullscreen),
             }
         };
+        // `--fullscreen`: the full-screen output present and on from the start.
+        if let Some(wanted) = &options.fullscreen {
+            start_fullscreen(&engine, wanted, &screens.list())?;
+        }
 
         let render_stats = engine.render_stats();
         let ui_probe = Arc::new(soak::UiProbe::default());
-        if let Some(options) = soak_options {
-            let handle = soak::spawn(
-                cc.egui_ctx.clone(),
+        let soak_context = soak_options.map(|options| {
+            (
                 options,
                 soak::SoakContext {
                     adapter: adapter.clone(),
@@ -201,6 +234,7 @@ impl<'a> App<'a> {
                     clock: engine.clock_stats(),
                     render: Arc::clone(&render_stats),
                     ui: Arc::clone(&ui_probe),
+                    fullscreen: Arc::default(),
                     state: engine.state(),
                     input_stats: engine.input_stats(),
                     outputs: engine.outputs(),
@@ -208,18 +242,75 @@ impl<'a> App<'a> {
                     // Mix the sources on air while the soak runs (Fade, then Cut, …).
                     transitions: inputs.len() >= 2,
                 },
-            )?;
+            )
+        });
+        let ui = MainUi::new(
+            engine,
+            readers,
+            textures,
+            adapter,
+            Box::new(Io(io)),
+            screens,
+        );
+        if let Some((options, mut context)) = soak_context {
+            context.fullscreen = ui.fullscreen_stats();
+            let handle = soak::spawn(cc.egui_ctx.clone(), options, context)?;
             // Only ever set here, once.
             let _ = soak_handle.set(handle);
         }
 
         Ok(Self {
-            ui: MainUi::new(engine, readers, textures, adapter, Box::new(Io(io))),
+            ui,
             render_stats,
             ui_probe,
             device_lost,
         })
     }
+}
+
+/// Adds the full-screen output on `wanted` (a screen name, or its number from 1 in `screens`)
+/// and starts it, as script commands.
+fn start_fullscreen(
+    engine: &RenderEngine,
+    wanted: &str,
+    screens: &[vma_ui::Screen],
+) -> anyhow::Result<()> {
+    let by_number = wanted
+        .parse::<usize>()
+        .ok()
+        .and_then(|n| n.checked_sub(1))
+        .and_then(|i| screens.get(i));
+    let screen = by_number.map_or_else(|| wanted.to_owned(), |s| s.name.clone());
+    if !screens.iter().any(|s| s.name == screen) {
+        tracing::warn!(%screen, "--fullscreen: screen not connected: the output stays hidden until it is");
+    }
+    let commands = engine.commands();
+    commands.send(
+        vma_engine::Source::Script,
+        vma_engine::Command::AddOutput {
+            spec: vma_engine::OutputSpec::Fullscreen(vma_engine::FullscreenSpec {
+                screen: Some(screen),
+            }),
+            name: None,
+        },
+    )?;
+    // Its id comes from `vma-control`: wait for the state that has it.
+    let state = engine.state();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    let output = loop {
+        if let Some(o) = state.load().outputs.iter().find(|o| o.spec.is_fullscreen()) {
+            break o.id;
+        }
+        if std::time::Instant::now() > deadline {
+            anyhow::bail!("--fullscreen: the output was not added");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    };
+    commands.send(
+        vma_engine::Source::Script,
+        vma_engine::Command::StartOutput { output },
+    )?;
+    Ok(())
 }
 
 /// `vma-io` as the UI sees it (the UI does not depend on GStreamer).
