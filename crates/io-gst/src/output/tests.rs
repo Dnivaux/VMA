@@ -708,7 +708,7 @@ fn aac_priming_matches_the_encoders() {
         eprintln!("skipped: no avdec_aac to decode with");
         return;
     };
-    let mut measured = 0;
+    let mut measured = Vec::new();
     for candidate in super::encoder::AAC {
         if gst::ElementFactory::find(candidate.element).is_none() {
             eprintln!("{}: not installed", candidate.element);
@@ -760,13 +760,15 @@ fn aac_priming_matches_the_encoders() {
         let onset = decoded.iter().position(|v| v.abs() >= 0.25).unwrap() as u64;
         let priming = onset.saturating_sub(4_800 + 4);
         eprintln!("{}: priming {priming} samples", candidate.element);
-        let expected = super::encoder::aac_priming(candidate.element);
+        measured.push((candidate.element, priming));
+    }
+    // Every one measured first: a wrong value does not hide the next ones.
+    assert!(!measured.is_empty(), "no AAC encoder");
+    for (element, priming) in measured {
+        let expected = super::encoder::aac_priming(element);
         assert!(
             priming.abs_diff(expected) <= 4,
-            "{}: {priming} samples, not {expected}",
-            candidate.element
+            "{element}: {priming} samples, not {expected}"
         );
-        measured += 1;
     }
-    assert!(measured > 0, "no AAC encoder");
 }

@@ -56,6 +56,7 @@ fn main() -> anyhow::Result<ExitCode> {
     if let Some(margin) = options.spin_margin {
         config.spin_margin = margin;
     }
+    config.sync_test = options.sync_test;
     if let Some(grace) = options.gpu_loss_grace {
         config.device_lost_grace = grace;
     }
@@ -222,6 +223,25 @@ impl<'a> App<'a> {
             }
         }
 
+        // `--stream`: one RTMP destination, started now.
+        if let Some(stream) = &options.stream {
+            for command in [
+                vma_engine::Command::AddOutput {
+                    spec: vma_engine::OutputSpec::Rtmp(vma_engine::RtmpSpec {
+                        url: stream.url.clone(),
+                        key: stream.key.clone(),
+                        video_kbps: None,
+                    }),
+                    name: None,
+                },
+                vma_engine::Command::StartStreaming { slot: None },
+            ] {
+                engine
+                    .commands()
+                    .send(vma_engine::Source::Script, command)?;
+            }
+        }
+
         let textures = {
             let mut renderer = render_state.renderer.write();
             let mut register = |reader: &vma_engine::FrameReader| {
@@ -248,6 +268,11 @@ impl<'a> App<'a> {
         let render_stats = engine.render_stats();
         let state = engine.state();
         let ui_probe = Arc::new(soak::UiProbe::default());
+        let stream_key = options
+            .stream
+            .as_ref()
+            .map(|s| s.key.clone())
+            .unwrap_or_default();
         let soak_context = soak_options.map(|options| {
             (
                 options,
@@ -264,6 +289,7 @@ impl<'a> App<'a> {
                     commands: engine.commands(),
                     // Mix the sources on air while the soak runs (Fade, then Cut, …).
                     transitions: inputs.len() >= 2,
+                    stream_key: stream_key.clone(),
                 },
             )
         });

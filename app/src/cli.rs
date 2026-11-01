@@ -4,6 +4,7 @@ use anyhow::{Context as _, bail};
 use std::path::PathBuf;
 use std::time::Duration;
 use vma_core::{FrameRate, Resolution};
+use vma_engine::Secret;
 
 pub const HELP: &str = "\
 VMA — mélangeur vidéo live
@@ -25,6 +26,13 @@ Options :
   --fullscreen <écran>   montre le Program (après FTB) en plein écran dès le démarrage, sur
                          cet écran : son nom (DP-2, HDMI-A-1… : voir le journal au
                          démarrage ou la fenêtre Sorties) ou son numéro (1 = le premier)
+  --stream <url>         streame le Program dès le démarrage vers ce serveur RTMP(S)
+                         (rtmp://hôte/app) ; clé : --stream-key, ou la variable
+                         d'environnement VMA_STREAM_KEY (jamais écrite dans le rapport)
+  --stream-key <clé>     clé de stream de --stream
+  --sync-test            mode synchro des sorties : une image blanche et un bip par seconde
+  --sync-check <url>     pendant le soak, relit ce flux (ex. rtmp://hôte/app/clé) et mesure
+                         le décalage bip − flash (exige --soak et --sync-test)
   --gpu-loss-grace <s>   GPU perdu : durée pendant laquelle les sorties reçoivent du noir
                          avant d'être finalisées et l'application fermée (défaut : 10)
   --soak <secondes>      soak : tourne N secondes, écrit un rapport, quitte
@@ -49,6 +57,10 @@ pub struct Options {
     pub record: Option<PathBuf>,
     /// Full screen from start-up on this screen (name, or number from 1).
     pub fullscreen: Option<String>,
+    /// Stream from start-up to this RTMP(S) server.
+    pub stream: Option<StreamOption>,
+    /// Sync test on the outputs (flash and beep every second).
+    pub sync_test: bool,
     /// After a GPU loss, black on the outputs for this long, then finalised.
     pub gpu_loss_grace: Option<Duration>,
     pub soak: Option<SoakOptions>,
@@ -67,11 +79,41 @@ pub struct Synthetic {
 /// Default journal directory (spec `commands.md`).
 pub const DEFAULT_JOURNAL_DIR: &str = "logs";
 
+/// `--stream`: where, under which key (never written out: [`Secret`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StreamOption {
+    pub url: String,
+    pub key: Secret,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SoakOptions {
     pub duration: Duration,
     pub hostile: bool,
     pub report: PathBuf,
+    /// Read this stream back and measure beep − flash (B1).
+    pub sync_check: Option<String>,
+}
+
+/// Environment variable holding the stream key, to keep it out of the command line.
+pub const STREAM_KEY_ENV: &str = "VMA_STREAM_KEY";
+
+/// The command line as reports show it: the value of `--stream-key`, and the key wherever
+/// else it appears (a `--sync-check` URL…), are `***`.
+pub fn redacted(args: impl IntoIterator<Item = String>, key: Option<&str>) -> String {
+    let key = key.filter(|k| !k.is_empty());
+    let mut out = Vec::new();
+    let mut hide_next = false;
+    for arg in args {
+        let shown = if std::mem::take(&mut hide_next) {
+            "***".to_owned()
+        } else {
+            key.map_or_else(|| arg.clone(), |k| arg.replace(k, "***"))
+        };
+        hide_next = arg == "--stream-key";
+        out.push(shown);
+    }
+    out.join(" ")
 }
 
 pub fn parse(args: impl IntoIterator<Item = String>) -> anyhow::Result<Options> {
@@ -84,6 +126,10 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> anyhow::Result<Options> 
     let mut record = None;
     let mut fullscreen = None;
     let mut gpu_loss_grace = None;
+    let mut stream_url = None;
+    let mut stream_key: Option<String> = None;
+    let mut sync_test = false;
+    let mut sync_check = None;
     let mut soak_secs = None;
     let mut hostile = false;
     let mut report = None;
@@ -121,6 +167,10 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> anyhow::Result<Options> 
             }
             "--record" => record = Some(PathBuf::from(value::<String>(&mut args, &arg)?)),
             "--fullscreen" => fullscreen = Some(value::<String>(&mut args, &arg)?),
+            "--stream" => stream_url = Some(value::<String>(&mut args, &arg)?),
+            "--stream-key" => stream_key = Some(value::<String>(&mut args, &arg)?),
+            "--sync-test" => sync_test = true,
+            "--sync-check" => sync_check = Some(value::<String>(&mut args, &arg)?),
             "--gpu-loss-grace" => {
                 gpu_loss_grace = Some(Duration::from_secs(value::<u64>(&mut args, &arg)?));
             }
@@ -141,9 +191,31 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> anyhow::Result<Options> 
             duration: Duration::from_secs(secs),
             hostile,
             report: report.unwrap_or_else(|| PathBuf::from("soak-report.md")),
+            sync_check: sync_check.clone(),
         }),
-        None if hostile || report.is_some() => bail!("--hostile et --report exigent --soak"),
+        None if hostile || report.is_some() || sync_check.is_some() => {
+            bail!("--hostile, --report et --sync-check exigent --soak")
+        }
         None => None,
+    };
+    if sync_check.is_some() && !sync_test {
+        bail!("--sync-check exige --sync-test (sans flash ni bip, rien à mesurer)");
+    }
+    let stream = match (stream_url, stream_key) {
+        (None, Some(_)) => bail!("--stream-key exige --stream"),
+        (None, None) => None,
+        (Some(url), key) => {
+            let key = key
+                .or_else(|| std::env::var(STREAM_KEY_ENV).ok())
+                .filter(|k| !k.is_empty())
+                .with_context(|| {
+                    format!("--stream exige une clé : --stream-key ou {STREAM_KEY_ENV}")
+                })?;
+            Some(StreamOption {
+                url,
+                key: Secret::new(key),
+            })
+        }
     };
     if inputs > vma_engine::MAX_INPUTS {
         bail!("--inputs : au plus {}", vma_engine::MAX_INPUTS);
@@ -166,6 +238,8 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> anyhow::Result<Options> 
         record,
         fullscreen,
         gpu_loss_grace,
+        stream,
+        sync_test,
         soak,
         journal_dir,
         help,
@@ -273,6 +347,53 @@ mod tests {
     }
 
     #[test]
+    fn stream_and_sync_options() {
+        let o = parse_str(
+            "--stream rtmp://localhost/live --stream-key s3cr3t --sync-test --soak 60 \
+             --sync-check rtmp://localhost/live/s3cr3t",
+        )
+        .unwrap();
+        let stream = o.stream.unwrap();
+        assert_eq!(stream.url, "rtmp://localhost/live");
+        assert_eq!(stream.key.expose(), Some("s3cr3t"));
+        assert!(!format!("{stream:?}").contains("s3cr3t"));
+        assert!(o.sync_test);
+        assert_eq!(
+            o.soak.unwrap().sync_check.as_deref(),
+            Some("rtmp://localhost/live/s3cr3t")
+        );
+        assert!(!parse_str("").unwrap().sync_test);
+        if std::env::var_os(STREAM_KEY_ENV).is_none() {
+            assert!(
+                parse_str("--stream rtmp://localhost/live").is_err(),
+                "no key"
+            );
+        }
+        assert!(parse_str("--stream-key k").is_err());
+        assert!(
+            parse_str("--soak 9 --sync-check rtmp://h/a/k").is_err(),
+            "no --sync-test"
+        );
+        assert!(
+            parse_str("--sync-test --sync-check rtmp://h/a/k").is_err(),
+            "no --soak"
+        );
+    }
+
+    #[test]
+    fn the_stream_key_never_reaches_the_report() {
+        let args = "--stream rtmp://h/live --stream-key s3cr3t --sync-check rtmp://h/live/s3cr3t";
+        let line = redacted(args.split(' ').map(String::from), Some("s3cr3t"));
+        assert_eq!(
+            line,
+            "--stream rtmp://h/live --stream-key *** --sync-check rtmp://h/live/***"
+        );
+        // Even without knowing the key (taken from the environment, say).
+        let line = redacted(["--stream-key".into(), "abc".into()], None);
+        assert_eq!(line, "--stream-key ***");
+    }
+
+    #[test]
     fn soak_options() {
         let o = parse_str("--soak 600 --hostile --report r.md --spin-margin-us 500").unwrap();
         assert_eq!(o.spin_margin, Some(Duration::from_micros(500)));
@@ -282,6 +403,7 @@ mod tests {
                 duration: Duration::from_secs(600),
                 hostile: true,
                 report: PathBuf::from("r.md"),
+                sync_check: None,
             })
         );
     }

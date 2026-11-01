@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 use vma_clock::ClockStats;
-use vma_core::InputId;
+use vma_core::{InputId, OutputId};
 use vma_engine::{
     Command, CommandSender, EngineConfig, InputSpec, InputStatsReader, InputStatus, OutputHub,
     OutputStatus, RenderStats, Source, StateReader,
@@ -68,6 +68,8 @@ pub struct SoakContext {
     pub commands: CommandSender,
     /// Run transitions between the inputs during the soak.
     pub transitions: bool,
+    /// `--stream`: hidden from the command line in the report (B13).
+    pub stream_key: vma_engine::Secret,
 }
 
 #[derive(Debug)]
@@ -222,6 +224,12 @@ fn run(
     let mut transitions = 0u64;
     let mut losses: Vec<(InputId, u64)> = Vec::new();
     let mut lost_now: Vec<InputId> = Vec::new();
+    let mut reconnections: Vec<(OutputId, u64)> = Vec::new();
+    let mut reconnecting_now: Vec<OutputId> = Vec::new();
+    // B1: the stream read back while the soak runs (it retries until the server has it).
+    let analyser = options.sync_check.as_deref().map(|uri| {
+        vma_io_gst::SyncAnalyser::start(uri, soak.config.rate).map_err(|e| e.to_string())
+    });
 
     let end = loop {
         if window_closed.load(Ordering::Acquire) {
@@ -269,12 +277,27 @@ fn run(
                 lost_now.retain(|id| *id != input.id);
             }
         }
+        // Lost connections of the streams, counted once per loss.
+        for output in &soak.state.load().outputs {
+            let lost = matches!(output.status, OutputStatus::Reconnecting { .. });
+            let was = reconnecting_now.contains(&output.id);
+            if lost && !was {
+                reconnecting_now.push(output.id);
+                match reconnections.iter_mut().find(|(id, _)| *id == output.id) {
+                    Some((_, n)) => *n += 1,
+                    None => reconnections.push((output.id, 1)),
+                }
+            } else if !lost && was {
+                reconnecting_now.retain(|id| *id != output.id);
+            }
+        }
         step += 1;
         // Absolute schedule: no drift of the aggression pattern.
         let next = started + STEP * u32::try_from(step).unwrap_or(u32::MAX);
         std::thread::sleep(next.saturating_duration_since(Instant::now()));
     };
     let elapsed = started.elapsed();
+    let sync = analyser.map(|a| a.map(vma_io_gst::SyncAnalyser::stop));
     if end == End::DeviceLost {
         // The outputs get black, then are finalised (ADR 0006 § 7): report on what they wrote.
         let lost = Instant::now();
@@ -299,6 +322,8 @@ fn run(
         sent: &sent,
         transitions,
         losses: &losses,
+        reconnections: &reconnections,
+        sync: sync.as_ref(),
     };
     let (report, passed) = report(options, soak, &run);
     if let Some(dir) = options
@@ -327,6 +352,48 @@ struct Run<'a> {
     sent: &'a [u64],
     transitions: u64,
     losses: &'a [(InputId, u64)],
+    /// Lost connections per output.
+    reconnections: &'a [(OutputId, u64)],
+    /// `--sync-check`: what the analyser saw, or why it did not start.
+    sync: Option<&'a Result<vma_io_gst::SyncSnapshot, String>>,
+}
+
+/// B1 on what the analyser saw over `elapsed`: every |beep − flash| within one frame, one
+/// pair a second (but for the first seconds, while the server gets the stream), the stream
+/// never interrupted. `None`: the analyser did not run.
+fn sync_verdict(
+    sync: &vma_io_gst::SyncSnapshot,
+    elapsed: Duration,
+    rate: vma_core::FrameRate,
+) -> SyncVerdict {
+    let frame = i64::try_from(vma_engine::video_pts_ns(rate, 1)).unwrap_or(i64::MAX);
+    let expected = elapsed.as_secs().saturating_sub(SYNC_WARM_UP_S);
+    SyncVerdict {
+        within_a_frame: sync.worst_ns().is_some_and(|w| w <= frame),
+        enough_pairs: sync.offsets_ns.len() as u64 >= expected,
+        uninterrupted: sync.interruptions == 0 && sync.video_gaps == 0,
+        frame_ns: frame,
+        expected,
+    }
+}
+
+/// Seconds at the start of a soak without flashes read back: the stream starts, the server
+/// probes it, the analyser connects and waits for a key frame.
+const SYNC_WARM_UP_S: u64 = 15;
+
+#[derive(Debug, Clone, Copy)]
+struct SyncVerdict {
+    within_a_frame: bool,
+    enough_pairs: bool,
+    uninterrupted: bool,
+    frame_ns: i64,
+    expected: u64,
+}
+
+impl SyncVerdict {
+    fn passed(self) -> bool {
+        self.within_a_frame && self.enough_pairs && self.uninterrupted
+    }
 }
 
 /// One input at the end of the run, for the report.
@@ -418,12 +485,23 @@ fn report(options: &SoakOptions, soak: &SoakContext, run: &Run<'_>) -> (String, 
             && soak.outputs.counters(o.id).is_none_or(|c| c.dropped == 0)
     }) && r.output_dropped == 0
         && distribution.pool_exhausted == 0;
+    let outputs_ok = outputs_ok && run.reconnections.is_empty();
+    let sync = run.sync.map(|sync| {
+        sync.as_ref()
+            .map(|s| (s, sync_verdict(s, elapsed, soak.config.rate)))
+    });
+    let sync_ok = match &sync {
+        None => true,
+        Some(Ok((_, verdict))) => verdict.passed(),
+        Some(Err(_)) => false,
+    };
     let passed = end == End::Completed
         && c.missed == 0
         && r.gpu_dropped == 0
         && !r.device_lost
         && inputs_ok
-        && outputs_ok;
+        && outputs_ok
+        && sync_ok;
     let mode = if options.hostile { "hostile" } else { "calme" };
     let ms = |d: Duration| format!("{:.3} ms", d.as_secs_f64() * 1000.0);
 
@@ -446,12 +524,14 @@ fn report(options: &SoakOptions, soak: &SoakContext, run: &Run<'_>) -> (String, 
             (false, End::Completed) if !inputs_ok =>
                 "❌ ÉCHEC (input perdu, hors cadence, upload en attente du GPU ou latence > 2 images)",
             (false, End::Completed) if !outputs_ok =>
-                "❌ ÉCHEC (sortie en erreur, ou images perdues par une sortie)",
+                "❌ ÉCHEC (sortie en erreur ou reconnectée, ou images perdues par une sortie)",
+            (false, End::Completed) if !sync_ok =>
+                "❌ ÉCHEC (synchro : décalage son / image de plus d'une image, flux relu interrompu ou flashs manquants)",
             (false, End::Completed) => "❌ ÉCHEC (images manquées ou répétées)",
         }
     );
     let _ = writeln!(s, "## Configuration\n| Paramètre | Valeur |\n|---|---|");
-    let _ = writeln!(s, "| Commande | `vma {}` |", args_line());
+    let _ = writeln!(s, "| Commande | `vma {}` |", args_line(&soak.stream_key));
     let _ = writeln!(s, "| Mode | {mode} |");
     let _ = writeln!(
         s,
@@ -577,7 +657,7 @@ fn report(options: &SoakOptions, soak: &SoakContext, run: &Run<'_>) -> (String, 
     if !outputs.is_empty() {
         let _ = writeln!(
             s,
-            "## Sorties\nImages non relues par le rendu : {} ; perdues faute d'image libre (pool) : {} ; distribuées : {} (dont noires, GPU perdu : {}).\n\n| Sortie | État | Encodeur | Envoyées | Perdues | File | Fichier / écran | Taille |\n|---|---|---|---|---|---|---|---|",
+            "## Sorties\nImages non relues par le rendu : {} ; perdues faute d'image libre (pool) : {} ; distribuées : {} (dont noires, GPU perdu : {}).\n\n| Sortie | État | Encodeur | Envoyées | Perdues | File | Reconnexions | Fichier / écran | Taille |\n|---|---|---|---|---|---|---|---|---|",
             r.output_dropped, distribution.pool_exhausted, distribution.frames, distribution.black
         );
         for o in &outputs {
@@ -598,9 +678,15 @@ fn report(options: &SoakOptions, soak: &SoakContext, run: &Run<'_>) -> (String, 
                 .and_then(|t| std::fs::metadata(t).ok())
                 .map_or_else(|| "—".into(), |m| format!("{:.1} Mo", m.len() as f64 / 1e6));
             let mark = if counters.dropped == 0 { "" } else { " ❌" };
+            let reconnected = run
+                .reconnections
+                .iter()
+                .find(|(id, _)| *id == o.id)
+                .map_or(0, |(_, n)| *n);
+            let reconnected_mark = if reconnected == 0 { "" } else { " ❌" };
             let _ = writeln!(
                 s,
-                "| {} | {status} | {encoder} | {} | {}{mark} | {} | {} | {size} |",
+                "| {} | {status} | {encoder} | {} | {}{mark} | {} | {reconnected}{reconnected_mark} | {} | {size} |",
                 o.name,
                 counters.delivered,
                 counters.dropped,
@@ -609,6 +695,81 @@ fn report(options: &SoakOptions, soak: &SoakContext, run: &Run<'_>) -> (String, 
             );
         }
         let _ = writeln!(s);
+    }
+
+    match &sync {
+        None => {}
+        Some(Err(e)) => {
+            let _ = writeln!(s, "## Synchro (B1)\n❌ Analyseur non démarré : {e}\n");
+        }
+        Some(Ok((sync, verdict))) => {
+            let ms_of = |ns: Option<i64>| {
+                ns.map_or_else(|| "—".into(), |ns| format!("{:+.2} ms", ns as f64 / 1e6))
+            };
+            let mark = |ok: bool| if ok { "✅" } else { "❌" };
+            let uri =
+                crate::cli::redacted(options.sync_check.iter().cloned(), soak.stream_key.expose());
+            let _ = writeln!(
+                s,
+                "## Synchro (B1)\nFlux relu : `{uri}` (décodeurs logiciels). Décalage = début du bip − première image blanche ; positif : le son est en retard.\n\n| Mesure | Valeur | |\n|---|---|---|"
+            );
+            let _ = writeln!(
+                s,
+                "| Flashs appariés à leur bip | {} (attendu ≥ {}) | {} |",
+                sync.offsets_ns.len(),
+                verdict.expected,
+                mark(verdict.enough_pairs)
+            );
+            let _ = writeln!(
+                s,
+                "| Flashs · bips seuls | {} · {} | |",
+                sync.unpaired_flashes, sync.unpaired_beeps
+            );
+            let _ = writeln!(
+                s,
+                "| **Pire décalage (valeur absolue)** | **{}** (limite : une image, {:.2} ms) | {} |",
+                sync.worst_ns()
+                    .map_or_else(|| "—".into(), |ns| format!("{:.2} ms", ns as f64 / 1e6)),
+                verdict.frame_ns as f64 / 1e6,
+                mark(verdict.within_a_frame)
+            );
+            let _ = writeln!(
+                s,
+                "| Décalage min · moyen · max | {} · {} · {} | |",
+                ms_of(sync.min_ns()),
+                ms_of(sync.mean_ns()),
+                ms_of(sync.max_ns())
+            );
+            let _ = writeln!(
+                s,
+                "| Dérive (dernier − premier) | {} | |",
+                ms_of(sync.drift_ns())
+            );
+            let _ = writeln!(
+                s,
+                "| Images relues · trous | {} · {} | {} |",
+                sync.video_frames,
+                sync.video_gaps,
+                mark(sync.video_gaps == 0)
+            );
+            let _ = writeln!(
+                s,
+                "| Interruptions du flux relu | {} | {} |",
+                sync.interruptions,
+                mark(sync.interruptions == 0)
+            );
+            if sync.interruptions > 0 || sync.video_frames == 0 {
+                let _ = writeln!(
+                    s,
+                    "| Dernière erreur | {} | |",
+                    sync.last_error.as_deref().unwrap_or("—")
+                );
+            }
+            let _ = writeln!(
+                s,
+                "\nLes {SYNC_WARM_UP_S} premières secondes ne comptent pas (démarrage du stream, analyse par le serveur, attente d'une image clé).\n"
+            );
+        }
     }
 
     let _ = writeln!(
@@ -662,8 +823,9 @@ fn report(options: &SoakOptions, soak: &SoakContext, run: &Run<'_>) -> (String, 
     (s, passed)
 }
 
-fn args_line() -> String {
-    std::env::args().skip(1).collect::<Vec<_>>().join(" ")
+/// The command line, the stream key hidden (B13).
+fn args_line(key: &vma_engine::Secret) -> String {
+    crate::cli::redacted(std::env::args().skip(1), key.expose())
 }
 
 /// `YYYY-MM-DD HH:MM UTC`, without a date crate (days-to-civil, H. Hinnant).
@@ -712,5 +874,34 @@ mod tests {
         for action in [Action::Maximize, Action::Minimize, Action::Restore] {
             assert_eq!(seen.iter().filter(|a| **a == action).count(), 1);
         }
+    }
+
+    #[test]
+    fn sync_verdict_wants_a_frame_a_pair_a_second_and_no_interruption() {
+        let rate = vma_core::FrameRate::FPS_50;
+        let minute = Duration::from_secs(60);
+        let good = vma_io_gst::SyncSnapshot {
+            offsets_ns: vec![400_000; 50],
+            ..Default::default()
+        };
+        let verdict = sync_verdict(&good, minute, rate);
+        assert_eq!((verdict.expected, verdict.frame_ns), (45, 20_000_000));
+        assert!(verdict.passed());
+        let late = vma_io_gst::SyncSnapshot {
+            offsets_ns: vec![21_333_333; 50],
+            ..Default::default()
+        };
+        assert!(!sync_verdict(&late, minute, rate).within_a_frame);
+        let few = vma_io_gst::SyncSnapshot {
+            offsets_ns: vec![0; 40],
+            ..Default::default()
+        };
+        assert!(!sync_verdict(&few, minute, rate).enough_pairs);
+        let cut = vma_io_gst::SyncSnapshot {
+            interruptions: 1,
+            ..good
+        };
+        assert!(!sync_verdict(&cut, minute, rate).passed());
+        assert!(!sync_verdict(&vma_io_gst::SyncSnapshot::default(), minute, rate).passed());
     }
 }

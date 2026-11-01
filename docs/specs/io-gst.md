@@ -363,16 +363,16 @@ Windows (pas de MediaMTX en CI), ils sont sautés.
   images, trous (> 1,5 période), flashs, bips, décalages bip − flash, non appariés,
   interruptions, dernière erreur.
 - **Amorçage des encodeurs AAC** (trouvé par l'analyseur) : la première trame d'un encodeur
-  AAC se décode en 1 024 échantillons d'amorçage, et aucun décodeur ne les retire (GStreamer
+  AAC se décode en échantillons d'amorçage (1 024 pour `avenc_aac`), et aucun décodeur ne les retire (GStreamer
   ne signale ce délai ni en MKV, ni en MP4, ni en FLV). Sans correction, le son des sorties
   encodées arrivait **21,3 ms après l'image** (plus d'une image à 50p). Correction : la sortie
   donne à l'encodeur l'audio à partir de l'échantillon `audio_sample_at(n₀) + amorçage`, à
   partir du temps 0 ; image *k* et échantillon `audio_sample_at(k)` sont ainsi joués ensemble,
   les deux pistes commencent à 0 et les 21 premières ms de son sont perdues (retarder la vidéo
   à la place empêchait de relire au-delà du premier fragment un MP4 tué, B5).
-  `encoder::aac_priming` : 1 024 pour chaque encodeur ; mesuré pour `avenc_aac` (1 025, à
-  l'échantillon près de la détection) ; `voaacenc` et `mfaacenc` sont vérifiés par le test là
-  où ils sont installés (la CI Windows). Sans encodeur audio (MKV brut), rien ne change (B3).
+  `encoder::aac_priming`, mesuré par encodeur (bip encodé puis décodé par `avdec_aac`) :
+  `avenc_aac` 1 024 (1 025 à l'échantillon près de la détection, Linux et CI), `voaacenc`
+  1 600 (CI) ; `mfaacenc` (CI Windows) : à mesurer, 1 024 en attendant. Sans encodeur audio (MKV brut), rien ne change (B3).
 
 ### Critères (étape 10)
 | Critère | Test (`vma-io-gst`) | Où |
