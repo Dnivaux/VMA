@@ -82,3 +82,7 @@ debug = "line-tables-only"
 [profile.dev.package."*"]
 # Dependencies (wgpu, naga, egui) are painfully slow unoptimised.
 opt-level = 2
+
+[profile.dev.package.vma-audio]
+# DSP run per sample: its tests play an hour of simulated sound (C3 of phase-3.md).
+opt-level = 2
