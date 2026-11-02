@@ -56,9 +56,10 @@ Un input sans vidéo (périphérique audio, Phase 3) prend la latence de son ann
 La fenêtre lue contient `T × r_i` échantillons de la source, où `r_i` est sa fréquence réelle
 dans le domaine maître, estimée par une **boucle à verrouillage de délai** (DLL du second ordre
 sur les couples temps de flux / nombre d'échantillons). Un rééchantillonneur fractionnaire
-(interpolation cubique, assez pour des écarts de ±0,1 % ; coefficients précalculés) produit
-exactement les échantillons du bloc *n*. Correction bornée à ±0,5 % : au-delà (source
-fantaisiste, reprise après coupure), le mixeur **se recale** (saut, compté comme discontinuité,
+(interpolation cubique de Catmull-Rom, calculée à chaque échantillon ; précisé à
+l'implémentation) produit exactement les échantillons du bloc *n*. Correction bornée à
+±0,5 % : au-delà (écart de plus de 10 ms : source fantaisiste, reprise après coupure,
+décalage changé), le mixeur **se recale** (saut, compté comme discontinuité,
 fondu de 5 ms pour éviter le clic). Un trou dans l'anneau (source tombée) → silence, compté.
 
 ### 5. Thread `vma-audio`, cadencé par les ticks

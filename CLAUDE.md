@@ -68,7 +68,8 @@ Variables wgpu utiles : `WGPU_BACKEND=vulkan|dx12` ; `WGPU_ADAPTER_NAME=Intel` (
 | `crates/ui` | egui : `Switcher` (Preview / Program, transitions, T-Bar, FTB, barre d'inputs, raccourcis, réglages, boutons Enregistrer / Streamer, fenêtre Sorties), fenêtre plein écran (`fullscreen` : viewport différé, `Screens`), panneau Statistiques (dont `output_stats`). Tests sans fenêtre avec `egui_kittest`. |
 | `app/` | Binaire : assemble fenêtre eframe (sur sa propre boucle winit, pour lister les écrans : `screens.rs`), moteur, UI. |
 | `crates/io-gst` | `vma-io` : pipelines d'entrée (capture, fichiers, images fixes), et de sortie (`GstOutput` + `OutputFeed` : échelle d'encodeurs, MKV / MP4), démarrées / arrêtées sur requête de `vma-control` (`outputs`). |
-| `crates/{io-ndi,io-html,audio,replay,api}` | Squelettes vides pour les phases suivantes. |
+| `crates/audio` | Audio temps réel sans GStreamer (ADR 0007) : anneau horodaté par input, DLL (fréquence de la source), lecture au temps de flux rééchantillonnée, `Mixer` (faders, mutes, envois Master / A / B, solo AFL / PFL au casque, audio-follow-video), vumètres. |
+| `crates/{io-ndi,io-html,replay,api}` | Squelettes vides pour les phases suivantes. |
 | `docs/adr/` | Décisions d'architecture (une par fichier, à faire valider). 0001 archi (acceptée avec amendements), 0002 décisions produit. |
 | `docs/specs/` | Une spec par module, avec critères d'acceptation. |
 | `docs/manual-tests/` | Checklists de tests sur matériel réel. |

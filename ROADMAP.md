@@ -171,7 +171,7 @@ le binaire, runtime externe). Checklist pour le partenaire :
 
 | Étape | État | Preuve |
 |---|---|---|
-| 1. `core` (`InputKind` : `Ndi`, `Srt`, `AudioDevice` ; `AudioBus`) ; crate `audio` (anneau horodaté, DLL + rééchantillonneur, mixeur, vumètres) | ⬜ | — |
+| 1. `core` (`InputKind` : `Ndi`, `Srt`, `AudioDevice` ; `AudioBus`) ; crate `audio` (anneau horodaté, DLL + rééchantillonneur, mixeur, vumètres) : C3 (temps simulé), C4, C5, C6 (mixeur), C7 (calcul), C8 (allocation) | 🟡 | 32 tests locaux verts ([`docs/specs/audio.md`](docs/specs/audio.md)) ; CI à confirmer |
 | 2. `io-gst` : horloge monotone, branches audio des inputs, source de synchro ; temps de flux de l'image affichée | ⬜ | — |
 | 3. Thread `vma-audio`, blocs de bus vers `vma-output` ; C1, C2, C3 de bout en bout | ⬜ | — |
 | 4. Commandes, état et journal audio ; panneau Mélangeur ; bus des sorties | ⬜ | — |
