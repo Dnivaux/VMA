@@ -372,8 +372,9 @@ fn a_lost_gpu_sends_black_at_the_pts_of_n_then_finalises() {
         "lost at {lost_at}: last rendered {last}, first black {first}, {} black frames, {distribution:?}",
         black.len()
     );
-    // At most the frames in flight on the GPU are lost at the moment of the loss.
-    assert!(first - last <= 5, "gap {last} → {first}");
+    // At most the frames in flight are lost at the moment of the loss: the 4 readback buffers
+    // (`readback::RING`) and the frame being rendered (5 under WARP, 3 on the dev machine).
+    assert!(first - last <= 6, "gap {last} → {first}");
     assert!(black.iter().all(|f| f.black), "not black after the loss");
     // About one per tick during the grace period.
     let expected = grace.as_secs_f64() * rate.as_f64();

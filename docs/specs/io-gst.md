@@ -357,7 +357,11 @@ Windows (pas de MediaMTX en CI), ils sont sautés.
   du niveau du bip) après ≥ 200 ms en dessous. Chaque flash est apparié au bip à ± 500 ms
   près, dans l'ordre où ils arrivent (vidéo et audio d'un fichier sont décodés à leur rythme) ;
   ce qui reste seul est compté. Un flux pris en cours commence sa vidéo à une image clé, après
-  son audio : ce qu'une piste a plus d'une image avant le début de l'autre n'est pas compté.
+  son audio : ce qu'une piste a avant le début de l'autre (à 5 ms près : arrondi de Matroska et
+  décalages, bien en deçà d'une image) n'est pas compté. Un bip déjà en cours au début du son
+  (fichier commencé juste après un flash : le flash dure une image, le bip 100 ms) n'est pas
+  un front, et son flash était avant l'ouverture : aucun des deux n'est compté. Un fichier
+  commencé sur un flash ne compte ni ce flash ni son bip (indiscernable d'un bip en cours).
   Source en direct arrêtée (erreur, fin) → rouverte toutes les secondes ; une
   **interruption** est comptée si des images étaient arrivées. Résultat (`SyncSnapshot`) :
   images, trous (> 1,5 période), flashs, bips, décalages bip − flash, non appariés,
@@ -377,7 +381,7 @@ Windows (pas de MediaMTX en CI), ils sont sautés.
 ### Critères (étape 10)
 | Critère | Test (`vma-io-gst`) | Où |
 |---|---|---|
-| Appariement flash / bip dans les deux ordres, abandon d'un flash seul, distance max, réouverture ; début d'une piste après l'autre ; front du bip ; reconnaissance du flash | `sync::tests` (4 tests) | CI |
+| Appariement flash / bip dans les deux ordres, abandon d'un flash seul, distance max, réouverture ; début d'une piste après l'autre ; paire coupée par le début d'un fichier ; front du bip ; reconnaissance du flash | `sync::tests` (5 tests) | CI |
 | Amorçage de chaque encodeur AAC présent = `aac_priming` (± 4 échantillons) : bip encodé puis décodé | `output::tests::aac_priming_matches_the_encoders` | CI (les 2 OS) |
 | Enregistrement `--sync-test` (vrais encodeurs) relu par l'analyseur : chaque flash a son bip, décalage ≤ 2 ms (milliseconde de Matroska), aucun trou | `outputs::tests::sync_test_recording_has_its_beeps_on_its_flashes` | CI + local (≤ 0,8 ms) |
 | Flux RTMP `--sync-test` relu depuis MediaMTX : 5 flashs appariés, ≤ 2 ms, aucune interruption ni trou | `outputs::tests::sync_analyser_reads_a_live_stream_back` (exécuté seul) | CI Ubuntu (MediaMTX) ; local (−0,6 à +0,4 ms) |
