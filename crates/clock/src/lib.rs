@@ -13,10 +13,12 @@
 
 mod histogram;
 mod stats;
+mod stream;
 mod time;
 
 pub use histogram::{LatencyHistogram, LatencySummary};
 pub use stats::{ClockStats, ClockStatsSnapshot};
+pub use stream::StreamClock;
 pub use time::{ManualTime, SystemTime, TimeSource};
 
 use std::sync::Arc;

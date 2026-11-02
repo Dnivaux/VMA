@@ -256,6 +256,8 @@ impl GstInput {
                 parts
             }
         };
+        // Pictures and sound dated in the master clock's time (ADR 0007 § 1).
+        pipeline.use_clock(Some(&crate::clock::master_clock()));
         sink.set_caps(Some(
             &gst_video::VideoCapsBuilder::new()
                 .format_list(ACCEPTED)

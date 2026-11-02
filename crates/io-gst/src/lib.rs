@@ -14,6 +14,7 @@
 //! - Capture devices: listed by a device monitor ([`IoRuntime::devices`]), opened in the mode
 //!   closest to the master format ([`CaptureMode`], [`IoRuntime::pipeline_info`]).
 
+mod clock;
 mod devices;
 mod feeds;
 mod mode;
@@ -25,6 +26,7 @@ pub mod still;
 mod supervisor;
 mod sync;
 
+pub use clock::stream_clock;
 pub use devices::CaptureDevice;
 pub use feeds::{Feeds, PictureOut, VideoFormat};
 pub use mode::{CaptureMode, Encoding};
