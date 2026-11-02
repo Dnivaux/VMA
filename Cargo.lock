@@ -3594,6 +3594,9 @@ version = "0.0.1"
 [[package]]
 name = "vma-audio"
 version = "0.0.1"
+dependencies = [
+ "vma-core",
+]
 
 [[package]]
 name = "vma-clock"

@@ -32,6 +32,7 @@ vma-engine = { path = "crates/engine" }
 vma-compositor = { path = "crates/compositor" }
 vma-ui = { path = "crates/ui" }
 vma-io-gst = { path = "crates/io-gst" }
+vma-audio = { path = "crates/audio" }
 
 # External crates — licence noted for each (rule 2.6). Enforced by deny.toml.
 wgpu = "30.0"                                                # MIT OR Apache-2.0
