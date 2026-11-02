@@ -8,9 +8,11 @@
 //!   Video and audio may come in seconds apart (a file is decoded as fast as possible): a
 //!   flash is given up only once the beeps have gone past it, and the other way round.
 //! - A stream read from its middle starts its video on a key frame, later than its audio:
-//!   what one track has before the other one has started (give or take [`EDGE_NS`]) is not
-//!   counted. Nor is a beep already sounding when the audio starts (a file recorded from just
-//!   after a flash): its onset, and its flash, came before the opening.
+//!   beeps before the first picture (give or take [`EDGE_NS`]) are not counted.
+//! - The audio of a file opens on the AAC priming (≤ [`PRIMING_MAX_NS`] of silence), then
+//!   possibly on the end of a beep whose flash came before the recording (the flash lasts a
+//!   frame, the beep 100 ms): neither a flash nor a beep is counted before a cut set half-way
+//!   between two frames after the priming, so that a flash and its beep fall on the same side.
 //! - A live source that stops (error, end of stream) is opened again every second; the pairs
 //!   never straddle two openings. An interruption is counted once pictures had come in.
 //!
@@ -38,9 +40,11 @@ const FLASH_MIN: u8 = 170;
 const BEEP_LEVEL: f32 = 0.25;
 /// Silence needed before a beep onset.
 const BEEP_QUIET_NS: u64 = 200_000_000;
-/// Around the start of a track: Matroska rounding and the flash − beep offsets, far below a
-/// frame period; a beep under way is loud again well within it (1 kHz).
+/// Around the first picture: Matroska rounding and the flash − beep offsets, far below a
+/// frame period.
 const EDGE_NS: u64 = 5_000_000;
+/// Longest AAC priming of the encoders (`voaacenc`: 1 600 samples), with a margin.
+const PRIMING_MAX_NS: u64 = 40_000_000;
 /// A beep belongs to the flash within this distance.
 const PAIR_WINDOW_NS: u64 = 500_000_000;
 const AUDIO_RATE: u32 = 48_000;
@@ -131,9 +135,10 @@ impl Pairing {
         }
     }
 
-    /// The first picture (`video`) or audio sample of an opening came at `at`: what the other
-    /// track had before it cannot be paired, nor held against the stream.
-    fn track_started(&mut self, video: bool, at: u64, out: &mut SyncSnapshot) {
+    /// The first picture (`video`) or audio sample of an opening came at `at`: the beeps more
+    /// than [`EDGE_NS`] before the picture, or the flashes before `at + lead`, cannot be
+    /// paired, nor held against the stream.
+    fn track_started(&mut self, video: bool, at: u64, lead: u64, out: &mut SyncSnapshot) {
         let (queue, count) = if video {
             (&mut self.beeps, &mut out.beeps)
         } else {
@@ -144,7 +149,7 @@ impl Pairing {
             if video {
                 t + EDGE_NS >= at
             } else {
-                t >= at + EDGE_NS
+                t >= at + lead
             }
         });
         *count -= (before - queue.len()) as u64;
@@ -183,25 +188,20 @@ fn is_flash(luma: &[u8]) -> bool {
 #[derive(Debug, Default)]
 struct BeepDetector {
     last_loud: Option<u64>,
-    /// First sample of the opening.
-    since: Option<u64>,
 }
 
 impl BeepDetector {
     /// `samples` start at `pts` (ns); calls `onset` with the time of each beep start.
-    /// Loud from the first samples: a beep under way, not an onset.
     fn samples(&mut self, pts: u64, samples: &[f32], mut onset: impl FnMut(u64)) {
-        let since = *self.since.get_or_insert(pts);
         for (i, v) in samples.iter().enumerate() {
             if v.abs() < BEEP_LEVEL {
                 continue;
             }
             let at = pts + i as u64 * 1_000_000_000 / u64::from(AUDIO_RATE);
-            let quiet = match self.last_loud {
-                Some(last) => at.saturating_sub(last) >= BEEP_QUIET_NS,
-                None => at >= since + EDGE_NS,
-            };
-            if quiet {
+            if self
+                .last_loud
+                .is_none_or(|last| at.saturating_sub(last) >= BEEP_QUIET_NS)
+            {
                 onset(at);
             }
             self.last_loud = Some(at);
@@ -221,9 +221,26 @@ struct Inner {
     first_picture: Option<u64>,
     first_audio: Option<u64>,
     period_ns: u64,
+    /// From the first audio sample to the cut, half-way between two frames.
+    lead_ns: u64,
 }
 
 impl Inner {
+    fn new(period_ns: u64) -> Self {
+        let frames = PRIMING_MAX_NS.div_ceil(period_ns.max(1));
+        Self {
+            out: SyncSnapshot::default(),
+            pairing: Pairing::default(),
+            beeps: BeepDetector::default(),
+            in_flash: false,
+            last_picture: None,
+            first_picture: None,
+            first_audio: None,
+            period_ns,
+            lead_ns: frames * period_ns + period_ns / 2,
+        }
+    }
+
     fn picture(&mut self, pts: u64, luma: &[u8]) {
         self.out.video_frames += 1;
         if let Some(last) = self.last_picture
@@ -234,10 +251,13 @@ impl Inner {
         self.last_picture = Some(pts);
         if self.first_picture.is_none() {
             self.first_picture = Some(pts);
-            self.pairing.track_started(true, pts, &mut self.out);
+            self.pairing
+                .track_started(true, pts, self.lead_ns, &mut self.out);
         }
         let flash = is_flash(luma);
-        let audible = self.first_audio.is_none_or(|first| pts >= first + EDGE_NS);
+        let audible = self
+            .first_audio
+            .is_none_or(|first| pts >= first + self.lead_ns);
         if flash && !self.in_flash && audible {
             self.pairing.flash(pts, &mut self.out);
         }
@@ -247,18 +267,21 @@ impl Inner {
     fn audio(&mut self, pts: u64, samples: &[f32]) {
         if self.first_audio.is_none() {
             self.first_audio = Some(pts);
-            self.pairing.track_started(false, pts, &mut self.out);
+            self.pairing
+                .track_started(false, pts, self.lead_ns, &mut self.out);
         }
         let Self {
             out,
             pairing,
             beeps,
             first_picture,
+            first_audio,
+            lead_ns,
             ..
         } = self;
-        let first_picture = *first_picture;
+        let (first_picture, cut) = (*first_picture, first_audio.map_or(0, |a| a + *lead_ns));
         beeps.samples(pts, samples, |at| {
-            if first_picture.is_none_or(|first| at + EDGE_NS >= first) {
+            if at >= cut && first_picture.is_none_or(|first| at + EDGE_NS >= first) {
                 pairing.beep(at, out);
             }
         });
@@ -296,16 +319,8 @@ impl SyncAnalyser {
         if !uri.contains("://") {
             return Err(IoError::Pipeline(format!("not a URI: {uri}")));
         }
-        let shared = Arc::new(Mutex::new(Inner {
-            out: SyncSnapshot::default(),
-            pairing: Pairing::default(),
-            beeps: BeepDetector::default(),
-            in_flash: false,
-            last_picture: None,
-            first_picture: None,
-            first_audio: None,
-            period_ns: u64::try_from(rate.frame_offset_nanos(1)).unwrap_or(u64::MAX),
-        }));
+        let period_ns = u64::try_from(rate.frame_offset_nanos(1)).unwrap_or(u64::MAX);
+        let shared = Arc::new(Mutex::new(Inner::new(period_ns)));
         let stop = Arc::new(AtomicBool::new(false));
         let worker = (uri.to_owned(), Arc::clone(&shared), Arc::clone(&stop));
         let thread = std::thread::Builder::new()
@@ -579,16 +594,7 @@ mod tests {
 
     #[test]
     fn what_comes_before_the_other_track_is_not_counted() {
-        let mut inner = Inner {
-            out: SyncSnapshot::default(),
-            pairing: Pairing::default(),
-            beeps: BeepDetector::default(),
-            in_flash: false,
-            last_picture: None,
-            first_picture: None,
-            first_audio: None,
-            period_ns: 20 * MS,
-        };
+        let mut inner = Inner::new(20 * MS);
         let beep: Vec<f32> = (0..480)
             .map(|i| (0.5 * (std::f64::consts::TAU * i as f64 / 48.0).sin()) as f32)
             .collect();
@@ -606,50 +612,55 @@ mod tests {
 
     #[test]
     fn a_pair_cut_by_the_start_of_a_file_is_not_counted() {
-        let fresh = || Inner {
-            out: SyncSnapshot::default(),
-            pairing: Pairing::default(),
-            beeps: BeepDetector::default(),
-            in_flash: false,
-            last_picture: None,
-            first_picture: None,
-            first_audio: None,
-            period_ns: 20 * MS,
-        };
         let beep = |from: usize| -> Vec<f32> {
             (from..4_800)
                 .map(|i| (0.5 * (std::f64::consts::TAU * i as f64 / 48.0).sin()) as f32)
                 .collect()
         };
-        let silence = [0.0_f32; 1_024];
+        // 1 024 samples of AAC priming at the start of the audio (`avenc_aac`).
+        let priming = [0.0_f32; 1_024];
+        let after_priming = 1_024 * 1_000_000_000 / 48_000;
         let black = [16_u8; 576];
         let white = [235_u8; 576];
-        // Recorded from two frames after a flash: the beep is under way on the first sample,
+        // Recorded from two frames after a flash: the end of its beep follows the priming,
         // whichever track is decoded first.
         for video_first in [true, false] {
-            let mut inner = fresh();
+            let mut inner = Inner::new(20 * MS);
             if video_first {
                 inner.picture(0, &black);
             }
-            inner.audio(0, &beep(1_920 + 7));
+            inner.audio(0, &priming);
+            inner.audio(after_priming, &beep(1_920 + 1_024));
             if !video_first {
                 inner.picture(0, &black);
             }
             inner.picture(20 * MS, &black);
-            inner.audio(1_000 * MS, &silence);
             inner.picture(1_000 * MS, &white);
-            inner.audio(1_000 * MS + 21_333_333, &beep(0));
+            inner.audio(1_000 * MS, &beep(0));
             let out = &inner.out;
             assert_eq!((out.flashes, out.beeps, out.offsets_ns.len()), (1, 1, 1));
             assert_eq!((out.unpaired_flashes, out.unpaired_beeps), (0, 0));
         }
-        // Recorded from a flash: its beep cannot be told from one under way; neither counts.
-        let mut inner = fresh();
-        inner.picture(0, &white);
-        inner.audio(0, &beep(0));
-        inner.picture(20 * MS, &black);
-        assert_eq!((inner.out.flashes, inner.out.beeps), (0, 0));
-        assert_eq!(inner.pairing.flashes.len() + inner.pairing.beeps.len(), 0);
+        // Recorded from a flash, or from just before one: up to the cut (2.5 frames at 50p),
+        // neither the flash nor its beep counts; from the third frame, both do.
+        for (flash, counted) in [(0, 0), (40 * MS, 0), (60 * MS, 1)] {
+            let mut inner = Inner::new(20 * MS);
+            inner.audio(0, &priming);
+            let onset = flash.max(after_priming);
+            inner.audio(onset, &beep(0));
+            for k in 0..5 {
+                let pts = k * 20 * MS;
+                inner.picture(pts, if pts == flash { &white } else { &black });
+            }
+            let out = &inner.out;
+            assert_eq!(
+                (out.flashes, out.beeps),
+                (counted, counted),
+                "flash at {flash}"
+            );
+            assert_eq!(out.offsets_ns.len() as u64, counted);
+            assert_eq!(inner.pairing.flashes.len() + inner.pairing.beeps.len(), 0);
+        }
     }
 
     #[test]

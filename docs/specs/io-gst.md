@@ -357,11 +357,12 @@ Windows (pas de MediaMTX en CI), ils sont sautés.
   du niveau du bip) après ≥ 200 ms en dessous. Chaque flash est apparié au bip à ± 500 ms
   près, dans l'ordre où ils arrivent (vidéo et audio d'un fichier sont décodés à leur rythme) ;
   ce qui reste seul est compté. Un flux pris en cours commence sa vidéo à une image clé, après
-  son audio : ce qu'une piste a avant le début de l'autre (à 5 ms près : arrondi de Matroska et
-  décalages, bien en deçà d'une image) n'est pas compté. Un bip déjà en cours au début du son
-  (fichier commencé juste après un flash : le flash dure une image, le bip 100 ms) n'est pas
-  un front, et son flash était avant l'ouverture : aucun des deux n'est compté. Un fichier
-  commencé sur un flash ne compte ni ce flash ni son bip (indiscernable d'un bip en cours).
+  son audio : les bips d'avant la première image (à 5 ms près : arrondi de Matroska et
+  décalages) ne sont pas comptés. Le son d'un fichier commence par l'amorçage AAC (≤ 40 ms
+  de silence), puis éventuellement par la fin d'un bip dont le flash précède l'enregistrement
+  (le flash dure une image, le bip 100 ms ; vu en CI) : ni flash ni bip n'est compté avant une
+  **coupure** placée à mi-chemin entre deux images après l'amorçage (2,5 images à 50p, 50 ms),
+  pour qu'un flash et son bip tombent toujours du même côté.
   Source en direct arrêtée (erreur, fin) → rouverte toutes les secondes ; une
   **interruption** est comptée si des images étaient arrivées. Résultat (`SyncSnapshot`) :
   images, trous (> 1,5 période), flashs, bips, décalages bip − flash, non appariés,
