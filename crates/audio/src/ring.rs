@@ -86,6 +86,11 @@ pub struct RingWriter {
 }
 
 impl RingWriter {
+    /// Frames written so far: the position of the next frame pushed.
+    pub fn written(&self) -> u64 {
+        self.shared.written.load(Ordering::Relaxed)
+    }
+
     /// Appends interleaved stereo frames whose first frame is at stream time `time_ns`. A
     /// trailing half frame is ignored; a block longer than the ring keeps its end.
     pub fn push(&mut self, time_ns: u64, samples: &[f32]) {
@@ -358,33 +363,41 @@ mod tests {
     }
 
     /// A producer far ahead of a slow reader: every frame the reader keeps is the one written
-    /// at its position (never a torn or rewritten value), the others are reported.
+    /// at its position (never a torn or rewritten value), the others are reported. The
+    /// producer runs until the reader has made its reads.
     #[test]
     fn concurrent_reads_never_return_a_rewritten_frame() {
+        use std::sync::atomic::AtomicBool;
         let (mut w, r) = ring(64);
-        const TOTAL: u32 = 200_000;
+        let done = Arc::new(AtomicBool::new(false));
+        let stop = Arc::clone(&done);
         let producer = std::thread::spawn(move || {
-            let mut next = 0;
-            while next < TOTAL {
-                w.push(u64::from(next), &block(next, 7));
+            let mut next = 0u32;
+            while !stop.load(Ordering::Relaxed) {
+                w.push(u64::from(next), &block(next % 1_000_000, 7));
                 next += 7;
             }
         });
         let mut out = [0.0f32; 2 * 16];
         let mut checked = 0u64;
-        while !producer.is_finished() {
+        for _ in 0..20_000 {
             let written = r.written();
             let first = written.saturating_sub(40) as i64;
             let outcome = r.read(first, &mut out);
             for (f, pair) in out.as_chunks::<2>().0.iter().enumerate() {
-                let p = first + f as i64;
-                if *pair != [0.0, 0.0] || p == 0 {
-                    assert_eq!(*pair, [p as f32, -(p as f32)], "position {p}");
+                let p = (first + f as i64) as u64;
+                // The producer writes position p with the value p mod 1 000 000 (+ the
+                // multiple of 7 it started its block at).
+                if *pair != [0.0, 0.0] {
+                    let v = pair[0];
+                    assert_eq!(pair[1], -v, "position {p}");
+                    assert_eq!(v as u64 % 1_000_000, p % 1_000_000, "position {p}");
                     checked += 1;
                 }
             }
             assert!(outcome.missing + outcome.overwritten <= 16);
         }
+        done.store(true, Ordering::Relaxed);
         producer.join().unwrap();
         assert!(checked > 0);
     }

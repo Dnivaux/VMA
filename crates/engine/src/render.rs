@@ -1,3 +1,4 @@
+use crate::audio::{self, AudioStats, AudioThread, AudioTick, BusReaders, OnAir, TickSender};
 use crate::command::MixDomain;
 use crate::control::{
     self, CommandSender, ControlInputs, ControlStats, Controller, InputStatsReader, IoEventSender,
@@ -18,7 +19,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
-use vma_clock::{ClockStats, FrameClock, SystemTime};
+use vma_audio::MixMeters;
+use vma_clock::{ClockStats, FrameClock, StreamClock, SystemTime};
 use vma_compositor::thumbnails::{self, ATLAS_CELLS, ThumbnailPainter};
 use vma_compositor::{
     FramePipelines, Mix, MixSpace, Mixer, OutputLook, OutputStage, RenderTarget, Source,
@@ -49,6 +51,10 @@ pub struct EngineConfig {
     /// After a GPU loss, how long the outputs get black before they are finalised (ADR 0006
     /// § 7; `--gpu-loss-grace`).
     pub device_lost_grace: Duration,
+    /// Converts the ticks into the stream time of the pictures and sound of the inputs
+    /// (ADR 0007 § 1): from `vma_io_gst::stream_clock()` in the application. `None`: stream
+    /// time counted from the start of the engine (tests without GStreamer).
+    pub stream_clock: Option<StreamClock>,
 }
 
 impl EngineConfig {
@@ -63,6 +69,7 @@ impl Default for EngineConfig {
             spin_margin: SystemTime::DEFAULT_SPIN_MARGIN,
             sync_test: false,
             device_lost_grace: Self::DEFAULT_DEVICE_LOST_GRACE,
+            stream_clock: None,
         }
     }
 }
@@ -125,8 +132,8 @@ pub struct Readers {
 pub struct RenderEngine {
     config: EngineConfig,
     stop: Arc<AtomicBool>,
-    /// Render first, then output (it ends when render drops its sender), then control, then
-    /// journal (it ends when control drops its sender).
+    /// Render first, then audio and output (they end when render drops their senders), then
+    /// control, then journal (it ends when control drops its sender).
     threads: Vec<JoinHandle<()>>,
     clock_stats: Arc<ClockStats>,
     render_stats: Arc<RenderStats>,
@@ -136,6 +143,8 @@ pub struct RenderEngine {
     commands: CommandSender,
     state: StateReader,
     feeds: FeedRegistry,
+    audio_meters: Arc<MixMeters>,
+    audio_stats: Arc<AudioStats>,
     input_stats: InputStatsReader,
     timelines: Timelines,
     outputs: OutputHub,
@@ -196,8 +205,17 @@ impl RenderEngine {
         let stage = OutputStage::new(&device, mixers[0].program());
         let ring = Ring::new(&device, config.resolution);
         let (ready_tx, ready_rx) = crossbeam_channel::bounded(RING);
-        // First: if it cannot start, nothing else is running yet. It ends by itself when
-        // `ready_tx` is dropped, on any later error too.
+        // First: if it cannot start, nothing else is running yet. It ends by itself when the
+        // render thread drops its tick sender, on any later error too.
+        let AudioThread {
+            ticks: audio_ticks,
+            rings,
+            buses: BusReaders { master, .. },
+            meters: audio_meters,
+            stats: audio_stats,
+            thread: audio_thread,
+        } = audio::spawn(config.rate)?;
+        // It ends by itself when `ready_tx` is dropped, on any later error too.
         let (outputs, active_outputs, output_thread) = outputs::spawn(
             OutputSettings {
                 rate: config.rate,
@@ -206,6 +224,7 @@ impl RenderEngine {
             },
             Arc::clone(&ring),
             ready_rx,
+            Some(master),
         )?;
         let clock = FrameClock::with_spin_margin(config.rate, config.spin_margin);
         let clock_stats = clock.stats();
@@ -234,6 +253,7 @@ impl RenderEngine {
             queue.clone(),
             FramePipelines::new(&device),
             attach_tx,
+            rings,
         );
         let ((io_tx, io_requests), (io_events, io_events_rx)) = io_channels();
         let (mut controller, state) = Controller::new(
@@ -278,6 +298,10 @@ impl RenderEngine {
             ready_tx,
             active_outputs,
             sync: config.sync_test.then(|| SyncTest::for_rate(config.rate)),
+            audio: audio_ticks,
+            stream_clock: config
+                .stream_clock
+                .unwrap_or_else(|| StreamClock::new(Instant::now(), 0)),
             sequencer: Sequencer::new(plan_reader),
             sources: SourceTable::new(sources_rx, retired_tx),
             feedback: Arc::clone(&feedback),
@@ -291,9 +315,14 @@ impl RenderEngine {
             Ok(thread) => thread,
             Err(error) => {
                 stop.store(true, Ordering::Release);
-                for thread in [Some(output_thread), Some(control_thread), journal_thread]
-                    .into_iter()
-                    .flatten()
+                for thread in [
+                    Some(audio_thread),
+                    Some(output_thread),
+                    Some(control_thread),
+                    journal_thread,
+                ]
+                .into_iter()
+                .flatten()
                 {
                     let _ = thread.join();
                 }
@@ -308,6 +337,7 @@ impl RenderEngine {
                 stop,
                 threads: [
                     Some(render_thread),
+                    Some(audio_thread),
                     Some(output_thread),
                     Some(control_thread),
                     journal_thread,
@@ -323,6 +353,8 @@ impl RenderEngine {
                 commands,
                 state,
                 feeds: feeds.clone(),
+                audio_meters,
+                audio_stats,
                 input_stats,
                 timelines: timelines.clone(),
                 outputs: outputs.clone(),
@@ -358,6 +390,15 @@ impl RenderEngine {
     }
 
     /// Creates picture feeds for inputs fed from outside the engine (clonable).
+    /// Meters of the audio mixer (inputs, buses, headphones), for the UI.
+    pub fn audio_meters(&self) -> Arc<MixMeters> {
+        Arc::clone(&self.audio_meters)
+    }
+
+    pub fn audio_stats(&self) -> crate::audio::AudioStatsSnapshot {
+        self.audio_stats.snapshot()
+    }
+
     pub fn feeds(&self) -> FeedRegistry {
         self.feeds.clone()
     }
@@ -520,6 +561,8 @@ struct RenderWorker {
     feedback: Arc<RenderFeedback>,
     stats: Arc<RenderStats>,
     stop: Arc<AtomicBool>,
+    audio: TickSender,
+    stream_clock: StreamClock,
 }
 
 impl RenderWorker {
@@ -558,6 +601,21 @@ impl RenderWorker {
             // Every feed takes its latest picture once per tick, rendered or not, so the
             // per-input statistics count master ticks.
             self.sources.advance(started);
+            // The sound follows the pictures shown, whatever the GPU does (ADR 0007 § 5).
+            let ideal = started
+                .checked_sub(tick.woke_at.saturating_sub(tick.scheduled))
+                .unwrap_or(started);
+            let mut audio_tick = AudioTick::new(
+                tick.index,
+                self.stream_clock.at(ideal),
+                OnAir {
+                    from: composition.from,
+                    to: composition.to,
+                    mix: composition.mix,
+                },
+            );
+            self.sources.stream_times(&mut audio_tick.shown);
+            self.audio.send(audio_tick);
 
             // Lost device: keep the clock (and the stats) running, render nothing; the outputs
             // get black at the PTS of this tick until `vma-control` finalises them (ADR 0006

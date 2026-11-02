@@ -228,9 +228,7 @@ impl<T> Reader<T> {
         }
     }
 
-    /// Stream time of [`Self::current`], if its source dates its pictures. Read by the audio
-    /// thread from step 3 of Phase 3 on.
-    #[cfg(test)]
+    /// Stream time of [`Self::current`], if its source dates its pictures.
     pub(crate) fn current_stream_ns(&self) -> Option<u64> {
         if !self.has_picture {
             return None;
@@ -353,6 +351,7 @@ pub struct FeedRegistry {
     queue: wgpu::Queue,
     pipelines: FramePipelines,
     attach: crossbeam_channel::Sender<Attach>,
+    rings: crate::audio::RingAttacher,
 }
 
 impl FeedRegistry {
@@ -361,13 +360,21 @@ impl FeedRegistry {
         queue: wgpu::Queue,
         pipelines: FramePipelines,
         attach: crossbeam_channel::Sender<Attach>,
+        rings: crate::audio::RingAttacher,
     ) -> Self {
         Self {
             device,
             queue,
             pipelines,
             attach,
+            rings,
         }
+    }
+
+    /// A ring for the sound of `input` (ADR 0007 § 2), mixed by `vma-audio` from the next
+    /// tick on; it replaces the input's previous one. `None` if `vma-audio` is gone.
+    pub fn audio(&self, input: InputId) -> Option<vma_audio::RingWriter> {
+        self.rings.create(input)
     }
 
     /// Creates the textures of a feed for `input` and asks `vma-control` to attach it: the

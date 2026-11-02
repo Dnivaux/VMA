@@ -64,4 +64,8 @@ impl Feeds for FeedRegistry {
             format.rate,
         )
     }
+
+    fn audio(&self, input: InputId) -> Option<RingWriter> {
+        FeedRegistry::audio(self, input)
+    }
 }

@@ -140,3 +140,34 @@ Voir l'ADR 0006 (§§ 1–3, 5 et « Mise en œuvre côté moteur »).
 | *(Étape 9)* **B14** (moteur) : GPU perdu (`Device::destroy`) avec une sortie attachée → une image par tick, noire, PTS / durée / audio de *n*, audio continu à travers la perte (≤ 5 images non relues à l'instant de la perte) ; démarrage refusé ; sorties finalisées après le délai, pas avant | `tests/outputs.rs::a_lost_gpu_sends_black_at_the_pts_of_n_then_finalises` (RTX 5090, Intel ARL) | CI |
 | Coût en 1080p50 (une sortie) | `tests/outputs.rs::output_stage_cost_1080p50` (`#[ignore]`, manuel) : tick p99 0,62 ms, étage 0,011 ms (RTX 5090) | manuel |
 
+
+## Phase 3 — Thread `vma-audio` (étape 3, 2026-11-03)
+- **Rendu** : après `sources.advance`, un `AudioTick` (copie, sans allocation) par tick :
+  index *n*, temps de flux du début idéal du tick (`EngineConfig::stream_clock`, converti par
+  `vma_clock::StreamClock`), composition du Program (`from`, `to`, `mix`), et, par case de la
+  table des sources, le temps de flux de l'image montrée (`SourceTable::stream_times`).
+  `try_send` ; file pleine : compté (`AudioStats::queue_full`), le tick est reconstruit.
+- **`vma-audio`** (`audio.rs`, `AudioMix`) : un `InputReader` (crate `audio`) par input qui a
+  un anneau (`FeedRegistry::audio`, demandé par `io-gst` au démarrage de chaque pipeline ;
+  le nouvel anneau remplace l'ancien) ; temps de lecture = temps du tick − latence lissée
+  sur les images nouvelles (ADR 0007, précisions) ; image figée plus vieille de 100 ms que sa
+  latence (fichier en pause, source perdue) : silence. Audio-follow-video : part à l'antenne
+  = parts en puissance constante de `from` et `to` selon `mix` (Cut : un bloc de rampe).
+  Mixage du bloc *n* à l'arrivée du tick *n* + 3 ; ticks manquants (≤ 50) reconstruits avec
+  la latence figée ; au-delà, silence écrit (`skipped_samples`). Les blocs des bus vont dans
+  un anneau par bus, par index d'échantillon de sortie (`audio_sample_at(n)`).
+- **`vma-output`** : l'audio d'une image vient de l'anneau du Master (sauf `--sync-test`,
+  bip généré comme en Phase 2) ; l'image est retenue jusqu'à ce que son son soit écrit (8
+  images ou 8 périodes au plus, puis silence compté : `DistributionSnapshot::audio_late`).
+  `black` est compté à l'envoi.
+
+### Critères (étape 3)
+| Critère | Test | Statut |
+|---|---|---|
+| Le son d'un input est sur son image, au premier tick qui la montre (source à la cadence du maître et plus lente) | `audio::tests::the_sound_of_an_input_sits_on_its_picture` | CI |
+| Ticks manquants reconstruits : mêmes débuts de bip | `audio::tests::missing_ticks_are_rebuilt` | CI |
+| C6 (moteur) : hors antenne rien au Master, à l'antenne tout, à mi-mix la part en puissance constante | `audio::tests::{audio_follows_the_program, on_air_shares}` | CI |
+| Image figée → silence ; nouvelle latence → lissage repris | `audio::tests::a_stale_picture_silences_its_input` | CI |
+| C1 : source de synchro → Program → enregistrement relu, < 1 image, aux 6 cadences maîtres (source à une autre cadence) | `io-gst` : `outputs::tests::lip_sync_*` (6 tests) | CI |
+| C2 (1re moitié) : son en avance de 80 ms mesuré −80 ms à une image près | `io-gst` : `outputs::tests::early_sound_is_measured_early` | CI |
+| C3 (temps réel) : ± 100 ppm pendant 60 s, < 1 image, sans trou | `io-gst` : `outputs::tests::drifting_sources_stay_in_sync_for_a_minute` | CI |

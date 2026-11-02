@@ -20,8 +20,13 @@ pub(crate) fn master_clock() -> gst::Clock {
 }
 
 /// Pairs an [`Instant`] with the time of [`master_clock`]: the reading between the two
-/// closest `Instant::now()` (`gst::init` done).
+/// closest `Instant::now()`. Without GStreamer (no input pipeline either), stream time counts
+/// from now.
 pub fn stream_clock() -> StreamClock {
+    if let Err(e) = gst::init() {
+        tracing::warn!(error = %e, "GStreamer unavailable: stream time from now");
+        return StreamClock::new(Instant::now(), 0);
+    }
     let clock = master_clock();
     let mut best: Option<(std::time::Duration, Instant, u64)> = None;
     for _ in 0..READINGS {

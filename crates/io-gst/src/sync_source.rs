@@ -1,6 +1,7 @@
 //! The sync source (phase-3.md § 1, `InputSpec::SyncSource`): a live input that shows a
-//! white picture once per second of **its own clock** and starts a 1 kHz beep of 100 ms on
-//! the same instant (or `audio_lead_ms` earlier), at its own frame rate, sample rate and drift
+//! white picture once per second of **its own clock** (for 40 ms at least, so that a slower
+//! master cannot skip it) and starts a 1 kHz beep of 100 ms on the first white picture (or
+//! `audio_lead_ms` earlier), at its own frame rate, sample rate and drift
 //! from the master clock. It takes the real path of an input: two `appsrc` (NV12 pictures,
 //! mono `f32` sound) into the same branches as a capture (`videoconvert ! appsink`,
 //! `audioconvert ! audioresample ! appsink`), dated like a capture by their PTS.
@@ -27,6 +28,8 @@ const HEIGHT: u32 = 180;
 const BEEP_HZ: f64 = 1_000.0;
 const BEEP_MS: u64 = 100;
 const BEEP_LEVEL: f64 = 0.5;
+/// Shortest flash: a master at 25p shows at least one of its pictures.
+const FLASH_MS: u64 = 40;
 /// Delay between the start of the generator and its first picture.
 const START_DELAY_NS: u64 = 100_000_000;
 
@@ -46,6 +49,14 @@ impl SyncSpec {
     fn period(&self) -> u64 {
         let fps = f64::from(self.rate.num()) / f64::from(self.rate.den());
         (fps.round() as u64).max(1)
+    }
+
+    /// Whether frame `k` is white: the first [`FLASH_MS`] of each flash period.
+    fn is_flash(&self, k: u64) -> bool {
+        let frames = (FLASH_MS * u64::from(self.rate.num()))
+            .div_ceil(1_000 * u64::from(self.rate.den()))
+            .max(1);
+        k % self.period() < frames
     }
 
     /// Master nanoseconds of `seconds` of the source clock.
@@ -207,7 +218,7 @@ fn run(
             continue;
         }
         if frame_at <= block_due {
-            let white = frame % spec.period() == 0;
+            let white = spec.is_flash(frame);
             let (luma, chroma) = picture.split_at_mut((WIDTH * HEIGHT) as usize);
             luma.fill(if white { 235 } else { 16 });
             chroma.fill(128);
@@ -255,6 +266,8 @@ mod tests {
     fn the_beep_starts_on_its_flash_or_its_lead_earlier() {
         let s = spec(0);
         assert_eq!(s.period(), 30);
+        // 40 ms at 29.97p: two pictures.
+        assert!(s.is_flash(30) && s.is_flash(31) && !s.is_flash(32) && !s.is_flash(29));
         // Flash 30 at 1.001 s: sample 44 144.
         assert_eq!(s.beep_start(30), 44_144);
         assert_eq!(s.sample(44_143), 0.0);

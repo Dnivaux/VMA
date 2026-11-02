@@ -860,6 +860,171 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    /// Puts a sync source on the Program of an engine at `master`, records `seconds` once its
+    /// sound has settled, and reads the file back with the sync analyser.
+    fn sync_source_recording(
+        name: &str,
+        master: FrameRate,
+        spec: vma_engine::InputSpec,
+        seconds: u64,
+    ) -> crate::SyncSnapshot {
+        let (mut engine, _device) = spawn_engine_with(EngineConfig {
+            rate: master,
+            stream_clock: Some(crate::stream_clock()),
+            ..EngineConfig::default()
+        });
+        let io = IoRuntime::start(engine.take_io_port().unwrap()).unwrap();
+        let state = engine.state();
+        send(&engine, Command::AddInput { spec, name: None });
+        let end = Instant::now() + Duration::from_secs(10);
+        let input = loop {
+            let live = state.load().inputs.iter().find_map(|i| {
+                (matches!(i.spec, vma_engine::InputSpec::SyncSource { .. })
+                    && matches!(i.status, vma_engine::InputStatus::Live { .. }))
+                .then_some(i.id)
+            });
+            match live {
+                Some(id) => break id,
+                None if Instant::now() > end => panic!("sync source not live"),
+                None => std::thread::sleep(Duration::from_millis(10)),
+            }
+        };
+        send(&engine, Command::CutDirect { input });
+        // The latency of its pictures is smoothed over ≈ 1 s.
+        std::thread::sleep(Duration::from_secs(3));
+        let dir = folder(name);
+        record_into(&engine, Some(dir.clone()), Container::Mkv);
+        send(&engine, Command::StartRecording);
+        let status = wait_status(&state, REC, |s| matches!(s, OutputStatus::Running { .. }));
+        let OutputStatus::Running { target, .. } = status else {
+            unreachable!()
+        };
+        std::thread::sleep(Duration::from_secs(seconds));
+        send(&engine, Command::StopRecording);
+        wait_status(&state, REC, |s| *s == OutputStatus::Idle);
+        let distribution = engine.outputs().distribution();
+        let audio = engine.audio_stats();
+        drop(engine);
+        drop(io);
+        assert_eq!(distribution.audio_late, 0, "{distribution:?}");
+        eprintln!("{audio:?}");
+
+        let path = PathBuf::from(target.unwrap());
+        let uri = format!("file://{}", path.display()).replace('\\', "/");
+        let uri = if uri.starts_with("file:///") {
+            uri
+        } else {
+            uri.replacen("file://", "file:///", 1)
+        };
+        let analyser = crate::SyncAnalyser::start(&uri, master).unwrap();
+        let end = Instant::now() + Duration::from_secs(30 + seconds);
+        while !analyser.ended() && Instant::now() < end {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let sync = analyser.stop();
+        let _ = std::fs::remove_dir_all(dir);
+        assert!(sync.ended && sync.last_error.is_none(), "{sync:?}");
+        assert_eq!(sync.unpaired_beeps, 0, "{sync:?}");
+        assert_eq!(sync.offsets_ns.len() as u64, sync.flashes, "{sync:?}");
+        sync
+    }
+
+    fn sync_source(rate: FrameRate, drift_ppm: i32, audio_lead_ms: i32) -> vma_engine::InputSpec {
+        vma_engine::InputSpec::SyncSource {
+            rate,
+            sample_rate: 44_100,
+            drift_ppm,
+            audio_lead_ms,
+        }
+    }
+
+    /// C1 (BRIEF, Phase 3): lip sync below one frame, sync source → Program → recording read
+    /// back, the source at another rate than the master.
+    fn lip_sync(name: &str, master: FrameRate, source: FrameRate) {
+        let sync = sync_source_recording(name, master, sync_source(source, 0, 0), 5);
+        let frame = video_pts_ns(master, 1) as i64;
+        eprintln!("{master} ← {source}: {sync:?}");
+        assert!(sync.flashes >= 4, "{sync:?}");
+        assert!(
+            sync.worst_ns().unwrap() < frame,
+            "{master} ← {source}: {sync:?}"
+        );
+    }
+
+    #[test]
+    fn lip_sync_25_from_50() {
+        lip_sync("c1-25", FrameRate::FPS_25, FrameRate::FPS_50);
+    }
+
+    #[test]
+    fn lip_sync_29_97_from_59_94() {
+        lip_sync("c1-2997", FrameRate::FPS_29_97, FrameRate::FPS_59_94);
+    }
+
+    #[test]
+    fn lip_sync_30_from_60() {
+        lip_sync("c1-30", FrameRate::FPS_30, FrameRate::FPS_60);
+    }
+
+    #[test]
+    fn lip_sync_50_from_25() {
+        lip_sync("c1-50", FrameRate::FPS_50, FrameRate::FPS_25);
+    }
+
+    #[test]
+    fn lip_sync_59_94_from_29_97() {
+        lip_sync("c1-5994", FrameRate::FPS_59_94, FrameRate::FPS_29_97);
+    }
+
+    #[test]
+    fn lip_sync_60_from_30() {
+        lip_sync("c1-60", FrameRate::FPS_60, FrameRate::FPS_30);
+    }
+
+    /// C2 (first half; the delay setting comes with the commands of step 4): a source whose
+    /// sound is 80 ms early is measured 80 ms early, to a frame.
+    #[test]
+    fn early_sound_is_measured_early() {
+        let master = FrameRate::FPS_50;
+        let sync = sync_source_recording("c2", master, sync_source(FrameRate::FPS_50, 0, 80), 5);
+        eprintln!("{sync:?}");
+        assert!(sync.flashes >= 4, "{sync:?}");
+        for &offset in &sync.offsets_ns {
+            assert!(
+                (offset + 80 * MS as i64).abs() < video_pts_ns(master, 1) as i64,
+                "{sync:?}"
+            );
+        }
+    }
+
+    /// C3 (real time): sources at +100 and −100 ppm for 60 s: the sound stays on its pictures
+    /// to a frame, without a gap.
+    #[test]
+    fn drifting_sources_stay_in_sync_for_a_minute() {
+        let master = FrameRate::FPS_50;
+        for (name, ppm) in [("c3-plus", 100), ("c3-minus", -100)] {
+            let sync =
+                sync_source_recording(name, master, sync_source(FrameRate::FPS_50, ppm, 0), 60);
+            let (first, last) = (
+                sync.offsets_ns[0],
+                sync.offsets_ns[sync.offsets_ns.len() - 1],
+            );
+            eprintln!(
+                "{ppm} ppm: {} pairs, worst {:.2} ms, first {:.2} ms, last {:.2} ms",
+                sync.offsets_ns.len(),
+                sync.worst_ns().unwrap() as f64 / 1e6,
+                first as f64 / 1e6,
+                last as f64 / 1e6
+            );
+            assert!(sync.flashes >= 55, "{sync:?}");
+            assert!(
+                sync.worst_ns().unwrap() < video_pts_ns(master, 1) as i64,
+                "{sync:?}"
+            );
+            assert_eq!(sync.video_gaps, 0, "{sync:?}");
+        }
+    }
+
     #[test]
     fn refused_starts_fail_the_output_only() {
         let mut engine = spawn_engine(FrameRate::FPS_25, false);

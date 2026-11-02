@@ -8,6 +8,7 @@
 //! - `vma-output` timestamps those frames from *n*, adds the generated audio and hands them to
 //!   every attached [`OutputConsumer`] ([`OutputHub`]).
 
+mod audio;
 mod command;
 mod control;
 mod feed;
@@ -24,6 +25,7 @@ mod stats;
 mod timeline;
 mod triple;
 
+pub use audio::{AudioStatsSnapshot, MIX_DELAY_TICKS};
 pub use command::{
     AutoPlay, Command, CommandId, DeviceId, Effect, InputSpec, MAX_TRANSITION_MS, MixDomain,
     Source, TRANSITION_BUTTONS, TransitionSetting,

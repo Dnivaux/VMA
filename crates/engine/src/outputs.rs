@@ -17,6 +17,7 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
+use vma_audio::RingReader;
 use vma_core::{FrameRate, OutputId, Resolution};
 
 /// Sample rate of the output audio track.
@@ -145,27 +146,38 @@ impl OutputFrame {
     }
 }
 
-/// Fills the audio of successive frames: silence, or the sync beep.
+/// Fills the audio of successive frames: the sync beep, the Master of the mixer (by output
+/// sample index), or silence.
 #[derive(Debug)]
 struct AudioTrack {
     rate: FrameRate,
     sync: Option<SyncTest>,
+    master: Option<RingReader>,
     /// First sample not yet delivered.
     next: Option<u64>,
 }
 
 impl AudioTrack {
-    fn new(rate: FrameRate, sync: Option<SyncTest>) -> Self {
+    fn new(rate: FrameRate, sync: Option<SyncTest>, master: Option<RingReader>) -> Self {
         Self {
             rate,
             sync,
+            master: master.filter(|_| sync.is_none()),
             next: None,
         }
     }
 
+    /// Whether the sound of frame `n` is ready (always, unless it comes from the mixer).
+    fn ready(&self, n: u64) -> bool {
+        self.master
+            .as_ref()
+            .is_none_or(|m| m.written() >= audio_sample_at(self.rate, n.saturating_add(1)))
+    }
+
     /// Writes the audio of frame `n` (and of the frames skipped since the previous one, up to
-    /// one second) into `frame`.
-    fn fill(&mut self, n: u64, frame: &mut OutputFrame) {
+    /// one second) into `frame`. Returns the samples of the mixer that were not written yet
+    /// (sent as silence).
+    fn fill(&mut self, n: u64, frame: &mut OutputFrame) -> u64 {
         let rate = self.rate;
         let start = audio_sample_at(rate, n);
         let end = audio_sample_at(rate, n.saturating_add(1));
@@ -176,6 +188,14 @@ impl AudioTrack {
         frame.discont = self.next != Some(first);
         frame.audio_first_sample = first;
         frame.audio.clear();
+        if let Some(master) = &self.master {
+            frame
+                .audio
+                .resize((end - first) as usize * AUDIO_CHANNELS, 0.0);
+            let outcome = master.read(i64::try_from(first).unwrap_or(i64::MAX), &mut frame.audio);
+            self.next = Some(end);
+            return (outcome.missing + outcome.overwritten) as u64;
+        }
         // Frame containing the first sample, then walk forward to `n`.
         let mut k = n - frames_back_to(rate, n, first);
         let mut k_end = audio_sample_at(rate, k + 1);
@@ -188,6 +208,7 @@ impl AudioTrack {
             frame.audio.extend_from_slice(&[v; AUDIO_CHANNELS]);
         }
         self.next = Some(end);
+        0
     }
 }
 
@@ -250,12 +271,14 @@ pub(crate) enum Delivery {
 pub struct DistributionStats {
     /// Frames distributed (read back, or black).
     frames: AtomicU64,
-    /// Of which black, generated after a GPU loss.
+    /// Of which black (GPU lost), counted when sent.
     black: AtomicU64,
     /// Frames lost because every pooled frame was still held by the outputs.
     pool_exhausted: AtomicU64,
     /// Read-back buffers that could not be read (device lost).
     read_errors: AtomicU64,
+    /// Samples of the mix not written in time: sent as silence.
+    audio_late: AtomicU64,
 }
 
 /// Point-in-time copy of [`DistributionStats`].
@@ -265,6 +288,8 @@ pub struct DistributionSnapshot {
     pub black: u64,
     pub pool_exhausted: u64,
     pub read_errors: u64,
+    /// Samples sent as silence because the mix was not written in time (ADR 0007 § 5).
+    pub audio_late: u64,
 }
 
 #[derive(Debug, Default)]
@@ -338,6 +363,7 @@ impl OutputHub {
             black: s.black.load(Ordering::Relaxed),
             pool_exhausted: s.pool_exhausted.load(Ordering::Relaxed),
             read_errors: s.read_errors.load(Ordering::Relaxed),
+            audio_late: s.audio_late.load(Ordering::Relaxed),
         }
     }
 }
@@ -367,11 +393,17 @@ pub(crate) struct OutputSettings {
     pub sync: Option<SyncTest>,
 }
 
+/// Frames held at most while their sound is mixed (then sent with silence, counted).
+const HELD_MAX: usize = 8;
+/// How often `vma-output` looks whether held frames can go.
+const HOLD_POLL: Duration = Duration::from_millis(2);
+
 /// Spawns `vma-output`. It ends when the render thread drops the sender of `frames`.
 pub(crate) fn spawn(
     settings: OutputSettings,
     ring: Arc<Ring>,
     frames: Receiver<Delivery>,
+    master: Option<RingReader>,
 ) -> std::io::Result<(OutputHub, ActiveOutputs, JoinHandle<()>)> {
     let shared = Arc::new(HubShared::default());
     let (tx, control) = crossbeam_channel::unbounded();
@@ -379,7 +411,8 @@ pub(crate) fn spawn(
         settings,
         ring,
         shared: Arc::clone(&shared),
-        audio: AudioTrack::new(settings.rate, settings.sync),
+        audio: AudioTrack::new(settings.rate, settings.sync, master),
+        held: std::collections::VecDeque::with_capacity(HELD_MAX + 1),
         pool: Vec::with_capacity(POOL_MAX),
         attached: Vec::new(),
         retired: Vec::new(),
@@ -402,6 +435,9 @@ struct Distributor {
     ring: Arc<Ring>,
     shared: Arc<HubShared>,
     audio: AudioTrack,
+    /// Frames waiting for their sound, in order, with when they were held and whether they
+    /// are black (GPU lost).
+    held: std::collections::VecDeque<(Arc<OutputFrame>, u64, Instant, bool)>,
     pool: Vec<Arc<OutputFrame>>,
     attached: Vec<Attached>,
     /// Threads of detached outputs, joined at shutdown.
@@ -424,8 +460,11 @@ impl Distributor {
                     // Every hub handle dropped: only frames remain to wait for.
                     Err(_) => control = crossbeam_channel::never(),
                 },
+                default(HOLD_POLL) => {}
             }
+            self.release(false);
         }
+        self.release(true);
         self.shutdown();
     }
 
@@ -449,7 +488,7 @@ impl Distributor {
             return;
         }
         if let Some(frame) = frame {
-            self.send(frame, ready.frame);
+            self.hold(frame, ready.frame, false);
         }
     }
 
@@ -468,9 +507,35 @@ impl Distributor {
         let (y, cbcr) = out.nv12.split_at_mut(luma);
         y.fill(BLACK_LUMA);
         cbcr.fill(BLACK_CHROMA);
-        self.shared.stats.black.fetch_add(1, Ordering::Relaxed);
         if let Some(frame) = frame {
-            self.send(frame, n);
+            self.hold(frame, n, true);
+        }
+    }
+
+    /// Queues frame `n` (`black` after a GPU loss) until its sound is mixed (ADR 0007 § 5).
+    fn hold(&mut self, frame: Arc<OutputFrame>, n: u64, black: bool) {
+        self.held.push_back((frame, n, Instant::now(), black));
+        self.release(false);
+    }
+
+    /// Sends the held frames whose sound is ready, in order; the oldest without waiting if
+    /// too many are held, one held too long, or `all`.
+    fn release(&mut self, all: bool) {
+        let patience = self.settings.rate.frame_duration() * HELD_MAX as u32;
+        while let Some(&(_, n, since, _)) = self.held.front() {
+            let go = all
+                || self.audio.ready(n)
+                || self.held.len() > HELD_MAX
+                || since.elapsed() > patience;
+            if !go {
+                break;
+            }
+            if let Some((frame, n, _, black)) = self.held.pop_front() {
+                if black {
+                    self.shared.stats.black.fetch_add(1, Ordering::Relaxed);
+                }
+                self.send(frame, n);
+            }
         }
     }
 
@@ -484,7 +549,13 @@ impl Distributor {
         out.index = n;
         out.pts_ns = video_pts_ns(rate, n);
         out.duration_ns = video_pts_ns(rate, n.saturating_add(1)).saturating_sub(out.pts_ns);
-        self.audio.fill(n, out);
+        let late = self.audio.fill(n, out);
+        if late > 0 {
+            self.shared
+                .stats
+                .audio_late
+                .fetch_add(late, Ordering::Relaxed);
+        }
         self.shared.stats.frames.fetch_add(1, Ordering::Relaxed);
         for output in &self.attached {
             match output.tx.try_send(Arc::clone(&frame)) {
@@ -634,7 +705,7 @@ mod tests {
     #[test]
     fn audio_is_continuous_and_carries_the_skipped_frames() {
         let rate = FrameRate::FPS_29_97;
-        let mut track = AudioTrack::new(rate, None);
+        let mut track = AudioTrack::new(rate, None, None);
         let mut out = frame();
         let mut delivered = 0;
         for n in [10, 11, 12, 15, 16] {
@@ -670,7 +741,7 @@ mod tests {
             let sync = SyncTest::for_rate(rate);
             assert_eq!(sync.period, rate.as_f64().round() as u64, "{rate}");
             assert!(sync.is_flash(0) && sync.is_flash(sync.period) && !sync.is_flash(1));
-            let mut track = AudioTrack::new(rate, Some(sync));
+            let mut track = AudioTrack::new(rate, Some(sync), None);
             let mut out = frame();
             let mut samples = Vec::new();
             for n in 0..sync.period * 2 + 1 {

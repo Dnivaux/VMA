@@ -16,6 +16,9 @@ const CORRECTION_GAIN: f64 = 0.05;
 pub const RESYNC_FRAMES: f64 = SAMPLE_RATE as f64 / 100.0;
 /// Cross-fade of a jump, fade-in after silence: 5 ms.
 pub const FADE_FRAMES: usize = SAMPLE_RATE as usize / 200;
+/// Missing frames at the edge of a read that still count as complete: the points of the
+/// interpolation past the last frame produced.
+const EDGE_FRAMES: usize = 3;
 /// Source frames read around a block: the step can be 1 % above nominal, plus the 4 points of
 /// the interpolation.
 const SCRATCH_FRAMES: usize = MAX_BLOCK + MAX_BLOCK / 50 + 8;
@@ -171,7 +174,8 @@ impl InputReader {
 }
 
 /// Writes `frames` frames from source position `cursor` on, `step` source frames apart.
-/// Returns whether every source frame needed was there.
+/// Returns whether the source frames needed were there (but the interpolation points past
+/// the last frame produced).
 fn resample(
     ring: &RingReader,
     cursor: f64,
@@ -211,7 +215,7 @@ fn resample(
             }
         }
     }
-    outcome.is_complete()
+    outcome.overwritten == 0 && outcome.missing <= EDGE_FRAMES
 }
 
 #[cfg(test)]

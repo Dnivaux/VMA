@@ -250,6 +250,18 @@ impl SourceTable {
             .filter_map(|(slot, e)| e.as_ref().map(|(id, s)| (slot, *id, s)))
     }
 
+    /// The inputs that show a dated picture, by slot, with its stream time.
+    pub(crate) fn stream_times(&self, out: &mut [Option<(InputId, u64)>; MAX_INPUTS]) {
+        for (entry, out) in self.entries.iter().zip(out.iter_mut()) {
+            *out = match entry {
+                Some((id, RenderSource::Feed(reader))) => {
+                    reader.current_stream_ns().map(|ns| (*id, ns))
+                }
+                _ => None,
+            };
+        }
+    }
+
     pub(crate) fn get(&self, id: InputId) -> Option<&RenderSource> {
         self.entries
             .iter()

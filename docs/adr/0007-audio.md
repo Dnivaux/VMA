@@ -102,6 +102,36 @@ La sortie casque est un pipeline `appsrc ! audioconvert ! audioresample ! <sink>
 s'asservit à l'horloge du pipeline (rééchantillonnage interne si la carte dérive) ; sa latence
 n'importe pas pour la synchro des sorties.
 
+## Précisions de mise en œuvre (étape 3, 2026-11-03)
+Constatées en mesurant la synchro de bout en bout ; elles ne changent pas la décision.
+- **Lissage sur les images nouvelles** (§ 3) : la latence lissée est celle des ticks qui
+  montrent une image *nouvelle* (tick − image) ; une image montrée de nouveau garde la
+  latence. Lissée sur tous les ticks, une source plus lente que le maître avait un biais
+  d'une demi-période du maître (+10 ms à 50p ← 25p), et une source à la cadence du maître,
+  dont les images arrivent tantôt juste avant, tantôt juste après le tick, un biais allant
+  jusqu'à une image (−20 ms mesurés à 50p ← 50p).
+- **Mixage différé de 3 ticks** (§ 5) : le son d'une image n'est capté qu'au fil de sa
+  durée, après l'image. Le bloc *n* est mixé à l'arrivée du tick *n* + 3 (60 ms à 50p),
+  avec les données du tick *n*, et `vma-output` **retient** l'image *n* jusqu'à ce que le
+  son du bloc *n* soit écrit (au plus 8 images ou 8 périodes ; au-delà : silence compté
+  `audio_late`). Le rendu n'attend toujours rien ; les sorties prennent 3 à 4 images de
+  latence de plus, sans effet sur leurs PTS.
+- **Datation à travers `audioresample`** (§ 2) : `audioresample` date sa sortie en comptant
+  les échantillons depuis le premier temps reçu ; une source à 44,1 kHz qui dérive était
+  donc datée par sa propre horloge (+6 ms en 60 s à +100 ppm). Une sonde sur son entrée note
+  le temps de flux de chaque tampon d'entrée ; un échantillon de sortie est daté par
+  l'échantillon d'entrée dont il vient. À 48 kHz, passage direct, temps des tampons.
+- **Artefact de mesure** : une source plus rapide que le maître perd des images ; si la
+  première image blanche d'un flash est sautée, le Program montre la suivante, et l'analyseur
+  mesure le bip une période de source avant le flash (−20 ms à 25p ← 50p), alors que le son
+  suit bien l'image montrée. Reste sous une image du maître (C1).
+- **Limite connue — image sautée** : quand une source plus rapide que le maître ou à sa
+  cadence (dérive) perd une image, la latence de ses images baisse d'une période de source
+  d'un coup ; le son, qui ne saute pas, la rattrape à 0,5 % au plus (≈ 4 s pour 20 ms).
+  Pendant ce temps l'écart son − image va jusqu'à une période de source (16,9 ms mesurés à
+  50p ← 50p + 100 ppm, une fois en 60 s). À reprendre si le partenaire le remarque (pistes :
+  viser le milieu de la bande de phase, rattrapage plus rapide).
+
 ## Conséquences
 - `vma-output` ne génère plus l'audio (sauf `--sync-test`) : il assemble l'image *n* et le bloc
   *n* du bus de chaque sortie. PTS inchangés (ADR 0006 § 3), compensation de l'amorçage AAC
