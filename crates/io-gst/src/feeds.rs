@@ -17,7 +17,14 @@ pub struct VideoFormat {
 
 /// Receives the pictures of one input (one per source format).
 pub trait PictureOut: Send + 'static {
-    fn push(&mut self, planes: &[Plane<'_>], source_frame: u64) -> Result<(), FrameError>;
+    /// One picture, numbered `source_frame`, of stream time `stream_ns` when known (ADR 0007
+    /// § 1).
+    fn push(
+        &mut self,
+        planes: &[Plane<'_>],
+        source_frame: u64,
+        stream_ns: Option<u64>,
+    ) -> Result<(), FrameError>;
 }
 
 /// Creates a [`PictureOut`] for an input once its format is known.
@@ -27,8 +34,13 @@ pub trait Feeds: Clone + Send + Sync + 'static {
 }
 
 impl PictureOut for FrameSink {
-    fn push(&mut self, planes: &[Plane<'_>], source_frame: u64) -> Result<(), FrameError> {
-        FrameSink::push(self, planes, source_frame)
+    fn push(
+        &mut self,
+        planes: &[Plane<'_>],
+        source_frame: u64,
+        stream_ns: Option<u64>,
+    ) -> Result<(), FrameError> {
+        FrameSink::push_timed(self, planes, source_frame, stream_ns)
     }
 }
 

@@ -86,6 +86,8 @@ impl FeedStats {
 #[derive(Debug, Default)]
 struct SlotMeta {
     source_frame: AtomicU64,
+    /// Stream time of the picture (ADR 0007 § 1), in ns; 0 = unknown.
+    stream_ns: AtomicU64,
     /// Publication time, in nanoseconds since the feed's epoch.
     arrival_ns: AtomicU64,
 }
@@ -150,11 +152,18 @@ impl<T> Writer<T> {
         self.feed.slots.get(self.producer.back())
     }
 
-    /// Publishes the back slot as source frame `source_frame`, arrived `arrival_ns` after
-    /// the feed's epoch.
-    pub(crate) fn publish_at(&mut self, source_frame: u64, arrival_ns: u64) {
+    /// Publishes the back slot as source frame `source_frame` of stream time `stream_ns`,
+    /// arrived `arrival_ns` after the feed's epoch.
+    pub(crate) fn publish_at(
+        &mut self,
+        source_frame: u64,
+        stream_ns: Option<u64>,
+        arrival_ns: u64,
+    ) {
         if let Some(meta) = self.feed.meta.get(self.producer.back()) {
             meta.source_frame.store(source_frame, Ordering::Relaxed);
+            meta.stream_ns
+                .store(stream_ns.unwrap_or(0), Ordering::Relaxed);
             meta.arrival_ns.store(arrival_ns, Ordering::Relaxed);
         }
         let stats = &self.feed.stats;
@@ -165,9 +174,9 @@ impl<T> Writer<T> {
         }
     }
 
-    pub(crate) fn publish(&mut self, source_frame: u64) {
+    pub(crate) fn publish(&mut self, source_frame: u64, stream_ns: Option<u64>) {
         let now = nanos(self.feed.epoch.elapsed());
-        self.publish_at(source_frame, now);
+        self.publish_at(source_frame, stream_ns, now);
     }
 }
 
@@ -219,6 +228,20 @@ impl<T> Reader<T> {
         }
     }
 
+    /// Stream time of [`Self::current`], if its source dates its pictures. Read by the audio
+    /// thread from step 3 of Phase 3 on.
+    #[cfg(test)]
+    pub(crate) fn current_stream_ns(&self) -> Option<u64> {
+        if !self.has_picture {
+            return None;
+        }
+        self.feed
+            .meta
+            .get(self.consumer.front())
+            .map(|m| m.stream_ns.load(Ordering::Relaxed))
+            .filter(|&ns| ns != 0)
+    }
+
     /// Source frame number of [`Self::current`].
     #[cfg(test)]
     pub(crate) fn current_source_frame(&self) -> Option<u64> {
@@ -248,18 +271,30 @@ impl FrameSink {
     /// its slot still in use by the GPU is dropped and counted (`upload_busy`): `Ok`, the
     /// producer never waits.
     pub fn push(&mut self, planes: &[Plane<'_>], source_frame: u64) -> Result<(), FrameError> {
-        self.publish_staged(|frame| frame.stage(planes), source_frame)
+        self.publish_staged(|frame| frame.stage(planes), source_frame, None)
+    }
+
+    /// [`Self::push`] for a picture of stream time `stream_ns` (ADR 0007 § 1): the audio of
+    /// the input is read at the stream time of the picture shown.
+    pub fn push_timed(
+        &mut self,
+        planes: &[Plane<'_>],
+        source_frame: u64,
+        stream_ns: Option<u64>,
+    ) -> Result<(), FrameError> {
+        self.publish_staged(|frame| frame.stage(planes), source_frame, stream_ns)
     }
 
     /// [`Self::push`] for a tightly packed picture.
     pub fn push_packed(&mut self, data: &[u8], source_frame: u64) -> Result<(), FrameError> {
-        self.publish_staged(|frame| frame.stage_packed(data), source_frame)
+        self.publish_staged(|frame| frame.stage_packed(data), source_frame, None)
     }
 
     fn publish_staged(
         &mut self,
         stage: impl FnOnce(&InputFrame) -> Result<(), FrameError>,
         source_frame: u64,
+        stream_ns: Option<u64>,
     ) -> Result<(), FrameError> {
         if let Some(frame) = self.writer.back() {
             match stage(frame) {
@@ -275,7 +310,7 @@ impl FrameSink {
                 Err(e) => return Err(e),
             }
         }
-        self.writer.publish(source_frame);
+        self.writer.publish(source_frame, stream_ns);
         Ok(())
     }
 
@@ -411,7 +446,7 @@ mod tests {
         let mut next = 0;
         for n in 0..ticks {
             while due(next, source, n, master) {
-                writer.publish_at(next, ns(next, source));
+                writer.publish_at(next, None, ns(next, source));
                 next += 1;
             }
             reader.advance_at(ns(n, master));
@@ -487,7 +522,7 @@ mod tests {
         reader.advance_at(1);
         assert_eq!(reader.current(), None);
         assert_eq!(stats.snapshot().repeated, 0, "no picture: nothing repeated");
-        writer.publish_at(7, 100);
+        writer.publish_at(7, None, 100);
         reader.advance_at(1_000_100);
         assert!(reader.current().is_some());
         let s = stats.snapshot();
@@ -503,19 +538,25 @@ mod tests {
         let (mut writer, mut reader) = feed([10, 11, 12], Arc::clone(&stats));
         reader.advance_at(0);
         assert_eq!(reader.take_upload(), None, "nothing published");
-        writer.publish_at(0, 0);
+        writer.publish_at(0, None, 0);
         reader.advance_at(1);
+        assert_eq!(reader.current_stream_ns(), None, "not dated");
         let first = reader.current().copied();
         assert_eq!(reader.take_upload().copied(), first);
         assert_eq!(reader.take_upload(), None, "already copied");
         reader.advance_at(2);
         assert_eq!(reader.take_upload(), None, "repeated picture: no copy");
         // Two pictures taken without a rendered tick in between: only the last is copied.
-        writer.publish_at(1, 2);
+        writer.publish_at(1, Some(5_000), 2);
         reader.advance_at(3);
-        writer.publish_at(2, 3);
+        writer.publish_at(2, Some(6_000), 3);
         reader.advance_at(4);
         assert_eq!(reader.current_source_frame(), Some(2));
+        assert_eq!(
+            reader.current_stream_ns(),
+            Some(6_000),
+            "the stream time follows the slot"
+        );
         assert_eq!(reader.take_upload().copied(), reader.current().copied());
         assert_eq!(reader.take_upload(), None);
     }
@@ -596,7 +637,7 @@ mod tests {
         let producer = std::thread::spawn(move || {
             for k in 1..=n {
                 writer.back().unwrap().store(k, Ordering::Relaxed);
-                writer.publish(k);
+                writer.publish(k, None);
             }
         });
         let mut last = 0;

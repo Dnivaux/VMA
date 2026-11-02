@@ -740,8 +740,17 @@ impl<F: Feeds> Stream<F> {
             .then(|| stream_frame(&sample, pts, format.rate))
             .flatten()
             .unwrap_or(self.next_frame);
+        // The preroll picture of a file is not played yet: no stream time (a live source
+        // hands its first picture as a preroll, while playing).
+        let stream_ns = (!preroll || !self.timeline)
+            .then(|| stream_time(&sample, sink, pts))
+            .flatten();
         if let Some((_, out)) = &mut self.out
-            && let Err(e) = out.push(planes.get(..count).unwrap_or_default(), source_frame)
+            && let Err(e) = out.push(
+                planes.get(..count).unwrap_or_default(),
+                source_frame,
+                stream_ns,
+            )
         {
             tracing::warn!(input = %self.input, error = %e, "picture refused");
         }
@@ -779,6 +788,20 @@ impl<F: Feeds> Stream<F> {
     }
 }
 
+/// Stream time of a buffer in the master clock's time (ADR 0007 § 1): `base_time` of the
+/// pipeline plus the running time of its PTS. A live source dates a buffer by its capture,
+/// a file by when it is to be shown.
+pub(crate) fn stream_time(
+    sample: &gst::Sample,
+    element: &impl IsA<gst::Element>,
+    pts: Option<gst::ClockTime>,
+) -> Option<u64> {
+    let segment = sample.segment()?.downcast_ref::<gst::ClockTime>()?;
+    let running = segment.to_running_time(pts?)?;
+    let base = element.base_time()?;
+    Some((base + running).nseconds())
+}
+
 /// Frame number in the file of a picture: its stream time, in frames (rounded: containers
 /// store times to the millisecond).
 fn stream_frame(
@@ -808,6 +831,7 @@ pub(crate) mod tests {
         /// Plane sizes (bytes) of the last picture.
         pub(crate) plane_bytes: Vec<usize>,
         pub(crate) arrivals: Vec<Instant>,
+        pub(crate) stream_times: Vec<Option<u64>>,
     }
 
     /// CPU stand-in for the engine's feeds.
@@ -819,9 +843,15 @@ pub(crate) mod tests {
     pub(crate) struct FakeOut(Arc<Mutex<FakeFeed>>);
 
     impl PictureOut for FakeOut {
-        fn push(&mut self, planes: &[Plane<'_>], frame: u64) -> Result<(), FrameError> {
+        fn push(
+            &mut self,
+            planes: &[Plane<'_>],
+            frame: u64,
+            stream_ns: Option<u64>,
+        ) -> Result<(), FrameError> {
             let mut f = self.0.lock().unwrap();
             f.frames.push(frame);
+            f.stream_times.push(stream_ns);
             f.plane_bytes = planes.iter().map(|p| p.data.len()).collect();
             f.arrivals.push(Instant::now());
             Ok(())
@@ -871,6 +901,39 @@ pub(crate) mod tests {
             std::thread::sleep(Duration::from_millis(5));
         }
         cond()
+    }
+
+    /// ADR 0007 § 1: the pictures of a live source carry their stream time, in the master
+    /// clock's time: 20 ms apart, each taken before it arrives, by less than 100 ms.
+    #[test]
+    fn live_pictures_carry_their_stream_time() {
+        init();
+        let feeds = FakeFeeds::default();
+        let clock = crate::clock::stream_clock();
+        let _input = GstInput::start(
+            InputId(1),
+            &live(
+                "videotestsrc is-live=true \
+                 ! video/x-raw,format=NV12,width=320,height=180,framerate=50/1",
+            ),
+            feeds.clone(),
+        )
+        .unwrap();
+        assert!(wait_until(Duration::from_secs(5), || feeds.count() == 1
+            && feeds.last().lock().unwrap().frames.len() > 30));
+        let f = feeds.last();
+        let f = f.lock().unwrap();
+        let times: Vec<u64> = f.stream_times.iter().map(|t| t.unwrap()).collect();
+        for w in times.windows(2) {
+            assert!(w[1].abs_diff(w[0] + 20_000_000) < 2_000_000, "{w:?}");
+        }
+        for (t, arrival) in times.iter().zip(&f.arrivals) {
+            let arrived = clock.at(*arrival);
+            assert!(
+                *t <= arrived && arrived - t < 100_000_000,
+                "{t} vs {arrived}"
+            );
+        }
     }
 
     /// `videotestsrc` 1080p50 live: pictures in order, at the source rate (±2 %), format and
