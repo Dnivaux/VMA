@@ -15,6 +15,12 @@ pub enum InputKind {
     Color,
     /// Synthetic source for tests and soaks.
     TestSource,
+    /// NDI® source on the local network (ADR 0008).
+    Ndi,
+    /// SRT stream received as caller or listener.
+    Srt,
+    /// Microphone or line input: sound only.
+    AudioDevice,
 }
 
 impl InputKind {
@@ -23,25 +29,39 @@ impl InputKind {
     pub fn has_playback(self) -> bool {
         matches!(self, Self::File)
     }
+
+    /// True if the input has pictures. A sound-only input has no layer in the mix and its
+    /// audio is read by the latency of its ring alone (ADR 0007 § 3).
+    pub fn has_video(self) -> bool {
+        !matches!(self, Self::AudioDevice)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    const ALL: [InputKind; 8] = [
+        InputKind::Capture,
+        InputKind::File,
+        InputKind::Image,
+        InputKind::Color,
+        InputKind::TestSource,
+        InputKind::Ndi,
+        InputKind::Srt,
+        InputKind::AudioDevice,
+    ];
+
     #[test]
     fn only_files_have_playback() {
-        let with: Vec<_> = [
-            InputKind::Capture,
-            InputKind::File,
-            InputKind::Image,
-            InputKind::Color,
-            InputKind::TestSource,
-        ]
-        .into_iter()
-        .filter(|k| k.has_playback())
-        .collect();
+        let with: Vec<_> = ALL.into_iter().filter(|k| k.has_playback()).collect();
         assert_eq!(with, [InputKind::File]);
+    }
+
+    #[test]
+    fn only_audio_devices_have_no_video() {
+        let without: Vec<_> = ALL.into_iter().filter(|k| !k.has_video()).collect();
+        assert_eq!(without, [InputKind::AudioDevice]);
     }
 
     #[test]
@@ -51,6 +71,10 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<InputKind>(r#""capture""#).unwrap(),
             InputKind::Capture
+        );
+        assert_eq!(
+            serde_json::to_string(&InputKind::AudioDevice).unwrap(),
+            r#""audio_device""#
         );
     }
 }

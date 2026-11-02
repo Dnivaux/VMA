@@ -3,6 +3,7 @@
 //! **Stability warning:** every other crate depends on these types. Changing them is a
 //! cross-crate change and must be announced (see `CLAUDE.md`).
 
+mod audio;
 mod color;
 mod ids;
 mod input;
@@ -11,6 +12,7 @@ mod pixel;
 mod rate;
 mod resolution;
 
+pub use audio::AudioBus;
 pub use color::{ColorInfo, Matrix, ParseColorError, Range, Rgb8};
 pub use ids::{InputId, OutputId};
 pub use input::InputKind;
