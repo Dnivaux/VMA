@@ -172,7 +172,7 @@ le binaire, runtime externe). Checklist pour le partenaire :
 | Étape | État | Preuve |
 |---|---|---|
 | 1. `core` (`InputKind` : `Ndi`, `Srt`, `AudioDevice` ; `AudioBus`) ; crate `audio` (anneau horodaté, DLL + rééchantillonneur, mixeur, vumètres) : C3 (temps simulé), C4, C5, C6 (mixeur), C7 (calcul), C8 (allocation) | ✅ | 32 tests ([`docs/specs/audio.md`](docs/specs/audio.md)) ; CI [41538415295](https://github.com/Dnivaux/VMA/actions/runs/41538415295) verte sur les 2 OS (`d6269cb`) |
-| 2. `io-gst` : horloge monotone, branches audio des inputs, source de synchro ; temps de flux de l'image affichée | 🟡 | Horloge monotone et `StreamClock`, temps de flux des images, son des fichiers vers leur anneau : faits (tests locaux, [`io-gst.md`](docs/specs/io-gst.md)) ; reste la source de synchro |
+| 2. `io-gst` : horloge monotone, branches audio des inputs, source de synchro ; temps de flux de l'image affichée | 🟡 | Horloge monotone et `StreamClock` (concordance vérifiée en CI sur les 2 OS, run [41538894664](https://github.com/Dnivaux/VMA/actions/runs/41538894664)), temps de flux des images, son des fichiers vers leur anneau, source de synchro : faits ([`io-gst.md`](docs/specs/io-gst.md)) ; CI à confirmer. Son des cartes de capture : périphérique à part, étape 5 |
 | 3. Thread `vma-audio`, blocs de bus vers `vma-output` ; C1, C2, C3 de bout en bout | ⬜ | — |
 | 4. Commandes, état et journal audio ; panneau Mélangeur ; bus des sorties | ⬜ | — |
 | 5. Périphériques audio (micro / ligne, casque) | ⬜ | — |

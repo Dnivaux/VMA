@@ -157,6 +157,15 @@ pub enum InputSpec {
         rate: FrameRate,
         resolution: Resolution,
     },
+    /// Sync source (tests of Phase 3): a white picture once per second of its own clock and
+    /// a 1 kHz beep of 100 ms on the same instant, `audio_lead_ms` earlier (negative: later),
+    /// at its own frame rate and sample rate, its clock `drift_ppm` faster than the master.
+    SyncSource {
+        rate: FrameRate,
+        sample_rate: u32,
+        drift_ppm: i32,
+        audio_lead_ms: i32,
+    },
 }
 
 impl InputSpec {
@@ -166,7 +175,9 @@ impl InputSpec {
             Self::File { .. } => InputKind::File,
             Self::Image { .. } => InputKind::Image,
             Self::Color { .. } => InputKind::Color,
-            Self::TestSource { .. } | Self::Synthetic { .. } => InputKind::TestSource,
+            Self::TestSource { .. } | Self::Synthetic { .. } | Self::SyncSource { .. } => {
+                InputKind::TestSource
+            }
         }
     }
 
@@ -189,6 +200,7 @@ impl InputSpec {
             Self::Color { .. } => "Couleur".into(),
             Self::TestSource { .. } => "Mire".into(),
             Self::Synthetic { rate, resolution } => format!("Synthétique {resolution} {rate}"),
+            Self::SyncSource { rate, .. } => format!("Synchro {rate}"),
         }
     }
 }

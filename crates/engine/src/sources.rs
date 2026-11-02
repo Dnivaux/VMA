@@ -55,7 +55,8 @@ fn generated_source(spec: &InputSpec) -> Option<SourceKey> {
         InputSpec::Capture { .. }
         | InputSpec::File { .. }
         | InputSpec::Image { .. }
-        | InputSpec::Synthetic { .. } => None,
+        | InputSpec::Synthetic { .. }
+        | InputSpec::SyncSource { .. } => None,
     }
 }
 

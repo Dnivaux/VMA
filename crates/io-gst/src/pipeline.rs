@@ -143,6 +143,8 @@ pub(crate) enum Media {
     File(PathBuf),
     /// A capture device, looked up by its stable identifier at every (re)start.
     Capture(Capture),
+    /// The sync source of the tests (`sync_source`).
+    Sync(crate::sync_source::SyncSpec),
 }
 
 /// A capture device to open in the mode closest to the master format.
@@ -185,6 +187,15 @@ impl Recipe {
                 rate.num(),
                 rate.den()
             )),
+            sync: false,
+            watchdog: true,
+        }
+    }
+
+    /// The sync source: live, pictures and sound taken as they come.
+    pub(crate) fn sync_source(spec: crate::sync_source::SyncSpec) -> Self {
+        Self {
+            media: Media::Sync(spec),
             sync: false,
             watchdog: true,
         }
@@ -236,6 +247,8 @@ pub(crate) struct GstInput {
     player: Option<Player>,
     /// `Some` for a capture device: the mode it was opened in.
     mode: Option<CaptureMode>,
+    /// `Some` for the sync source: its generator thread (stopped before the pipeline).
+    generator: Option<crate::sync_source::Generator>,
 }
 
 impl GstInput {
@@ -246,7 +259,21 @@ impl GstInput {
         feeds: F,
     ) -> Result<Self, IoError> {
         let mut mode = None;
+        let mut sync_source = None;
         let (pipeline, convert, sink) = match &recipe.media {
+            Media::Sync(spec) => {
+                let (pipeline, convert, sink, video, audio) = crate::sync_source::pipeline(spec)?;
+                let pad = audio
+                    .static_pad("src")
+                    .ok_or_else(|| IoError::Pipeline("appsrc without a pad".into()))?;
+                match feeds.audio(input) {
+                    Some(ring) => crate::audio::link(&pipeline, &pad, ring, false)
+                        .map_err(IoError::Pipeline)?,
+                    None => discard(&pipeline, &pad),
+                }
+                sync_source = Some((video, audio, *spec));
+                (pipeline, convert, sink)
+            }
             Media::Launch(source) => launch_pipeline(source)?,
             Media::File(path) => file_pipeline(path, feeds.audio(input))?,
             Media::Capture(capture) => {
@@ -319,7 +346,20 @@ impl GstInput {
             let _ = pipeline.set_state(gst::State::Null);
             return Err(IoError::Pipeline(format!("cannot start: {e}")));
         }
+        let generator = match sync_source {
+            Some((video, audio, spec)) => {
+                match crate::sync_source::start(&pipeline, video, audio, spec) {
+                    Ok(g) => Some(g),
+                    Err(e) => {
+                        let _ = pipeline.set_state(gst::State::Null);
+                        return Err(e);
+                    }
+                }
+            }
+            None => None,
+        };
         Ok(Self {
+            generator,
             pipeline,
             shared,
             notes,
@@ -464,6 +504,8 @@ impl GstInput {
 
 impl Drop for GstInput {
     fn drop(&mut self) {
+        // The generator pushes into the pipeline: stopped first.
+        self.generator = None;
         if let Err(e) = self.pipeline.set_state(gst::State::Null) {
             tracing::warn!(error = %e, "pipeline did not stop cleanly");
         }
@@ -537,7 +579,7 @@ fn route_decoded(
             .structure(0)
             .is_some_and(|s| s.name().starts_with("audio/"));
         if is_audio && let Some(ring) = audio.lock().ok().and_then(|mut a| a.take()) {
-            if let Err(e) = crate::audio::link(&pipeline, pad, ring) {
+            if let Err(e) = crate::audio::link(&pipeline, pad, ring, true) {
                 tracing::warn!(error = %e, "cannot link the sound stream");
                 discard(&pipeline, pad);
             }

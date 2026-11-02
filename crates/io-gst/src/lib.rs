@@ -26,6 +26,7 @@ mod runtime;
 pub mod still;
 mod supervisor;
 mod sync;
+mod sync_source;
 
 pub use clock::stream_clock;
 pub use devices::CaptureDevice;

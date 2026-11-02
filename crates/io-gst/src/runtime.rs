@@ -372,7 +372,10 @@ impl Worker {
                     lost(e.to_string());
                 }
             }
-            InputSpec::Capture { .. } | InputSpec::File { .. } | InputSpec::Synthetic { .. }
+            InputSpec::Capture { .. }
+            | InputSpec::File { .. }
+            | InputSpec::Synthetic { .. }
+            | InputSpec::SyncSource { .. }
                 if self.gstreamer.is_err() =>
             {
                 let e = self.gstreamer.clone().err().unwrap_or_default();
@@ -391,6 +394,24 @@ impl Worker {
                 self.pipelines.push(PipelineSlot::new(
                     input,
                     Recipe::synthetic(*rate, *resolution),
+                    self.port.feeds.clone(),
+                    Instant::now(),
+                ));
+            }
+            InputSpec::SyncSource {
+                rate,
+                sample_rate,
+                drift_ppm,
+                audio_lead_ms,
+            } => {
+                self.pipelines.push(PipelineSlot::new(
+                    input,
+                    Recipe::sync_source(crate::sync_source::SyncSpec {
+                        rate: *rate,
+                        sample_rate: *sample_rate,
+                        drift_ppm: *drift_ppm,
+                        audio_lead_ms: *audio_lead_ms,
+                    }),
                     self.port.feeds.clone(),
                     Instant::now(),
                 ));

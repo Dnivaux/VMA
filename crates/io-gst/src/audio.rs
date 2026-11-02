@@ -23,11 +23,13 @@ pub(crate) fn ring_caps() -> gst::Caps {
         .build()
 }
 
-/// Links `pad` (a sound stream) through a new branch to `ring`.
+/// Links `pad` (a sound stream) through a new branch to `ring`. `sync`: paced by the clock
+/// (a file); a live source delivers as it captures.
 pub(crate) fn link(
     pipeline: &gst::Pipeline,
     pad: &gst::Pad,
     ring: RingWriter,
+    sync: bool,
 ) -> Result<(), String> {
     let make = |factory: &str| {
         gst::ElementFactory::make(factory)
@@ -38,7 +40,7 @@ pub(crate) fn link(
     let resample = make("audioresample")?;
     let sink = gst_app::AppSink::builder()
         .caps(&ring_caps())
-        .sync(true)
+        .sync(sync)
         .build();
     let ring = std::sync::Mutex::new(ring);
     sink.set_callbacks(

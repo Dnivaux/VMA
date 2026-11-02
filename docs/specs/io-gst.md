@@ -405,6 +405,17 @@ Windows (pas de MediaMTX en CI), ils sont sautés.
   d'`audioconvert` (tous les canaux restent audibles ; écart à la lettre de Q9, « les 2
   premiers », signalé au mainteneur). Les autres flux audio vont à un `fakesink`. Sans anneau
   (`Feeds::audio` → `None`), le son est jeté comme avant.
+- **Capture** : le son d'une webcam ou d'une carte de capture est un périphérique audio à
+  part (ALSA / PipeWire, WASAPI) : il arrive avec les périphériques audio (étape 5).
+- **Source de synchro** (`InputSpec::SyncSource`, `sync_source.rs`) : deux `appsrc` (images
+  NV12 320 × 180, son mono `f32` à sa fréquence) dans les mêmes branches qu'une capture
+  (`videoconvert ! appsink`, `audioconvert ! audioresample ! appsink`, sans attente
+  d'horloge). Un thread pousse chaque image et chaque bloc de 10 ms quand son temps de source
+  est venu, daté par son PTS comme une capture ; son horloge avance de `drift_ppm` sur le
+  maître. Flash : image blanche toutes les secondes de la source (arrondi à l'image) ; bip
+  1 kHz de 100 ms au même instant, `audio_lead_ms` plus tôt. Il attend que le pipeline joue :
+  un pipeline live reste `PAUSED` (`PLAYING` en attente) jusqu'au premier tampon de ses sinks,
+  son `base_time` est alors fixé.
 
 ### Critères (étape 2)
 | Critère | Test | Statut |
@@ -413,3 +424,4 @@ Windows (pas de MediaMTX en CI), ils sont sautés.
 | Images d'une source live datées : 20 ms d'écart, prises moins de 100 ms avant leur arrivée | `pipeline::tests::live_pictures_carry_their_stream_time` | CI |
 | Son d'un fichier dans son anneau à 48 kHz stéréo, au temps de ses images (< 5 ms ; mesuré 0) | `pipeline::tests::file_sound_reaches_its_ring_on_the_time_of_the_pictures` | CI |
 | Le temps de flux suit la case du feed | `engine` : `feed::tests::each_new_picture_is_uploaded_once` | CI |
+| Source de synchro : bip au temps de son flash, ou de son avance plus tôt, dans l'anneau, par le vrai chemin (29,97p, 44,1 kHz → 48 kHz, +100 ppm) : < 2 ms (mesuré 0,2–0,3 ms ; avance 80 ms → −79,8 ms) | `sync_source::tests::the_beep_reaches_the_ring_on_the_time_of_its_flash` | CI |
