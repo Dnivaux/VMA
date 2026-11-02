@@ -1,9 +1,10 @@
 # Phase 3 — Réseau et audio : spec d'ensemble et plan
 
-- **Statut** : **proposé** (2026-11-02), à valider (questions Q1–Q9 du § 7)
+- **Statut** : **validé** le 2026-11-02 par le mainteneur (« Go pour la suite ») : les
+  recommandations des questions Q1–Q9 du § 7 sont retenues
 - **Date** : 2026-11-02
 - **Références** : BRIEF §2.6, §4 (Phase 3), §5, §6, §8 ; ADR 0003, ADR 0004, ADR 0006 ;
-  **ADR 0007 (audio) et ADR 0008 (NDI®), proposés**
+  **ADR 0007 (audio) et ADR 0008 (NDI®), acceptés**
 - **Entrée en phase** : Phase 2 close le 2026-11-02 sous Linux ; B12 manuel et soaks Windows
   reportés (voir `ROADMAP.md`)
 
@@ -123,7 +124,7 @@ SetMonitor { device: Option<DeviceId>, solo_mode: SoloMode },  // AFL | PFL
 | Entrée SRT | caller, latence 120 ms (comme la sortie) |
 | Sortie NDI | nom « VMA Program », Program + Master |
 
-## 7. Questions au mainteneur
+## 7. Questions au mainteneur (tranchées le 2026-11-02 : recommandations retenues)
 | # | Question | Recommandation |
 |---|---|---|
 | Q1 | Périphériques audio par **GStreamer** plutôt que `cpal` (écart au BRIEF §6, ADR 0007 § 7) ? | **Oui** : même horodatage que la vidéo, un seul inventaire, pas de dépendance |

@@ -159,16 +159,27 @@ dont 14 et 15, condition de la validation des écarts de l'étape 3 — ainsi qu
 suivi de la Phase 1. À surveiller : `engine_frames_reach_the_file_with_flash_and_beep_aligned`,
 repris sous Windows sur 3 des 4 derniers runs (une image manquante au début).
 
-## Phase 3 — Réseau et audio · *spec proposée le 2026-11-02, en attente de validation*
+## Phase 3 — Réseau et audio · *en cours (spec validée le 2026-11-02)*
 NDI® en entrée et en sortie (runtime chargé dynamiquement), SRT en entrée, mélangeur audio
 (gain, mute, solo, vumètres, décalage par input, Master + bus A et B, audio-follow-video).
 
-**Proposés** : [`docs/specs/phase-3.md`](docs/specs/phase-3.md) (critères C1–C15, plan en
-9 étapes, questions Q1–Q9), ADR 0007 (audio : horloge, alignement sur l'image, mélangeur,
+**Validés le 2026-11-02** (recommandations Q1–Q9 retenues) :
+[`docs/specs/phase-3.md`](docs/specs/phase-3.md) (critères C1–C15, plan en 9 étapes), ADR 0007 (audio : horloge, alignement sur l'image, mélangeur,
 périphériques par GStreamer au lieu de `cpal`), ADR 0008 (NDI® : `gst-plugin-ndi` compilé dans
 le binaire, runtime externe). Checklist pour le partenaire :
 [`docs/manual-tests/observation-reference-phase3.md`](docs/manual-tests/observation-reference-phase3.md).
-Aucun code avant validation.
+
+| Étape | État | Preuve |
+|---|---|---|
+| 1. `core` (`InputKind` : `Ndi`, `Srt`, `AudioDevice` ; `AudioBus`) ; crate `audio` (anneau horodaté, DLL + rééchantillonneur, mixeur, vumètres) | ⬜ | — |
+| 2. `io-gst` : horloge monotone, branches audio des inputs, source de synchro ; temps de flux de l'image affichée | ⬜ | — |
+| 3. Thread `vma-audio`, blocs de bus vers `vma-output` ; C1, C2, C3 de bout en bout | ⬜ | — |
+| 4. Commandes, état et journal audio ; panneau Mélangeur ; bus des sorties | ⬜ | — |
+| 5. Périphériques audio (micro / ligne, casque) | ⬜ | — |
+| 6. Entrée SRT | ⬜ | — |
+| 7. `io-ndi` : détection du runtime, fenêtre « À propos », input NDI | ⬜ | — |
+| 8. Sortie NDI, boucle locale avec synchro | ⬜ | — |
+| 9. Soak d'acceptation C14 (1 h) | ⬜ | — |
 
 NDI® est une marque déposée de Vizrt NDI AB.
 

@@ -1,6 +1,6 @@
 # ADR 0007 — Audio : horloge, alignement sur l'image, mélangeur, périphériques
 
-- **Statut** : **proposé** (2026-11-02), à valider
+- **Statut** : **accepté** le 2026-11-02 par le mainteneur (avec la spec de la Phase 3)
 - **Date** : 2026-11-02
 - **Contexte** : BRIEF §4 (Phase 3 : mélangeur audio, synchro lèvres < 1 image), §5 (thread
   audio temps réel), §6 (`cpal` pour les périphériques), §8 (dérive A/V < 1 image sur 1 h) ;
