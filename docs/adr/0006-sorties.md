@@ -188,7 +188,8 @@ Précisions (détail dans `commands.md`, `ui.md` et `io-gst.md`, « Phase 2 ») 
   remplit une image de son pool (allouée une fois) en noir NV12 limité (Y' 16, Cb Cr 128) et
   la distribue avec le PTS, la durée et l'audio de *n*, comme une image relue. Compteur
   `black` de la distribution, dans le rapport de soak.
-- **À l'instant de la perte**, les images encore sur le GPU (3 au plus, ≈ 60 ms à 50p) ne sont
+- **À l'instant de la perte**, les images encore sur le GPU (5 au plus : les 4 tampons de relecture et l'image en cours ;
+  3 sur la machine de dev, 5 sous WARP ; ≈ 100 ms à 50p) ne sont
   jamais relues : un trou, PTS inchangés et audio continu, comme toute image non relue
   (questions 14–15).
 - **`vma-control`** voit la perte par `RenderFeedback::device_lost_at()` : événement
@@ -204,11 +205,12 @@ Précisions (détail dans `commands.md`, `ui.md` et `io-gst.md`, « Phase 2 ») 
 - **Plein écran** : rien à faire, il partage le device perdu (il garde sa dernière image).
 
 ## Amorçage des encodeurs AAC (étape 10, 2026-11-01)
-Écart au § 3 trouvé par l'analyseur de synchro : un encodeur AAC fait précéder le son de
+**Validé par le mainteneur le 2026-11-02** (revue de la Phase 2). Écart au § 3 trouvé par l'analyseur de synchro : un encodeur AAC fait précéder le son de
 échantillons d'amorçage (1 024 pour `avenc_aac`, 1 600 pour `voaacenc`, aucun pour `mfaacenc`) que les décodeurs jouent (rien ne les signale dans nos
 conteneurs). Le son des sorties encodées arrivait donc 21,3 ms après l'image. Corrigé dans
 `io-gst` : l'audio donné à l'encodeur commence d'autant d'échantillons plus loin, au temps 0
-(détail dans `io-gst.md`, étape 10). Les PTS vidéo restent ceux de *n* ; le son joué à
+(détail dans `io-gst.md`, étape 10). Conséquence : les 21 premières ms de son d'une sortie (amorçage
+de `avenc_aac`) sont perdues ; retarder la vidéo à la place empêchait de relire un MP4 tué (B5). Les PTS vidéo restent ceux de *n* ; le son joué à
 l'instant de l'image *k* est celui de `audio_sample_at(k)`, comme le § 3 le veut.
 
 ## Conséquences

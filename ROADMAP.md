@@ -46,8 +46,8 @@ titres HTML + natifs, multi-cadence dès la Phase 1, macOS plus tard).
 - Allocations et verrous **internes à wgpu** dans la boucle de rendu (pas d'allocation applicative).
 - Thread de rendu en priorité OS normale.
 - Temps GPU et utilisation GPU non mesurés (seul le temps CPU de rendu l'est).
-- Couleur : R'G'B' encodé en `Rgba8Unorm`, pas encore de cibles `Rgba16Float`.
-- Perte du GPU : pas de recréation à chaud (Phase 2).
+- Perte du GPU : pas de recréation à chaud du device (choix Q4 de la Phase 2 : noir puis
+  finalisation et sortie en erreur ; recréation dans une phase ultérieure, ADR dédié).
 - Soak hostile sous Wayland : déplacement et dé-minimisation automatiques sans effet (faits à la main).
 - *(Phase 1, étape 9)* Rééchantillonnage « dernière image publiée » : une source de cadence
   égale ou très proche du maître, en phase avec lui, alterne parfois image sautée / image
@@ -115,7 +115,7 @@ Ubuntu + Windows ; **aucun soak n'a jamais tourné sous Windows** (A1, A13 et le
 la Phase 0 restent ⏸, script prêt). Restent aussi ouverts : la checklist `phase1-inputs.md` et
 les questions de suivi au partenaire (durées des 4 boutons, « forcer le fade à cut »).
 
-## Phase 2 — Sorties · *implémentée, en revue (2026-11-02)*
+## Phase 2 — Sorties · *close sous Linux le 2026-11-02 ; B12 manuel et Windows non vérifiés (reportés)*
 Enregistrement (NVENC, MKV / MP4), streaming RTMP(S) vers 1 à 3 destinations, SRT caller /
 listener, sortie plein écran, FTB (reporté de la Phase 1).
 
@@ -147,6 +147,17 @@ Sous Windows, les critères manuels (B1, B2, B12) seront ⏸ tant qu'aucun test 
 | B7 avec un vrai service de streaming | Manuel, à faire si un compte de test est disponible (clé réelle : ne jamais activer `GST_DEBUG`) |
 | Checklist [`phase2-outputs.md`](docs/manual-tests/phase2-outputs.md), **B12** (plein écran sur un écran secondaire, soak `--fullscreen`) | ⏸ Reporté le 2026-11-01 (décision du mainteneur) : pas de deuxième écran sur la machine de dev pour l'instant ; à passer dès qu'il y en a un. Windows : ⏸ |
 | `vma-engine::outputs::output_stage_cost_1080p50` | Mesure en temps réel en 1080p50 (20 s), lancée à la main sur la machine de dev : `cargo test --release -p vma-engine --test outputs -- --ignored --nocapture` ; trop lourde pour les adaptateurs logiciels de la CI |
+| B1, B2 sous Windows | ⏸ Comme les soaks des Phases 0 et 1 : pas de test possible sous Windows (décision du mainteneur, sans échéance) |
+
+**Revue de fin de Phase 2 (2026-11-02)** : le mainteneur clôt la Phase 2 sous Linux, sur la base
+de B1 à B16 vérifiés sous Linux (B1 et B2 par le soak d'1 h) et de la CI Ubuntu + Windows.
+Écart de l'étape 10 (compensation de l'amorçage AAC) **validé** (ADR 0006). Restent ouverts :
+B12 manuel (deuxième écran), B7 avec un vrai service (facultatif), aucun soak sous Windows
+(Phases 0 à 2), la checklist `phase1-inputs.md`, et les **questions 1 à 22 au partenaire**
+([`observation-reference-phase2.md`](docs/manual-tests/observation-reference-phase2.md)) —
+dont 14 et 15, condition de la validation des écarts de l'étape 3 — ainsi que les questions de
+suivi de la Phase 1. À surveiller : `engine_frames_reach_the_file_with_flash_and_beep_aligned`,
+repris sous Windows sur 3 des 4 derniers runs (une image manquante au début).
 
 ## Phase 3 — Réseau et audio · ⬜
 ## Phase 4 — Habillage · ⬜
