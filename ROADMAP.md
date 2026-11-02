@@ -181,6 +181,11 @@ le binaire, runtime externe). Checklist pour le partenaire :
 | 8. Sortie NDI, boucle locale avec synchro | ⬜ | — |
 | 9. Soak d'acceptation C14 (1 h) | ⬜ | — |
 
+### Tests ignorés / manuels (Phase 3)
+| Test | Raison |
+|---|---|
+| `vma-io-gst` : `outputs::tests::lip_sync_*` (6), `early_sound_is_measured_early`, `drifting_sources_stay_in_sync_for_a_minute` — **sous Windows seulement** | La CI Windows rend sous WARP sur 2 cœurs : avec un input à téléverser, le rendu répète un tick sur deux (contre-pression GPU, `gpu_dropped` ≈ 1 600 sur 3 160 ticks, run [41546991275](https://github.com/Dnivaux/VMA/actions/runs/41546991275)) ; l'enregistrement a des trous et la mesure flash / bip n'a plus de sens. Passent sous Linux en CI. À passer sur la machine Windows (⏸ comme les soaks). |
+
 NDI® est une marque déposée de Vizrt NDI AB.
 
 ## Phase 4 — Habillage · ⬜
