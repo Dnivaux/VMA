@@ -900,14 +900,16 @@ mod tests {
             unreachable!()
         };
         std::thread::sleep(Duration::from_secs(seconds));
+        let counters = engine.outputs().counters(REC);
+        let render = engine.render_stats().snapshot();
         send(&engine, Command::StopRecording);
         wait_status(&state, REC, |s| *s == OutputStatus::Idle);
         let distribution = engine.outputs().distribution();
         let audio = engine.audio_stats();
         drop(engine);
         drop(io);
+        eprintln!("{audio:?}\n{distribution:?}\n{counters:?}\n{render:?}");
         assert_eq!(distribution.audio_late, 0, "{distribution:?}");
-        eprintln!("{audio:?}");
 
         let path = PathBuf::from(target.unwrap());
         let uri = format!("file://{}", path.display()).replace('\\', "/");
