@@ -159,7 +159,19 @@ dont 14 et 15, condition de la validation des écarts de l'étape 3 — ainsi qu
 suivi de la Phase 1. À surveiller : `engine_frames_reach_the_file_with_flash_and_beep_aligned`,
 repris sous Windows sur 3 des 4 derniers runs (une image manquante au début).
 
-## Phase 3 — Réseau et audio · ⬜
+## Phase 3 — Réseau et audio · *spec proposée le 2026-11-02, en attente de validation*
+NDI® en entrée et en sortie (runtime chargé dynamiquement), SRT en entrée, mélangeur audio
+(gain, mute, solo, vumètres, décalage par input, Master + bus A et B, audio-follow-video).
+
+**Proposés** : [`docs/specs/phase-3.md`](docs/specs/phase-3.md) (critères C1–C15, plan en
+9 étapes, questions Q1–Q9), ADR 0007 (audio : horloge, alignement sur l'image, mélangeur,
+périphériques par GStreamer au lieu de `cpal`), ADR 0008 (NDI® : `gst-plugin-ndi` compilé dans
+le binaire, runtime externe). Checklist pour le partenaire :
+[`docs/manual-tests/observation-reference-phase3.md`](docs/manual-tests/observation-reference-phase3.md).
+Aucun code avant validation.
+
+NDI® est une marque déposée de Vizrt NDI AB.
+
 ## Phase 4 — Habillage · ⬜
 ## Phase 5 — Contrôle et monitoring · ⬜
 ## Phase 6 — Sport · ⬜
