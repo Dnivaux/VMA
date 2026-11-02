@@ -5,10 +5,12 @@
 //! No GStreamer here: the pipelines of `io-gst` write the rings, the `vma-audio` thread of
 //! `engine` drives the rest once per tick. Nothing allocates after construction.
 
+mod meter;
 mod rate;
 mod reader;
 mod ring;
 
+pub use meter::{HOLD_FRAMES, Meter, MeterCell, MeterReading, RMS_FRAMES, db_to_gain, to_db};
 pub use rate::{BANDWIDTH_HZ, MAX_DEVIATION, RESET_FRAMES, RateEstimator, RateUpdate};
 pub use reader::{BlockKind, FADE_FRAMES, InputReader, MAX_CORRECTION, RESYNC_FRAMES, ReaderStats};
 pub use ring::{Anchor, ReadOutcome, RingReader, RingWriter, frames_to_ns, ring};
