@@ -386,3 +386,30 @@ Windows (pas de MediaMTX en CI), ils sont sautés.
 | Amorçage de chaque encodeur AAC présent = `aac_priming` (± 4 échantillons) : bip encodé puis décodé | `output::tests::aac_priming_matches_the_encoders` | CI (les 2 OS) |
 | Enregistrement `--sync-test` (vrais encodeurs) relu par l'analyseur : chaque flash a son bip, décalage ≤ 2 ms (milliseconde de Matroska), aucun trou | `outputs::tests::sync_test_recording_has_its_beeps_on_its_flashes` | CI + local (≤ 0,8 ms) |
 | Flux RTMP `--sync-test` relu depuis MediaMTX : 5 flashs appariés, ≤ 2 ms, aucune interruption ni trou | `outputs::tests::sync_analyser_reads_a_live_stream_back` (exécuté seul) | CI Ubuntu (MediaMTX) ; local (−0,6 à +0,4 ms) |
+
+## Phase 3 — Horloge, temps de flux et son des inputs (étape 2, 2026-11-02)
+- **Horloge** (ADR 0007 § 1) : chaque pipeline d'entrée utilise l'horloge système GStreamer
+  **monotone** (`clock::master_clock`), la même que les `Instant` de l'horloge maître.
+  `stream_clock()` apparie un `Instant` et le temps de cette horloge (la plus serrée de 16
+  lectures) : le moteur y convertit ses ticks (`vma_clock::StreamClock`). Les pipelines de
+  sortie restent sans horloge (cadencés par le moteur, ADR 0006 § 3).
+- **Temps de flux d'une image** : `base_time + running_time(PTS)` (`pipeline::stream_time`),
+  transmis avec l'image (`PictureOut::push`, `FrameSink::push_timed`) et gardé par le feed
+  avec le numéro d'image. Source live : instant de capture ; fichier : instant où l'image est
+  à montrer. L'image de *preroll* d'un fichier (pas encore jouée) n'en a pas ; celle d'une
+  source live (livrée en *preroll* pendant la lecture) en a un.
+- **Son d'un fichier** : le premier flux audio de `uridecodebin` passe par `audioconvert !
+  audioresample ! F32LE 48 kHz stéréo ! appsink` (cadencé par l'horloge, comme les images)
+  vers l'anneau de l'input (`Feeds::audio`, crate `audio`), chaque tampon daté par son temps
+  de flux. Mono dupliqué ; plus de 2 canaux : mixage par la matrice par défaut
+  d'`audioconvert` (tous les canaux restent audibles ; écart à la lettre de Q9, « les 2
+  premiers », signalé au mainteneur). Les autres flux audio vont à un `fakesink`. Sans anneau
+  (`Feeds::audio` → `None`), le son est jeté comme avant.
+
+### Critères (étape 2)
+| Critère | Test | Statut |
+|---|---|---|
+| L'horloge GStreamer et `Instant` sont la même horloge (2 appariements à 500 ms : < 200 µs ; prédiction à 1 s : < 1 ms) | `clock::tests::the_pipeline_clock_is_the_master_clock` | CI (2 OS) |
+| Images d'une source live datées : 20 ms d'écart, prises moins de 100 ms avant leur arrivée | `pipeline::tests::live_pictures_carry_their_stream_time` | CI |
+| Son d'un fichier dans son anneau à 48 kHz stéréo, au temps de ses images (< 5 ms ; mesuré 0) | `pipeline::tests::file_sound_reaches_its_ring_on_the_time_of_the_pictures` | CI |
+| Le temps de flux suit la case du feed | `engine` : `feed::tests::each_new_picture_is_uploaded_once` | CI |

@@ -14,6 +14,7 @@
 //! - Capture devices: listed by a device monitor ([`IoRuntime::devices`]), opened in the mode
 //!   closest to the master format ([`CaptureMode`], [`IoRuntime::pipeline_info`]).
 
+mod audio;
 mod clock;
 mod devices;
 mod feeds;

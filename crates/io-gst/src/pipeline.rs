@@ -26,6 +26,7 @@ use gstreamer::prelude::*;
 use gstreamer_app as gst_app;
 use gstreamer_video as gst_video;
 use gstreamer_video::prelude::*;
+use vma_audio::RingWriter;
 use vma_compositor::Plane;
 use vma_core::{ColorInfo, FrameRate, InputId, Matrix, PixelFormat, Range, Resolution};
 use vma_engine::{DeviceId, Timeline};
@@ -247,7 +248,7 @@ impl GstInput {
         let mut mode = None;
         let (pipeline, convert, sink) = match &recipe.media {
             Media::Launch(source) => launch_pipeline(source)?,
-            Media::File(path) => file_pipeline(path)?,
+            Media::File(path) => file_pipeline(path, feeds.audio(input))?,
             Media::Capture(capture) => {
                 let (source, chosen) = open_device(capture)?;
                 let parts = capture_pipeline(source, &chosen)?;
@@ -489,7 +490,7 @@ fn launch_pipeline(source: &str) -> Result<Parts, IoError> {
 }
 
 /// `uridecodebin` → (first video stream) `videoconvert ! appsink`; other streams → `fakesink`.
-fn file_pipeline(path: &Path) -> Result<Parts, IoError> {
+fn file_pipeline(path: &Path, audio: Option<RingWriter>) -> Result<Parts, IoError> {
     let pipeline_error = |e: &dyn std::fmt::Display| IoError::Pipeline(e.to_string());
     let absolute = std::path::absolute(path).map_err(|e| pipeline_error(&e))?;
     let uri = gst::glib::filename_to_uri(&absolute, None).map_err(|e| pipeline_error(&e))?;
@@ -508,15 +509,22 @@ fn file_pipeline(path: &Path) -> Result<Parts, IoError> {
         .map_err(|e| pipeline_error(&e))?;
     convert.link(&sink).map_err(|e| pipeline_error(&e))?;
 
-    route_decoded(&decode, &pipeline, &convert);
+    route_decoded(&decode, &pipeline, &convert, audio);
     Ok((pipeline, convert, sink))
 }
 
-/// Links the pads `decode` creates: the first video stream to `convert`, any other stream
-/// (audio: Phase 3, or another video stream) to a `fakesink`.
-fn route_decoded(decode: &gst::Element, pipeline: &gst::Pipeline, convert: &gst::Element) {
+/// Links the pads `decode` creates: the first video stream to `convert`, the first sound
+/// stream to `audio` (if any), any other stream to a `fakesink`.
+fn route_decoded(
+    decode: &gst::Element,
+    pipeline: &gst::Pipeline,
+    convert: &gst::Element,
+    audio: Option<RingWriter>,
+) {
     let weak_pipeline = pipeline.downgrade();
     let weak_convert = convert.downgrade();
+    // Taken by the first sound stream (`pad-added` runs on a streaming thread, rarely).
+    let audio = std::sync::Mutex::new(audio);
     decode.connect_pad_added(move |_, pad| {
         let Some(pipeline) = weak_pipeline.upgrade() else {
             return;
@@ -525,6 +533,16 @@ fn route_decoded(decode: &gst::Element, pipeline: &gst::Pipeline, convert: &gst:
         let is_video = caps
             .structure(0)
             .is_some_and(|s| s.name().starts_with("video/"));
+        let is_audio = caps
+            .structure(0)
+            .is_some_and(|s| s.name().starts_with("audio/"));
+        if is_audio && let Some(ring) = audio.lock().ok().and_then(|mut a| a.take()) {
+            if let Err(e) = crate::audio::link(&pipeline, pad, ring) {
+                tracing::warn!(error = %e, "cannot link the sound stream");
+                discard(&pipeline, pad);
+            }
+            return;
+        }
         let free_video = weak_convert
             .upgrade()
             .and_then(|c| c.static_pad("sink"))
@@ -583,14 +601,14 @@ pub(crate) fn capture_pipeline(source: gst::Element, mode: &CaptureMode) -> Resu
                 .map_err(|e| pipeline_error(&e))?;
             pipeline.add(&decode).map_err(|e| pipeline_error(&e))?;
             filter.link(&decode).map_err(|e| pipeline_error(&e))?;
-            route_decoded(&decode, &pipeline, &convert);
+            route_decoded(&decode, &pipeline, &convert, None);
         }
     }
     Ok((pipeline, convert, sink))
 }
 
 /// Links `pad` to a new `fakesink` (paced by the clock, like the video).
-fn discard(pipeline: &gst::Pipeline, pad: &gst::Pad) {
+pub(crate) fn discard(pipeline: &gst::Pipeline, pad: &gst::Pad) {
     let linked = gst::ElementFactory::make("fakesink")
         .property("sync", true)
         .build()
@@ -838,6 +856,8 @@ pub(crate) mod tests {
     #[derive(Debug, Clone, Default)]
     pub(crate) struct FakeFeeds {
         pub(crate) feeds: Arc<Mutex<Vec<Arc<Mutex<FakeFeed>>>>>,
+        /// `Some`: the sound goes to rings, kept here.
+        pub(crate) rings: Option<Arc<Mutex<Vec<vma_audio::RingReader>>>>,
     }
 
     pub(crate) struct FakeOut(Arc<Mutex<FakeFeed>>);
@@ -868,9 +888,23 @@ pub(crate) mod tests {
             self.feeds.lock().unwrap().push(Arc::clone(&feed));
             Ok(FakeOut(feed))
         }
+
+        fn audio(&self, _: InputId) -> Option<RingWriter> {
+            let rings = self.rings.as_ref()?;
+            let (writer, reader) = vma_audio::ring(vma_audio::RING_FRAMES);
+            rings.lock().unwrap().push(reader);
+            Some(writer)
+        }
     }
 
     impl FakeFeeds {
+        pub(crate) fn with_audio() -> Self {
+            Self {
+                rings: Some(Arc::default()),
+                ..Self::default()
+            }
+        }
+
         pub(crate) fn count(&self) -> usize {
             self.feeds.lock().unwrap().len()
         }
@@ -1205,6 +1239,58 @@ pub(crate) mod tests {
         );
         assert!(worst < Duration::from_millis(100), "gap of {worst:?}");
         drop(f);
+        drop(input);
+        let _ = std::fs::remove_file(path);
+    }
+
+    /// ADR 0007 § 2: the sound of a file reaches its ring at 48 kHz stereo, dated in the
+    /// time of its pictures (same media time, same stream time, to 5 ms).
+    #[test]
+    fn file_sound_reaches_its_ring_on_the_time_of_the_pictures() {
+        let path = clip("sound", 75);
+        let feeds = FakeFeeds::with_audio();
+        let mut input =
+            GstInput::start(InputId(1), &Recipe::file(path.clone()), feeds.clone()).unwrap();
+        assert!(drive_until(&mut input, Duration::from_secs(5), |_| feeds
+            .count()
+            == 1));
+        input.set_playing(true);
+        drive(&mut input, Duration::from_millis(1_500));
+        let rings = feeds.rings.as_ref().unwrap().lock().unwrap();
+        assert_eq!(rings.len(), 1, "one sound stream");
+        let ring = &rings[0];
+        let written = ring.written();
+        assert!(written > 48_000, "{written} frames in 1.5 s");
+        let anchor = ring.anchor().unwrap();
+        let mut sound = vec![0.0f32; 2 * 4_800];
+        assert!(ring.read(written as i64 - 4_800, &mut sound).is_complete());
+        assert!(sound.iter().any(|s| s.abs() > 0.1), "a tone, not silence");
+        assert!(
+            sound.as_chunks::<2>().0.iter().all(|f| f[0] == f[1]),
+            "mono duplicated"
+        );
+        // Stream time of media time 0, by the sound and by a picture played.
+        let audio_origin =
+            anchor.time_ns as i128 - (anchor.position as i128 * 1_000_000_000 / 48_000);
+        let f = feeds.last();
+        let f = f.lock().unwrap();
+        let (frame, time) = f
+            .frames
+            .iter()
+            .zip(&f.stream_times)
+            .filter_map(|(&k, t)| t.map(|t| (k, t)))
+            .next_back()
+            .unwrap();
+        let video_origin = time as i128 - frame as i128 * 40_000_000;
+        let gap = audio_origin - video_origin;
+        eprintln!("sound − pictures: {} µs", gap / 1_000);
+        assert!(
+            gap.abs() < 5_000_000,
+            "sound {} µs off its pictures",
+            gap / 1_000
+        );
+        drop(f);
+        drop(rings);
         drop(input);
         let _ = std::fs::remove_file(path);
     }

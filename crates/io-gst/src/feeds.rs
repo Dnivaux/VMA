@@ -2,6 +2,7 @@
 //! the application, a CPU fake in the tests. `io-gst` never touches the compositor's
 //! textures itself (spec `io-gst.md`, « Interface »).
 
+use vma_audio::RingWriter;
 use vma_compositor::{FrameError, Plane};
 use vma_core::{ColorInfo, FrameRate, InputId, PixelFormat, Resolution};
 use vma_engine::{FeedError, FeedRegistry, FrameSink};
@@ -31,6 +32,12 @@ pub trait PictureOut: Send + 'static {
 pub trait Feeds: Clone + Send + Sync + 'static {
     type Out: PictureOut;
     fn create(&self, input: InputId, format: VideoFormat) -> Result<Self::Out, FeedError>;
+
+    /// The ring the sound of `input` goes to (ADR 0007 § 2), once its pipeline has a sound
+    /// stream; `None`: the sound is discarded.
+    fn audio(&self, _input: InputId) -> Option<RingWriter> {
+        None
+    }
 }
 
 impl PictureOut for FrameSink {
