@@ -378,6 +378,13 @@ mod tests {
                 next += 7;
             }
         });
+        // A loaded machine may start the producer late: the reads begin once it went round
+        // the ring.
+        let start = std::time::Instant::now();
+        while r.written() < 128 {
+            assert!(start.elapsed().as_secs() < 10, "the producer did not start");
+            std::thread::yield_now();
+        }
         let mut out = [0.0f32; 2 * 16];
         let mut checked = 0u64;
         for _ in 0..20_000 {
