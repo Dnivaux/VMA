@@ -37,7 +37,7 @@ use gstreamer::prelude::*;
 use gstreamer_app as gst_app;
 use gstreamer_video as gst_video;
 
-use vma_core::{Container, FrameRate, Resolution, VideoCodec};
+use vma_core::{AudioBus, Container, FrameRate, Resolution, VideoCodec};
 use vma_engine::{
     AUDIO_CHANNELS, AUDIO_RATE, OutputConsumer, OutputFrame, SrtMode, audio_sample_at, video_pts_ns,
 };
@@ -613,6 +613,7 @@ impl GstOutput {
             video: video_src.clone(),
             audio: audio_src.clone(),
             rate: format.rate,
+            bus: AudioBus::Master,
             priming,
             origin: None,
             audio_started: false,
@@ -761,6 +762,8 @@ pub struct OutputFeed {
     video: gst_app::AppSrc,
     audio: gst_app::AppSrc,
     rate: FrameRate,
+    /// The bus whose sound it carries (Master by default).
+    bus: AudioBus,
     /// Samples of priming of the audio encoder (0 without one): the audio starts as much
     /// later, at time 0.
     priming: u64,
@@ -790,7 +793,7 @@ impl OutputConsumer for OutputFeed {
         let Some(k) = frame.index.checked_sub(origin.frame) else {
             return;
         };
-        let audio = audio_buffer(&frame, origin, !self.audio_started);
+        let audio = audio_buffer(&frame, self.bus, origin, !self.audio_started);
         match video_buffer(Arc::clone(&frame), rate, k) {
             Ok(buffer) => self.push(true, buffer),
             Err(e) => tracing::warn!(error = %e, "output picture not wrapped"),
@@ -803,6 +806,12 @@ impl OutputConsumer for OutputFeed {
 }
 
 impl OutputFeed {
+    /// Carries the sound of `bus` instead of the Master.
+    pub fn with_bus(mut self, bus: AudioBus) -> Self {
+        self.bus = bus;
+        self
+    }
+
     fn push(&mut self, video: bool, buffer: gst::Buffer) {
         if self.closed {
             return;
@@ -869,8 +878,13 @@ fn stride(bytes: usize) -> i32 {
     i32::try_from(bytes).unwrap_or(i32::MAX)
 }
 
-/// The audio of `frame` from the output's first sample on (`None`: nothing left).
-fn audio_buffer(frame: &OutputFrame, origin: Origin, first: bool) -> Option<gst::Buffer> {
+/// The audio of `bus` in `frame` from the output's first sample on (`None`: nothing left).
+fn audio_buffer(
+    frame: &OutputFrame,
+    bus: AudioBus,
+    origin: Origin,
+    first: bool,
+) -> Option<gst::Buffer> {
     let skip = origin
         .sample
         .saturating_sub(frame.audio_first_sample)
@@ -881,7 +895,9 @@ fn audio_buffer(frame: &OutputFrame, origin: Origin, first: bool) -> Option<gst:
     }
     let start = frame.audio_first_sample + skip - origin.sample;
     let channels = AUDIO_CHANNELS as u64;
-    let samples = frame.audio.get(usize::try_from(skip * channels).ok()?..)?;
+    let samples = frame
+        .audio(bus)
+        .get(usize::try_from(skip * channels).ok()?..)?;
     let bytes: Vec<u8> = samples.iter().flat_map(|s| s.to_le_bytes()).collect();
     let pts = sample_ns(start);
     let mut buffer = gst::Buffer::from_mut_slice(bytes);

@@ -1,4 +1,5 @@
-use crate::audio::{self, AudioStats, AudioThread, AudioTick, BusReaders, OnAir, TickSender};
+use crate::audio::{self, AudioMeters, AudioStats, AudioThread, AudioTick, OnAir, TickSender};
+use crate::audio_plan::audio_plan_channel;
 use crate::command::MixDomain;
 use crate::control::{
     self, CommandSender, ControlInputs, ControlStats, Controller, InputStatsReader, IoEventSender,
@@ -19,7 +20,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
-use vma_audio::MixMeters;
 use vma_clock::{ClockStats, FrameClock, StreamClock, SystemTime};
 use vma_compositor::thumbnails::{self, ATLAS_CELLS, ThumbnailPainter};
 use vma_compositor::{
@@ -143,7 +143,7 @@ pub struct RenderEngine {
     commands: CommandSender,
     state: StateReader,
     feeds: FeedRegistry,
-    audio_meters: Arc<MixMeters>,
+    audio_meters: AudioMeters,
     audio_stats: Arc<AudioStats>,
     input_stats: InputStatsReader,
     timelines: Timelines,
@@ -207,14 +207,15 @@ impl RenderEngine {
         let (ready_tx, ready_rx) = crossbeam_channel::bounded(RING);
         // First: if it cannot start, nothing else is running yet. It ends by itself when the
         // render thread drops its tick sender, on any later error too.
+        let (audio_plan_writer, audio_plan) = audio_plan_channel();
         let AudioThread {
             ticks: audio_ticks,
             rings,
-            buses: BusReaders { master, .. },
+            buses,
             meters: audio_meters,
             stats: audio_stats,
             thread: audio_thread,
-        } = audio::spawn(config.rate)?;
+        } = audio::spawn(config.rate, audio_plan)?;
         // It ends by itself when `ready_tx` is dropped, on any later error too.
         let (outputs, active_outputs, output_thread) = outputs::spawn(
             OutputSettings {
@@ -224,7 +225,7 @@ impl RenderEngine {
             },
             Arc::clone(&ring),
             ready_rx,
-            Some(master),
+            Some(buses),
         )?;
         let clock = FrameClock::with_spin_margin(config.rate, config.spin_margin);
         let clock_stats = clock.stats();
@@ -268,6 +269,7 @@ impl RenderEngine {
             sources_tx,
         );
         controller.set_io(io_tx);
+        controller.set_audio_plan(audio_plan_writer);
         controller.set_device_lost_grace(config.device_lost_grace);
         let input_stats = controller.input_stats();
         let timelines = Timelines::default();
@@ -391,8 +393,8 @@ impl RenderEngine {
 
     /// Creates picture feeds for inputs fed from outside the engine (clonable).
     /// Meters of the audio mixer (inputs, buses, headphones), for the UI.
-    pub fn audio_meters(&self) -> Arc<MixMeters> {
-        Arc::clone(&self.audio_meters)
+    pub fn audio_meters(&self) -> AudioMeters {
+        self.audio_meters.clone()
     }
 
     pub fn audio_stats(&self) -> crate::audio::AudioStatsSnapshot {

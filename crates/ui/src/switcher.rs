@@ -11,13 +11,14 @@ use egui::{Color32, Key, Rect, RichText, Sense, Stroke, StrokeKind, TextureId, V
 use vma_core::{InputId, OutputId, Rgb8};
 use vma_engine::{
     AutoPlay, Command, CommandId, CommandSender, DeviceId, Effect, InputSpec, InputState,
-    InputStatus, MAX_NAME_CHARS, MAX_TRANSITION_MS, MixDomain, Playback, RejectionNotice,
-    SendError, Source, State, Timeline, TransitionSetting, TransitionState,
+    InputStatus, Level, MAX_NAME_CHARS, MAX_TRANSITION_MS, MeterReading, MixDomain, Playback,
+    RejectionNotice, SendError, Source, State, Timeline, TransitionSetting, TransitionState,
 };
 
 use crate::OutputActivity;
 use crate::tally::{TALLY_PREVIEW, TALLY_PROGRAM, Tally};
 
+mod mixer;
 mod outputs;
 
 /// Width of the transition column.
@@ -149,6 +150,29 @@ pub struct View<'a> {
     pub fade_to_black: f32,
     /// Last command refused by the engine.
     pub rejection: Option<&'a RejectionNotice>,
+    pub audio: AudioView<'a>,
+}
+
+/// What the switcher reads of the audio mixer.
+pub struct AudioView<'a> {
+    /// Meters, before and after fader (`None`: no sound received).
+    pub levels: &'a dyn Fn(Level) -> Option<[MeterReading; 2]>,
+}
+
+impl AudioView<'static> {
+    /// Every meter without sound.
+    pub fn silent() -> Self {
+        fn none(_: Level) -> Option<[MeterReading; 2]> {
+            None
+        }
+        Self { levels: &none }
+    }
+}
+
+impl std::fmt::Debug for AudioView<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AudioView").finish_non_exhaustive()
+    }
 }
 
 /// T-Bar interaction state.
@@ -181,6 +205,7 @@ pub struct Switcher {
     /// Position slider being dragged: input and position (ms), sent on release.
     scrub: Option<(InputId, f64)>,
     outputs: outputs::OutputsUi,
+    mixer: mixer::MixerUi,
 }
 
 impl Default for Switcher {
@@ -197,6 +222,7 @@ impl Default for Switcher {
             file_request: None,
             scrub: None,
             outputs: outputs::OutputsUi::default(),
+            mixer: mixer::MixerUi::default(),
         }
     }
 }
@@ -224,6 +250,7 @@ impl Switcher {
                     self.settings_open = true;
                 }
                 ui.toggle_value(&mut self.show_stats, "Statistiques");
+                ui.toggle_value(&mut self.mixer.open, "Mélangeur");
                 ui.separator();
                 self.output_buttons(ui, view);
                 if let Some(reason) = view.io.unavailable {
@@ -242,6 +269,12 @@ impl Switcher {
                 }
             });
         });
+        if self.mixer.open {
+            egui::Panel::bottom("mixer")
+                .resizable(false)
+                .exact_size(mixer::MIXER_HEIGHT)
+                .show(ui, |ui| self.mixer_panel(ui, view));
+        }
         egui::Panel::bottom("inputs")
             .resizable(false)
             .exact_size(THUMB.y + 96.0)

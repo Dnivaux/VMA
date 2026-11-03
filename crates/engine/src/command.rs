@@ -4,8 +4,9 @@
 use std::fmt;
 use std::path::PathBuf;
 
-use serde::{Deserialize, Serialize};
-use vma_core::{FrameRate, InputId, InputKind, OutputId, Resolution, Rgb8};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use vma_audio::SoloMode;
+use vma_core::{AudioBus, FrameRate, InputId, InputKind, OutputId, Resolution, Rgb8};
 
 use crate::output_spec::OutputSpec;
 
@@ -14,6 +15,9 @@ pub const MAX_TRANSITION_MS: u32 = 10_000;
 
 /// Number of transition buttons (the T-Bar uses button 1).
 pub const TRANSITION_BUTTONS: usize = 4;
+
+/// Longest audio delay of an input, in milliseconds (`phase-3.md` § 5).
+pub const MAX_AUDIO_DELAY_MS: u32 = 1_000;
 
 /// A request to change the mixer state. Applied in arrival order on `vma-control`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -121,6 +125,113 @@ pub enum Command {
     SetFadeToBlackDuration {
         ms: u32,
     },
+    // Audio (Phase 3, `phase-3.md` § 5). Refused for an input without sound.
+    /// Fader of an input, from −∞ to +10 dB.
+    SetInputGain {
+        input: InputId,
+        db: Db,
+    },
+    SetInputMute {
+        input: InputId,
+        mute: bool,
+    },
+    SetInputSolo {
+        input: InputId,
+        solo: bool,
+    },
+    /// Delays the sound of an input, 0 to [`MAX_AUDIO_DELAY_MS`].
+    SetInputDelay {
+        input: InputId,
+        ms: u32,
+    },
+    /// Sends the input to `bus` (`on`) or not.
+    SetInputBus {
+        input: InputId,
+        bus: AudioBus,
+        on: bool,
+    },
+    SetAudioFollowVideo {
+        input: InputId,
+        on: bool,
+    },
+    SetBusGain {
+        bus: AudioBus,
+        db: Db,
+    },
+    SetBusMute {
+        bus: AudioBus,
+        mute: bool,
+    },
+    /// The bus an output carries. Refused while it runs, and for the full screen (no sound).
+    SetOutputBus {
+        output: OutputId,
+        bus: AudioBus,
+    },
+    /// Headphones: device (`None`: the system's default) and what a solo hears.
+    SetMonitor {
+        device: Option<DeviceId>,
+        solo_mode: SoloMode,
+    },
+}
+
+/// A level in decibels: finite, or −∞ (silence). Never NaN, so it compares as `Eq`. The
+/// journal writes −∞ as `"-inf"` (JSON has no infinity).
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Default)]
+pub struct Db(f32);
+
+impl Eq for Db {}
+
+impl Db {
+    pub const ZERO: Self = Self(0.0);
+    pub const SILENT: Self = Self(f32::NEG_INFINITY);
+
+    /// `None` for NaN and +∞.
+    pub fn new(db: f32) -> Option<Self> {
+        (db.is_finite() || db == f32::NEG_INFINITY).then_some(Self(db))
+    }
+
+    pub fn get(self) -> f32 {
+        self.0
+    }
+}
+
+impl fmt::Display for Db {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.0 == f32::NEG_INFINITY {
+            f.write_str("-∞ dB")
+        } else {
+            write!(f, "{:+.1} dB", self.0)
+        }
+    }
+}
+
+impl Serialize for Db {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        if self.0 == f32::NEG_INFINITY {
+            serializer.serialize_str("-inf")
+        } else {
+            serializer.serialize_f32(self.0)
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for Db {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Repr {
+            Number(f32),
+            Text(String),
+        }
+        let db = match Repr::deserialize(deserializer)? {
+            Repr::Number(db) => db,
+            Repr::Text(text) if text == "-inf" => f32::NEG_INFINITY,
+            Repr::Text(text) => {
+                return Err(serde::de::Error::custom(format!("not a level: {text}")));
+            }
+        };
+        Self::new(db).ok_or_else(|| serde::de::Error::custom("not a level"))
+    }
 }
 
 /// Stable identifier of a capture device, provided by `io-gst`.
@@ -179,6 +290,15 @@ impl InputSpec {
                 InputKind::TestSource
             }
         }
+    }
+
+    /// True for inputs that may carry sound: they get a strip in the audio mixer. A capture
+    /// device without sound keeps a silent strip.
+    pub fn has_audio(&self) -> bool {
+        matches!(
+            self,
+            Self::Capture { .. } | Self::File { .. } | Self::SyncSource { .. }
+        )
     }
 
     /// True for inputs the engine draws itself (no `io-gst` pipeline): colour, test pattern.
@@ -338,6 +458,28 @@ mod tests {
         };
         let back: Command = serde_json::from_str(&serde_json::to_string(&add).unwrap()).unwrap();
         assert_eq!(back, add);
+    }
+
+    #[test]
+    fn levels_in_the_journal() {
+        let gain = |db| Command::SetInputGain {
+            input: InputId(2),
+            db,
+        };
+        let json = serde_json::to_string(&gain(Db::new(-6.5).unwrap())).unwrap();
+        assert_eq!(json, r#"{"SetInputGain":{"input":2,"db":-6.5}}"#);
+        let silent = serde_json::to_string(&gain(Db::SILENT)).unwrap();
+        assert_eq!(silent, r#"{"SetInputGain":{"input":2,"db":"-inf"}}"#);
+        for json in [&json, &silent] {
+            let back: Command = serde_json::from_str(json).unwrap();
+            assert_eq!(&serde_json::to_string(&back).unwrap(), json);
+        }
+        assert!(serde_json::from_str::<Db>(r#""loud""#).is_err());
+        assert!(serde_json::from_str::<Db>("null").is_err());
+        assert_eq!(Db::new(f32::NAN), None);
+        assert_eq!(Db::new(f32::INFINITY), None);
+        assert_eq!(Db::SILENT.to_string(), "-∞ dB");
+        assert_eq!(Db::new(3.0).unwrap().to_string(), "+3.0 dB");
     }
 
     #[test]

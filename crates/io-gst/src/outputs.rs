@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 
 use arc_swap::ArcSwap;
 use gstreamer::glib;
-use vma_core::OutputId;
+use vma_core::{AudioBus, OutputId};
 use vma_engine::{IoEvent, OutputHub, OutputSpec, RecordSpec, RtmpSpec, SrtMode, SrtSpec};
 
 use crate::output::{
@@ -145,6 +145,8 @@ struct Slot {
     id: OutputId,
     run: u64,
     recipe: Recipe,
+    /// The bus whose sound it carries, kept across reconnections.
+    bus: AudioBus,
     phase: Phase,
     /// Start of the run.
     since: Instant,
@@ -203,6 +205,7 @@ impl Outputs {
         output: OutputId,
         run: u64,
         spec: &OutputSpec,
+        bus: AudioBus,
         emit: &mut impl FnMut(IoEvent),
     ) {
         if self.slots.iter().any(|s| s.id == output) {
@@ -230,11 +233,11 @@ impl Outputs {
                 (Recipe::Record, OutputSpec::Record(record)) => {
                     let settings = self.record_settings(record)?;
                     let target = settings.path.display().to_string();
-                    (self.attach_record(output, &settings)?, target)
+                    (self.attach_record(output, &settings, bus)?, target)
                 }
                 (Recipe::Stream(target), _) => {
                     tracing::info!(%output, to = %target.shown(), kbps = target.kbps(), "starting a stream");
-                    (self.attach_stream(output, target)?, target.shown())
+                    (self.attach_stream(output, target, bus)?, target.shown())
                 }
                 _ => return Err("inconsistent output settings".to_owned()),
             };
@@ -254,6 +257,7 @@ impl Outputs {
                     id: output,
                     run,
                     recipe,
+                    bus,
                     phase: Phase::Running {
                         pipeline,
                         started: now,
@@ -351,20 +355,26 @@ impl Outputs {
         &self,
         output: OutputId,
         settings: &RecordSettings,
+        bus: AudioBus,
     ) -> Result<GstOutput, String> {
         tracing::info!(%output, path = %settings.path.display(), ?settings.codec, ?settings.container, kbps = settings.video_kbps, "starting a recording");
         let (pipeline, feed) =
             GstOutput::record(self.format, settings).map_err(|e| e.to_string())?;
         self.hub
-            .attach(output, Box::new(feed))
+            .attach(output, Box::new(feed.with_bus(bus)))
             .map_err(|e| e.to_string())?;
         Ok(pipeline)
     }
 
-    fn attach_stream(&self, output: OutputId, target: &Target) -> Result<GstOutput, String> {
+    fn attach_stream(
+        &self,
+        output: OutputId,
+        target: &Target,
+        bus: AudioBus,
+    ) -> Result<GstOutput, String> {
         let (pipeline, feed) = target.start(self.format).map_err(|e| e.to_string())?;
         self.hub
-            .attach(output, Box::new(feed))
+            .attach(output, Box::new(feed.with_bus(bus)))
             .map_err(|e| e.to_string())?;
         Ok(pipeline)
     }
@@ -459,7 +469,7 @@ impl Outputs {
                     return None;
                 };
                 let listens = target.listens();
-                match self.attach_stream(id, target) {
+                match self.attach_stream(id, target, slot.bus) {
                     Ok(pipeline) => {
                         tracing::info!(output = %id, attempt = slot.attempt, "stream reconnecting");
                         slot.phase = Phase::Running {
@@ -868,6 +878,18 @@ mod tests {
         spec: vma_engine::InputSpec,
         seconds: u64,
     ) -> crate::SyncSnapshot {
+        sync_source_recording_with(name, master, spec, seconds, &|_| Vec::new())
+    }
+
+    /// [`sync_source_recording`], with the commands of `setup` (given the input) sent once
+    /// the source is live.
+    fn sync_source_recording_with(
+        name: &str,
+        master: FrameRate,
+        spec: vma_engine::InputSpec,
+        seconds: u64,
+        setup: &dyn Fn(vma_core::InputId) -> Vec<Command>,
+    ) -> crate::SyncSnapshot {
         let (mut engine, _device) = spawn_engine_with(EngineConfig {
             rate: master,
             stream_clock: Some(crate::stream_clock()),
@@ -889,6 +911,9 @@ mod tests {
                 None => std::thread::sleep(Duration::from_millis(10)),
             }
         };
+        for command in setup(input) {
+            send(&engine, command);
+        }
         send(&engine, Command::CutDirect { input });
         // The latency of its pictures is smoothed over ≈ 1 s.
         std::thread::sleep(Duration::from_secs(3));
@@ -1027,6 +1052,81 @@ mod tests {
                 "{sync:?}"
             );
         }
+    }
+
+    /// C2 (second half): the same source, its input delayed by 80 ms, is in sync to a frame;
+    /// the delay moves the sound by 80 ms ± 1 ms. A 25p source in a 50p master: its pictures
+    /// are never skipped, the measure is to a sample.
+    #[test]
+    #[cfg_attr(
+        windows,
+        ignore = "Windows CI (WARP, 2 cores) repeats every other tick with an input feed: gaps in the recording"
+    )]
+    fn a_delayed_input_is_back_in_sync() {
+        let master = FrameRate::FPS_50;
+        let spec = sync_source(FrameRate::FPS_25, 0, 80);
+        let mean = |sync: &crate::SyncSnapshot| {
+            sync.offsets_ns.iter().sum::<i64>() as f64 / sync.offsets_ns.len() as f64 / 1e6
+        };
+        let early = sync_source_recording("c2-early", master, spec.clone(), 5);
+        let delayed = sync_source_recording_with("c2-delayed", master, spec, 5, &|input| {
+            vec![Command::SetInputDelay { input, ms: 80 }]
+        });
+        let shift = mean(&delayed) - mean(&early);
+        eprintln!(
+            "early {:.2} ms, delayed {:.2} ms, shift {shift:.2} ms",
+            mean(&early),
+            mean(&delayed)
+        );
+        assert!(delayed.flashes >= 4, "{delayed:?}");
+        assert!(
+            delayed.worst_ns().unwrap() < video_pts_ns(master, 1) as i64,
+            "{delayed:?}"
+        );
+        assert!((shift - 80.0).abs() <= 1.0, "shift {shift:.2} ms");
+    }
+
+    /// An output carries the bus it was given: an input sent to bus A only is heard, in
+    /// sync, in a recording of bus A.
+    #[test]
+    #[cfg_attr(
+        windows,
+        ignore = "Windows CI (WARP, 2 cores) repeats every other tick with an input feed: gaps in the recording"
+    )]
+    fn a_recording_carries_its_bus() {
+        use vma_core::AudioBus;
+
+        let master = FrameRate::FPS_50;
+        let sync = sync_source_recording_with(
+            "bus-a",
+            master,
+            sync_source(FrameRate::FPS_25, 0, 0),
+            5,
+            &|input| {
+                vec![
+                    Command::SetInputBus {
+                        input,
+                        bus: AudioBus::Master,
+                        on: false,
+                    },
+                    Command::SetInputBus {
+                        input,
+                        bus: AudioBus::A,
+                        on: true,
+                    },
+                    Command::SetOutputBus {
+                        output: REC,
+                        bus: AudioBus::A,
+                    },
+                ]
+            },
+        );
+        eprintln!("{sync:?}");
+        assert!(sync.flashes >= 4 && sync.beeps >= 4, "{sync:?}");
+        assert!(
+            sync.worst_ns().unwrap() < video_pts_ns(master, 1) as i64,
+            "{sync:?}"
+        );
     }
 
     /// C3 (real time): sources at +100 and −100 ppm for 60 s: the sound stays on its pictures

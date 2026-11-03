@@ -312,10 +312,15 @@ impl Worker {
             IoRequest::Pause { input } => self.with(input, |s| s.set_playing(false)),
             IoRequest::Seek { input, ms } => self.with(input, |s| s.seek(ms)),
             IoRequest::SetLoop { input, enabled } => self.with(input, |s| s.set_looping(enabled)),
-            IoRequest::StartOutput { output, run, spec } => {
+            IoRequest::StartOutput {
+                output,
+                run,
+                spec,
+                bus,
+            } => {
                 let events = &self.port.events;
                 self.outputs
-                    .start(output, run, &spec, &mut |e| send(events, e));
+                    .start(output, run, &spec, bus, &mut |e| send(events, e));
             }
             IoRequest::StopOutput { output } => {
                 let events = &self.port.events;

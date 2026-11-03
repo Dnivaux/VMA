@@ -13,6 +13,7 @@ use std::time::{Duration, Instant, SystemTime};
 use arc_swap::{ArcSwap, ArcSwapOption};
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, TrySendError};
 
+use crate::audio_plan::AudioPlanWriter;
 use crate::command::{Command, CommandId, Source};
 use crate::feed::{Attach, FeedReader, FeedStats};
 use crate::journal::{JournalLine, JournalSender, Origin, Outcome, utc_rfc3339};
@@ -250,6 +251,7 @@ pub(crate) struct Controller {
     state: State,
     snapshot: Arc<ArcSwap<State>>,
     plan: PlanWriter,
+    audio_plan: Option<AudioPlanWriter>,
     feedback: Arc<RenderFeedback>,
     journal: Option<JournalSender>,
     stats: Arc<ControlStats>,
@@ -286,6 +288,7 @@ impl Controller {
                 state,
                 snapshot,
                 plan,
+                audio_plan: None,
                 feedback,
                 journal,
                 stats,
@@ -341,6 +344,12 @@ impl Controller {
     /// Where accepted commands send their [`IoRequest`]s (none: they are only logged).
     pub(crate) fn set_io(&mut self, io: Sender<IoRequest>) {
         self.io = Some(io);
+    }
+
+    /// `vma-audio` reads its settings from `writer` from now on.
+    pub(crate) fn set_audio_plan(&mut self, writer: AudioPlanWriter) {
+        writer.publish(&self.state.audio_plan());
+        self.audio_plan = Some(writer);
     }
 
     pub(crate) fn set_device_lost_grace(&mut self, grace: Duration) {
@@ -525,6 +534,9 @@ impl Controller {
             self.input_stats.feeds.store(Arc::new(kept));
         }
         self.plan.publish(&self.state.plan());
+        if let Some(audio) = &self.audio_plan {
+            audio.publish(&self.state.audio_plan());
+        }
         self.snapshot.store(Arc::new(self.state.clone()));
     }
 
@@ -911,6 +923,105 @@ mod tests {
         });
         let replayed = replay(fresh, &text).unwrap();
         assert_eq!(replayed, *rig.reader.load());
+    }
+
+    /// C13: every audio setting goes through a command, is journaled (−∞ included), comes
+    /// back by replay, and reaches `vma-audio` through the audio plan.
+    #[test]
+    fn audio_settings_are_journaled_replayed_and_published() {
+        use crate::audio_plan::audio_plan_channel;
+        use crate::command::Db;
+        use vma_audio::SoloMode;
+        use vma_core::{AudioBus, OutputId};
+
+        let mut rig = Rig::new(FrameRate::FPS_50);
+        let (writer, audio_plan) = audio_plan_channel();
+        rig.controller.set_audio_plan(writer);
+        rig.send(Command::AddInput {
+            spec: InputSpec::File {
+                path: "clip.mkv".into(),
+            },
+            name: None,
+        });
+        let file = rig.controller.state().inputs.last().unwrap().id;
+        let color = rig.color();
+        let commands = [
+            Command::SetInputGain {
+                input: file,
+                db: Db::new(-12.5).unwrap(),
+            },
+            Command::SetInputGain {
+                input: file,
+                db: Db::SILENT,
+            },
+            Command::SetInputMute {
+                input: file,
+                mute: true,
+            },
+            Command::SetInputSolo {
+                input: file,
+                solo: true,
+            },
+            Command::SetInputDelay {
+                input: file,
+                ms: 80,
+            },
+            Command::SetInputBus {
+                input: file,
+                bus: AudioBus::B,
+                on: true,
+            },
+            Command::SetAudioFollowVideo {
+                input: file,
+                on: false,
+            },
+            Command::SetBusGain {
+                bus: AudioBus::A,
+                db: Db::new(3.0).unwrap(),
+            },
+            Command::SetBusMute {
+                bus: AudioBus::Master,
+                mute: true,
+            },
+            Command::SetOutputBus {
+                output: OutputId(1),
+                bus: AudioBus::A,
+            },
+            Command::SetMonitor {
+                device: Some(crate::DeviceId("casque".into())),
+                solo_mode: SoloMode::Pfl,
+            },
+            // Refused: a colour has no sound; out of range.
+            Command::SetInputMute {
+                input: color,
+                mute: true,
+            },
+            Command::SetInputDelay {
+                input: file,
+                ms: 1_001,
+            },
+        ];
+        for command in commands {
+            rig.send(command);
+        }
+        let text = rig.journal_text();
+        assert!(text.contains(r#""db":"-inf""#), "{text}");
+        assert!(text.contains(r#""SetMonitor""#), "{text}");
+        assert_eq!(text.matches(r#""Rejected""#).count(), 2, "{text}");
+
+        let state = rig.reader.load();
+        let audio = state.input(file).unwrap().audio.unwrap();
+        assert_eq!(audio.gain, Db::SILENT);
+        assert!(audio.mute && audio.solo && !audio.follow_video);
+        assert_eq!((audio.delay_ms, audio.sends), (80, [true, false, true]));
+        assert_eq!(state.output(OutputId(1)).unwrap().bus, AudioBus::A);
+        assert_eq!(state.audio_plan(), audio_plan.read().unwrap());
+
+        let fresh = State::new(Format {
+            rate: FrameRate::FPS_50,
+            resolution: Resolution::HD_1080,
+        });
+        assert_eq!(replay(fresh, &text).unwrap(), *state);
     }
 
     #[test]

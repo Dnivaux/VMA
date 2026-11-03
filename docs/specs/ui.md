@@ -193,6 +193,27 @@ refusées, `journal_dropped`.
 - **Ligne de commande** : `--fullscreen <écran>` (nom, ou numéro à partir de 1) ajoute et
   démarre la sortie au lancement (commandes `Script`, journalisées).
 
+## Phase 3 — Mélangeur audio (étape 4, 2026-11-03)
+- **Panneau « Mélangeur »**, en bas de la fenêtre sous la barre d'inputs, affiché par défaut,
+  interrupteur **Mélangeur** dans la barre du haut (comme Statistiques). Une **tranche par
+  input avec son**, dans l'ordre des inputs (« n Nom ») : vumètre stéréo, fader vertical,
+  à côté **Muet** (rouge), **Solo** (jaune), envois **M / A / B** ; sous le fader, le niveau
+  (« −8,0 dB », « −∞ dB »), **Suit l'image** (audio-follow-video) et le **décalage** (ms,
+  0 à 1 000). Puis les tranches **Master**, **Bus A**, **Bus B** (vumètre, fader, Muet) et
+  **Casque** (vumètre ; « Master » ou « Solo » selon ce qu'il écoute ; AFL / PFL). Le choix
+  du périphérique du casque viendra avec l'étape 5.
+- **Fader** : en dB, linéaire de −60 dB (en bas : **−∞**) à +10 dB, trait à 0 dB ; chaque
+  nouvelle valeur (au dixième de dB) est envoyée pendant le glissement
+  (`SetInputGain` / `SetBusGain`) ; **double-clic : 0 dB**.
+- **Vumètres** : RMS en barre (vert sous −18 dBFS, jaune jusqu'à −6, rouge au-dessus), crête
+  en trait, crête maintenue en blanc, échelle −60 à 0 dBFS, après fader ; lus à chaque frame
+  UI dans `AudioView::levels` (`AudioMeters` du moteur), jamais dans l'état. Nom accessible :
+  « Vumètre 5 clip : crête −6,0 dB, RMS −9,0 dB », « … : pas de son ».
+- **Fenêtre Sorties** : chaque sortie (sauf le plein écran) a **Son : Master / Bus A /
+  Bus B** (`SetOutputBus`), grisé pendant qu'elle tourne.
+- Disposition propre à VMA (un mélangeur logiciel classique a ses tranches en bas à droite) :
+  à revoir avec le partenaire.
+
 ## Critères d'acceptation
 | Critère | Test |
 |---|---|
@@ -209,4 +230,6 @@ refusées, `journal_dropped`.
 | *(Phase 2)* **B15** côté UI : état, encodeur, durée, débit, taille, envoyées / perdues, file, reconnexions | `switcher::output_statistics_show_every_figure` |
 | *(Phase 2, étape 8)* Plein écran : ajout sur le 2ᵉ écran, choix de l'écran, Démarrer (réglages d'abord), Arrêter ; avertissements écran absent, écran unique, fréquence | `switcher::fullscreen_output_screen_choice_start_and_stop`, `fullscreen_output_warns_about_its_screen`, `fullscreen::tests` (4 tests : écran par nom, saccades, images sautées, proportions) |
 | *(Phase 2, étape 8)* **B12** : plein écran réel sur un écran secondaire | checklist `docs/manual-tests/phase2-outputs.md` |
+| *(Phase 3, étape 4)* Mélangeur : Muet, Solo, envois, Suit l'image, Muet des bus, AFL / PFL, décalage, faders (glissement jusqu'à −∞, double-clic 0 dB), bus d'une sortie (figé en marche) émettent la bonne `Command` (A11, **C13** côté UI) | `switcher::{mixer_strip_buttons_send_their_commands, faders_send_their_level_and_double_click_goes_back_to_zero, the_delay_of_an_input_is_sent, each_output_chooses_its_bus_while_stopped}`, `mixer::tests::fader_law_and_texts` |
+| *(Phase 3, étape 4)* **C7** côté UI : les vumètres affichent crête et RMS mesurés, « pas de son » sinon | `switcher::meters_show_the_levels` |
 | Utilisation réelle : chaque type d'input, Quick Play, Cut, 4 boutons, T-Bar, contrôles vidéo, à la souris et au clavier ; sélecteur de fichier natif (Linux, Windows) | checklist `docs/manual-tests/phase1-inputs.md` |

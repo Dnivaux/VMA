@@ -208,6 +208,32 @@ Commandes de `phase-2.md` § 5, mises en œuvre telles quelles ; précisions app
   (`StopOutput` vers `vma-io`, plein écran tout de suite à l'arrêt) ; une sortie en erreur
   garde sa raison. Sans perte, cet événement est sans effet.
 
+## Phase 3 — Audio (étape 4, 2026-11-03)
+Commandes de `phase-3.md` § 5, mises en œuvre telles quelles ; précisions apportées en codant
+(à relire) :
+- **Niveaux** : type `Db` (`f32` fini ou −∞, jamais NaN : la commande reste comparable) ; le
+  journal écrit −∞ `"-inf"` (JSON n'a pas d'infini), un nombre sinon
+  (`{"SetInputGain":{"input":2,"db":-6.5}}`). Fader d'input et de bus : −∞ à +10 dB, au-delà
+  refusé (`GainOutOfRange`) ; décalage 0 à 1 000 ms (`DelayOutOfRange`).
+- **Inputs avec son** (`InputSpec::has_audio`) : capture, fichier vidéo, source de synchro
+  (NDI, SRT et périphérique audio s'ajouteront). Couleur, image, mire et `Synthetic`
+  (`videotestsrc`) n'en ont pas : leurs commandes audio sont refusées (`NoAudio`). Une capture
+  sans son garde une tranche muette.
+- **État** : `InputState::audio: Option<InputAudio>` (fader, mute, solo, décalage, envois
+  Master / A / B, audio-follow-video), défauts de `phase-3.md` § 6 à l'ajout ;
+  `State::audio` (`AudioState`) : les 3 bus (fader, mute) et le casque (`Monitor` :
+  périphérique, `SoloMode` AFL / PFL) ; `OutputState::bus` (Master par défaut). Champs relus
+  avec leur défaut (`serde(default)`) dans un journal ou un état d'avant la Phase 3.
+- **`SetOutputBus`** : refusé pendant que la sortie tourne (`OutputActive`) et pour le plein
+  écran (`OutputWithoutSound`) ; `IoRequest::StartOutput` porte le bus.
+- **`SetMonitor`** : périphérique (nom vide refusé) et mode de solo. Le mode agit dès
+  maintenant sur le mix casque et son vumètre ; le périphérique n'est joué qu'à l'étape 5.
+- **Plan audio** : `State::audio_plan()` (les inputs avec son dans l'ordre d'affichage, les
+  bus, le mode de solo), publié par `vma-control` après chaque changement par un seqlock
+  d'atomiques (`audio_plan.rs`, 133 mots ; le seqlock du plan du rendu est devenu générique,
+  `SeqLock<N>`), lu par `vma-audio` à chaque bloc. Un input absent du plan (retiré) n'est
+  plus mixé.
+
 ## Critères d'acceptation
 | Critère | Test |
 |---|---|
@@ -225,3 +251,5 @@ Commandes de `phase-2.md` § 5, mises en œuvre telles quelles ; précisions app
 | *(Phase 2)* **B13** côté moteur : ni la clé ni la phrase de passe dans le journal, les logs (niveau TRACE) ou l'état sérialisé ; rejeu refusé sans la clé | `control::tests::secrets_never_reach_the_journal_the_logs_nor_the_published_state` |
 | *(Phase 2, étape 9)* **B14** côté état et contrôle : perte journalisée une fois, démarrages refusés, sorties qui produisent finalisées au bout du délai (pas avant, une fois), sorties en erreur ou à l'arrêt intactes | `state::tests::a_lost_gpu_refuses_starts_then_finalises_what_runs`, `control::tests::a_lost_gpu_is_journaled_and_finalises_the_outputs_after_the_grace` (temps simulé) |
 | *(Phase 2, étape 8)* Plein écran : en marche sans `vma-io`, une seule, réglages figés en marche, type figé, arrêt et suppression sans requête, drapeau du plan | `state::tests::the_full_screen_runs_without_io_and_sets_the_plan`, `plan::tests::encoding_round_trips` |
+| *(Phase 3, étape 4)* Audio : défauts par type d'input, chaque commande, refus sans effet (input sans son, inconnu, hors bornes), bus des sorties (figé en marche, refusé au plein écran) | `state::tests::{inputs_with_sound_get_their_default_settings, audio_commands_change_the_settings, audio_commands_are_refused_without_effect, outputs_carry_their_bus}` |
+| *(Phase 3, étape 4)* **C13** côté moteur : toute commande audio journalisée (−∞ compris), rejeu → même état, plan audio publié | `control::tests::audio_settings_are_journaled_replayed_and_published`, `command::tests::levels_in_the_journal`, `audio_plan::tests` (aller-retour, lectures concurrentes jamais déchirées) |

@@ -17,10 +17,12 @@ use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
 use vma_core::{FrameRate, InputId, Resolution, Rgb8};
 use vma_engine::{
-    AutoPlay, Command, CommandProbe, CommandSender, DeviceId, Effect, Format, InputSpec, MixDomain,
-    Source, State, Timeline,
+    AutoPlay, Command, CommandProbe, CommandSender, DeviceId, Effect, Format, InputSpec, Level,
+    MeterReading, MixDomain, Source, State, Timeline,
 };
-use vma_ui::{CaptureChoice, FileKind, Images, IoView, OutputActivity, Screen, Switcher, View};
+use vma_ui::{
+    AudioView, CaptureChoice, FileKind, Images, IoView, OutputActivity, Screen, Switcher, View,
+};
 
 struct Rig {
     switcher: Switcher,
@@ -40,6 +42,8 @@ struct Rig {
     fade_to_black: f32,
     /// Screens the application lists.
     screens: Vec<Screen>,
+    /// Meters of the mixer.
+    levels: fn(Level) -> Option<[MeterReading; 2]>,
 }
 
 impl Rig {
@@ -103,6 +107,7 @@ fn harness(state: State) -> Harness<'static, Rig> {
         folders: Vec::new(),
         fade_to_black: 0.0,
         screens: Vec::new(),
+        levels: |_| None,
     };
     let mut harness = Harness::builder()
         .with_size(Vec2::new(1400.0, 820.0))
@@ -137,6 +142,9 @@ fn harness(state: State) -> Harness<'static, Rig> {
                     frame: 0,
                     fade_to_black: rig.fade_to_black,
                     rejection: None,
+                    audio: AudioView {
+                        levels: &rig.levels,
+                    },
                 };
                 rig.switcher.show(ui, &view);
                 rig.files.extend(rig.switcher.take_file_request());
@@ -917,4 +925,224 @@ fn fullscreen_output_warns_about_its_screen() {
     h.state_mut().screens = screens()[1..].to_vec();
     open_outputs(&mut h);
     assert!(h.query_by_label_contains("Un seul écran").is_some());
+}
+
+// ── Mélangeur (Phase 3 step 4): A11 / C13 (UI side), C7 (meters shown) ──
+
+/// `state()` with a video file, input 5 (« 5 clip »): it has sound.
+fn with_sound() -> State {
+    let mut state = state();
+    state
+        .apply(&Command::AddInput {
+            spec: InputSpec::File {
+                path: "clip.mp4".into(),
+            },
+            name: None,
+        })
+        .unwrap();
+    state
+}
+
+#[test]
+fn mixer_strip_buttons_send_their_commands() {
+    use vma_core::AudioBus;
+    use vma_engine::SoloMode;
+
+    let mut h = harness(with_sound());
+    // Strips: 5 clip, Master, Bus A, Bus B (only the video has sound).
+    assert_eq!(h.get_all_by_label("Suit l'image").count(), 1);
+    let expect = |h: &mut Harness<'_, Rig>, command: Command| {
+        h.run();
+        assert_eq!(h.state().sent(), [command]);
+    };
+    click_button(&h, "Muet", 0);
+    expect(
+        &mut h,
+        Command::SetInputMute {
+            input: id(5),
+            mute: true,
+        },
+    );
+    click_button(&h, "Solo", 0);
+    expect(
+        &mut h,
+        Command::SetInputSolo {
+            input: id(5),
+            solo: true,
+        },
+    );
+    h.get_by_label("M").click();
+    expect(
+        &mut h,
+        Command::SetInputBus {
+            input: id(5),
+            bus: AudioBus::Master,
+            on: false,
+        },
+    );
+    h.get_by_label("A").click();
+    expect(
+        &mut h,
+        Command::SetInputBus {
+            input: id(5),
+            bus: AudioBus::A,
+            on: true,
+        },
+    );
+    h.get_by_label("Suit l'image").click();
+    expect(
+        &mut h,
+        Command::SetAudioFollowVideo {
+            input: id(5),
+            on: false,
+        },
+    );
+    // Mute of the Master strip, then of bus B.
+    click_button(&h, "Muet", 1);
+    expect(
+        &mut h,
+        Command::SetBusMute {
+            bus: AudioBus::Master,
+            mute: true,
+        },
+    );
+    click_button(&h, "Muet", 3);
+    expect(
+        &mut h,
+        Command::SetBusMute {
+            bus: AudioBus::B,
+            mute: true,
+        },
+    );
+    h.get_by_label("PFL").click();
+    expect(
+        &mut h,
+        Command::SetMonitor {
+            device: None,
+            solo_mode: SoloMode::Pfl,
+        },
+    );
+    // The mixer can be hidden.
+    h.get_by_label("Mélangeur").click();
+    h.run();
+    assert_eq!(h.query_all_by_label("Suit l'image").count(), 0);
+    assert!(h.state().sent().is_empty());
+}
+
+#[test]
+fn faders_send_their_level_and_double_click_goes_back_to_zero() {
+    use vma_core::AudioBus;
+    use vma_engine::{Db, MAX_GAIN_DB};
+
+    let mut h = harness(with_sound());
+    let rect = h.get_by_label("Fader 5 clip").rect();
+    let at = |f: f32| egui::pos2(rect.center().x, rect.bottom() - rect.height() * f);
+    h.drag_at(at(0.5));
+    h.run();
+    h.hover_at(at(1.0));
+    h.run();
+    h.hover_at(at(0.0));
+    h.run();
+    h.drop_at(at(0.0));
+    h.run();
+    let levels: Vec<Db> = h
+        .state()
+        .sent()
+        .into_iter()
+        .map(|c| match c {
+            Command::SetInputGain { input, db } if input == id(5) => db,
+            other => panic!("unexpected {other:?}"),
+        })
+        .collect();
+    assert_eq!(levels.first(), Some(&Db::new(-25.0).unwrap()), "{levels:?}");
+    assert!(
+        levels.contains(&Db::new(MAX_GAIN_DB).unwrap()),
+        "{levels:?}"
+    );
+    assert_eq!(levels.last(), Some(&Db::SILENT), "{levels:?}");
+
+    // The state has a level: a double-click sends 0 dB.
+    let mut state = with_sound();
+    state
+        .apply(&Command::SetBusGain {
+            bus: AudioBus::A,
+            db: Db::new(-6.0).unwrap(),
+        })
+        .unwrap();
+    let mut h = harness(state);
+    h.get_by_label("Fader Bus A").click();
+    h.run();
+    h.get_by_label("Fader Bus A").click();
+    h.run();
+    assert!(h.state().sent().contains(&Command::SetBusGain {
+        bus: AudioBus::A,
+        db: Db::ZERO
+    }));
+}
+
+#[test]
+fn the_delay_of_an_input_is_sent() {
+    let mut h = harness(with_sound());
+    let rect = h.get_by_role(Role::SpinButton).rect();
+    h.drag_at(rect.center());
+    h.run();
+    h.hover_at(rect.center() + Vec2::new(40.0, 0.0));
+    h.run();
+    h.drop_at(rect.center() + Vec2::new(40.0, 0.0));
+    h.run();
+    let sent = h.state().sent();
+    assert!(!sent.is_empty());
+    for command in sent {
+        assert!(
+            matches!(command, Command::SetInputDelay { input, ms } if input == id(5) && ms > 0 && ms <= 1_000),
+            "{command:?}"
+        );
+    }
+}
+
+/// C7 (UI side): the meters show what the engine measures; without sound, they say so.
+#[test]
+fn meters_show_the_levels() {
+    use vma_core::AudioBus;
+
+    let mut h = harness(with_sound());
+    h.state_mut().levels = |level| {
+        let sine = MeterReading {
+            peak: [0.5, 0.25],
+            hold: [0.5, 0.5],
+            rms: [0.354, 0.1],
+        };
+        match level {
+            Level::Input(_) | Level::Bus(AudioBus::Master) => Some([sine, sine]),
+            _ => None,
+        }
+    };
+    h.run();
+    h.get_by_label("Vumètre 5 clip : crête −6,0 dB, RMS −9,0 dB");
+    h.get_by_label("Vumètre Master : crête −6,0 dB, RMS −9,0 dB");
+    h.get_by_label("Vumètre Bus A : pas de son");
+    h.get_by_label("Vumètre Casque : pas de son");
+}
+
+#[test]
+fn each_output_chooses_its_bus_while_stopped() {
+    use vma_core::AudioBus;
+
+    let mut h = harness(state());
+    open_outputs(&mut h);
+    click_button(&h, "Bus A", 0);
+    h.run();
+    assert_eq!(
+        h.state().sent(),
+        [Command::SetOutputBus {
+            output: REC,
+            bus: AudioBus::A
+        }]
+    );
+    // Running: the choice is frozen.
+    let mut h = harness(running(state(), false));
+    open_outputs(&mut h);
+    click_button(&h, "Bus B", 0);
+    h.run();
+    assert!(h.state().sent().is_empty());
 }

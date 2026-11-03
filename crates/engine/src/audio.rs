@@ -23,16 +23,17 @@
 //! another latency restarts the smoothing.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::thread::JoinHandle;
 
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, TrySendError};
 use vma_audio::{
-    CHANNELS, InputReader, MAX_BLOCK, MixMeters, MixParams, Mixer, RING_FRAMES, RingReader,
-    RingWriter, StripInput, StripParams, equal_power, ring,
+    BusParams, CHANNELS, InputReader, MAX_BLOCK, MeterReading, MixMeters, MixParams, Mixer,
+    RING_FRAMES, RingReader, RingWriter, StripInput, StripParams, equal_power, ring,
 };
 use vma_core::{AudioBus, FrameRate, InputId};
 
+use crate::audio_plan::{AudioPlan, AudioPlanReader};
 use crate::outputs::audio_sample_at;
 use crate::state::MAX_INPUTS;
 
@@ -140,6 +141,45 @@ impl AudioStats {
     }
 }
 
+/// What a meter of the mixer measures.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Level {
+    /// An input, after its fader and mute.
+    Input(InputId),
+    /// A bus, after its fader and mute.
+    Bus(AudioBus),
+    Headphones,
+}
+
+/// The meters of the mixer, for the UI: read without a lock, at its own pace.
+#[derive(Debug, Clone)]
+pub struct AudioMeters {
+    mix: Arc<MixMeters>,
+    /// The input of each slot of the mixer: its id + 1, 0 for a free slot.
+    slots: Arc<[AtomicU32]>,
+}
+
+impl AudioMeters {
+    /// Before and after fader; `None` for an input without a strip (no sound received).
+    pub fn read(&self, level: Level) -> Option<[MeterReading; 2]> {
+        let pair = |cells: &[vma_audio::MeterCell; 2]| cells.each_ref().map(|c| c.load());
+        match level {
+            Level::Input(input) => {
+                let slot = self
+                    .slots
+                    .iter()
+                    .position(|s| s.load(Ordering::Acquire) == input.0.wrapping_add(1))?;
+                self.mix.inputs.get(slot).map(pair)
+            }
+            Level::Bus(bus) => self.mix.buses.get(bus.index()).map(pair),
+            Level::Headphones => {
+                let r = self.mix.headphones.load();
+                Some([r, r])
+            }
+        }
+    }
+}
+
 /// Latency of an input's pictures (tick − picture), smoothed.
 #[derive(Debug, Clone, Copy, Default)]
 struct Latency {
@@ -192,6 +232,11 @@ pub(crate) struct AudioMix {
     rate: FrameRate,
     period_ns: u64,
     strips: Box<[Option<Strip>]>,
+    /// Published input of each strip, for [`AudioMeters`].
+    slots: Arc<[AtomicU32]>,
+    plan: AudioPlanReader,
+    /// The latest audio plan read.
+    params: AudioPlan,
     mixer: Mixer,
     buses: [RingWriter; 3],
     /// Output sample index of the next sample written.
@@ -211,14 +256,16 @@ pub(crate) struct AudioMix {
 #[derive(Debug)]
 pub struct BusReaders {
     pub master: RingReader,
-    #[expect(dead_code, reason = "each output chooses its bus at step 4 of Phase 3")]
     pub a: RingReader,
-    #[expect(dead_code, reason = "each output chooses its bus at step 4 of Phase 3")]
     pub b: RingReader,
 }
 
 impl AudioMix {
-    pub(crate) fn new(rate: FrameRate, stats: Arc<AudioStats>) -> (Self, BusReaders) {
+    pub(crate) fn new(
+        rate: FrameRate,
+        stats: Arc<AudioStats>,
+        plan: AudioPlanReader,
+    ) -> (Self, BusReaders) {
         let (master_w, master) = ring(RING_FRAMES);
         let (a_w, a) = ring(RING_FRAMES);
         let (b_w, b) = ring(RING_FRAMES);
@@ -227,6 +274,9 @@ impl AudioMix {
             rate,
             period_ns,
             strips: (0..MAX_INPUTS).map(|_| None).collect(),
+            slots: (0..MAX_INPUTS).map(|_| AtomicU32::new(0)).collect(),
+            params: plan.read().unwrap_or_default(),
+            plan,
             mixer: Mixer::new(MAX_INPUTS),
             buses: [master_w, a_w, b_w],
             next_sample: None,
@@ -241,8 +291,17 @@ impl AudioMix {
         (mix, BusReaders { master, a, b })
     }
 
-    pub(crate) fn meters(&self) -> Arc<MixMeters> {
-        self.mixer.meters()
+    pub(crate) fn meters(&self) -> AudioMeters {
+        AudioMeters {
+            mix: self.mixer.meters(),
+            slots: Arc::clone(&self.slots),
+        }
+    }
+
+    fn publish_slot(&self, slot: usize, input: Option<InputId>) {
+        if let Some(cell) = self.slots.get(slot) {
+            cell.store(input.map_or(0, |i| i.0.wrapping_add(1)), Ordering::Release);
+        }
     }
 
     /// The sound of `input` now comes from `ring` (a new pipeline replaces the old one).
@@ -259,8 +318,11 @@ impl AudioMix {
             .iter()
             .position(|s| s.as_ref().is_some_and(|s| s.input == input))
             .or_else(|| self.strips.iter().position(Option::is_none));
-        match slot.and_then(|s| self.strips.get_mut(s)) {
-            Some(entry) => *entry = Some(strip),
+        match slot.and_then(|s| Some((s, self.strips.get_mut(s)?))) {
+            Some((slot, entry)) => {
+                *entry = Some(strip);
+                self.publish_slot(slot, Some(input));
+            }
             None => tracing::error!(%input, "audio strips full"),
         }
     }
@@ -355,7 +417,10 @@ impl AudioMix {
         }
         let frames = (end - start).min(MAX_BLOCK as u64) as usize;
         let len = frames * CHANNELS;
-        for slot in self.strips.iter_mut() {
+        if let Some(plan) = self.plan.read() {
+            self.params = plan;
+        }
+        for (index, slot) in self.strips.iter_mut().enumerate() {
             let Some(strip) = slot else {
                 continue;
             };
@@ -368,31 +433,55 @@ impl AudioMix {
             match reading {
                 Some(at) => {
                     strip.unseen = 0;
+                    let delay_ns = self
+                        .params
+                        .input(strip.input)
+                        .map_or(0, |a| u64::from(a.delay_ms) * 1_000_000);
                     if let Some(block) = strip.block.get_mut(..len) {
-                        strip.reader.read(at, block);
+                        strip.reader.read(at.saturating_sub(delay_ns), block);
                     }
                 }
                 None => {
                     strip.unseen += 1;
                     if strip.unseen > FORGET_TICKS {
                         *slot = None;
+                        if let Some(cell) = self.slots.get(index) {
+                            cell.store(0, Ordering::Release);
+                        }
                     }
                 }
             }
         }
         let on_air = tick.on_air;
+        let params = &self.params;
+        // An input without sound settings (removed meanwhile) is not mixed.
         let inputs = self.strips.iter().enumerate().filter_map(|(slot, s)| {
             let s = s.as_ref().filter(|s| s.unseen == 0)?;
+            let audio = params.input(s.input)?;
             Some(StripInput {
                 slot,
                 samples: s.block.get(..len).unwrap_or_default(),
                 params: StripParams {
-                    on_air: on_air.share(s.input),
-                    ..StripParams::default()
+                    gain_db: audio.gain.get(),
+                    mute: audio.mute,
+                    solo: audio.solo,
+                    sends: audio.sends,
+                    on_air: if audio.follow_video {
+                        on_air.share(s.input)
+                    } else {
+                        1.0
+                    },
                 },
             })
         });
-        self.mixer.mix(frames, inputs, &MixParams::default());
+        let mix = MixParams {
+            buses: params.buses.map(|b| BusParams {
+                gain_db: b.gain.get(),
+                mute: b.mute,
+            }),
+            solo_mode: params.solo_mode,
+        };
+        self.mixer.mix(frames, inputs, &mix);
         for bus in AudioBus::ALL {
             if let Some(writer) = self.buses.get_mut(bus.index()) {
                 writer.push(tick.tick_ns, self.mixer.bus(bus));
@@ -435,15 +524,15 @@ pub(crate) struct AudioThread {
     pub(crate) ticks: TickSender,
     pub(crate) rings: RingAttacher,
     pub(crate) buses: BusReaders,
-    pub(crate) meters: Arc<MixMeters>,
+    pub(crate) meters: AudioMeters,
     pub(crate) stats: Arc<AudioStats>,
     pub(crate) thread: JoinHandle<()>,
 }
 
 /// Spawns `vma-audio`. It ends when the render thread drops its [`TickSender`].
-pub(crate) fn spawn(rate: FrameRate) -> std::io::Result<AudioThread> {
+pub(crate) fn spawn(rate: FrameRate, plan: AudioPlanReader) -> std::io::Result<AudioThread> {
     let stats = Arc::new(AudioStats::default());
-    let (mut mix, buses) = AudioMix::new(rate, Arc::clone(&stats));
+    let (mut mix, buses) = AudioMix::new(rate, Arc::clone(&stats), plan);
     let meters = mix.meters();
     let (tx, ticks) = crossbeam_channel::bounded(TICK_QUEUE);
     let (attach_tx, attach) = crossbeam_channel::bounded(ATTACH_QUEUE);
@@ -482,6 +571,9 @@ fn run(mix: &mut AudioMix, ticks: &Receiver<AudioTick>, attach: &Receiver<(Input
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::audio_plan::audio_plan_channel;
+    use crate::command::{Db, InputSpec};
+    use crate::state::InputAudio;
 
     const MS: u64 = 1_000_000;
     const START: u64 = 1_000_000_000_000;
@@ -519,14 +611,58 @@ mod tests {
         }
     }
 
+    /// The audio settings of a new video file.
+    fn default_audio() -> InputAudio {
+        InputAudio::for_spec(&InputSpec::File {
+            path: "clip.mkv".into(),
+        })
+    }
+
+    /// An audio plan with `inputs`.
+    fn plan_of(inputs: &[(InputId, InputAudio)]) -> AudioPlan {
+        let mut plan = AudioPlan::default();
+        for (entry, input) in plan.inputs.iter_mut().zip(inputs) {
+            *entry = Some(*input);
+        }
+        plan
+    }
+
     fn beep_every_second(s: u64) -> f32 {
         if s % 48_000 < 4_800 { 0.5 } else { 0.0 }
     }
 
     /// Runs `ticks` 50p ticks with one source; returns the Master, from sample 0.
     fn play(fps: u64, latency_ns: u64, ticks: u64, on_air: OnAir, skip: &[u64]) -> Vec<f32> {
+        play_with(
+            fps,
+            latency_ns,
+            ticks,
+            on_air,
+            skip,
+            default_audio(),
+            AudioBus::Master,
+        )
+    }
+
+    /// [`play`] with the settings `audio` of the source; returns the bus `bus`.
+    fn play_with(
+        fps: u64,
+        latency_ns: u64,
+        ticks: u64,
+        on_air: OnAir,
+        skip: &[u64],
+        audio: InputAudio,
+        bus: AudioBus,
+    ) -> Vec<f32> {
         let rate = FrameRate::FPS_50;
-        let (mut mix, buses) = AudioMix::new(rate, Arc::default());
+        let (writer, plan) = audio_plan_channel();
+        writer.publish(&plan_of(&[(InputId(3), audio)]));
+        let (mut mix, buses) = AudioMix::new(rate, Arc::default(), plan);
+        let ring_of = |b: AudioBus| match b {
+            AudioBus::Master => &buses.master,
+            AudioBus::A => &buses.a,
+            AudioBus::B => &buses.b,
+        };
         let (writer, reader) = ring(RING_FRAMES);
         mix.attach(InputId(3), reader);
         let mut source = Source {
@@ -546,9 +682,9 @@ mod tests {
             let mut tick = AudioTick::new(n, tick_ns, on_air);
             tick.shown[5] = Some((InputId(3), source.picture(tick_ns, latency_ns)));
             mix.tick(&tick);
-            let written = buses.master.written();
+            let written = ring_of(bus).written();
             let mut out = vec![0.0f32; 2 * (written - read) as usize];
-            assert!(buses.master.read(read as i64, &mut out).is_complete());
+            assert!(ring_of(bus).read(read as i64, &mut out).is_complete());
             master.extend(out.iter().step_by(2));
             read = written;
             // Mixed MIX_DELAY_TICKS later (a rebuilt tick waits for the next one received).
@@ -654,6 +790,111 @@ mod tests {
         );
         let peak = half.iter().fold(0.0f32, |m, &v| m.max(v));
         assert!((peak - 0.5 * equal_power(0.5).1).abs() < 1e-4, "{peak}");
+    }
+
+    fn peak(samples: &[f32]) -> f32 {
+        samples.iter().fold(0.0f32, |m, &v| m.max(v.abs()))
+    }
+
+    /// The settings of the audio plan reach the mix: fader, mute, sends, audio-follow-video
+    /// off, delay (C2, engine side: to a sample).
+    #[test]
+    fn the_audio_plan_shapes_the_sound() {
+        let on_air = OnAir {
+            from: Some(InputId(3)),
+            to: None,
+            mix: 0.0,
+        };
+        let off_air = OnAir {
+            from: Some(InputId(9)),
+            ..on_air
+        };
+        let run = |on_air, audio, bus| play_with(50, 20 * MS, 200, on_air, &[], audio, bus);
+        let base = default_audio();
+        let reference = run(on_air, base, AudioBus::Master);
+        assert!((peak(&reference) - 0.5).abs() < 1e-4);
+        let half = InputAudio {
+            gain: Db::new(-6.0).unwrap(),
+            ..base
+        };
+        let want = 0.5 * vma_audio::db_to_gain(-6.0);
+        assert!((peak(&run(on_air, half, AudioBus::Master)) - want).abs() < 1e-4);
+        let muted = InputAudio { mute: true, ..base };
+        assert_eq!(peak(&run(on_air, muted, AudioBus::Master)), 0.0);
+        // Sent to A only: nothing in the Master; A does not follow the video.
+        let to_a = InputAudio {
+            sends: [false, true, false],
+            ..base
+        };
+        assert_eq!(peak(&run(on_air, to_a, AudioBus::Master)), 0.0);
+        assert!((peak(&run(off_air, to_a, AudioBus::A)) - 0.5).abs() < 1e-4);
+        assert_eq!(peak(&run(on_air, base, AudioBus::B)), 0.0);
+        // Audio-follow-video off: heard off air.
+        assert_eq!(peak(&run(off_air, base, AudioBus::Master)), 0.0);
+        let always = InputAudio {
+            follow_video: false,
+            ..base
+        };
+        assert!((peak(&run(off_air, always, AudioBus::Master)) - 0.5).abs() < 1e-4);
+        // Delayed by 80 ms: every beep 3 840 samples later.
+        let delayed = InputAudio {
+            delay_ms: 80,
+            ..base
+        };
+        let (early, late) = (
+            onsets(&reference),
+            onsets(&run(on_air, delayed, AudioBus::Master)),
+        );
+        assert!(early.len() >= 3, "{early:?}");
+        for (e, l) in early.iter().zip(&late).skip(1) {
+            assert!(
+                (*l as i64 - *e as i64 - 3_840).abs() <= 2,
+                "{early:?} {late:?}"
+            );
+        }
+    }
+
+    /// An input without sound settings (removed meanwhile) is not mixed; the meters of an
+    /// input are found by its id once it has a strip.
+    #[test]
+    fn meters_by_input_and_inputs_without_settings() {
+        let rate = FrameRate::FPS_50;
+        let (writer, plan) = audio_plan_channel();
+        let (mut mix, buses) = AudioMix::new(rate, Arc::default(), plan);
+        let meters = mix.meters();
+        let (mut ring_writer, reader) = ring(RING_FRAMES);
+        mix.attach(InputId(7), reader);
+        assert!(meters.read(Level::Input(InputId(8))).is_none());
+        let level = |mix: &mut AudioMix, ring_writer: &mut RingWriter, from: u64, to: u64| {
+            for n in from..to {
+                let tick_ns = START + n * 20 * MS;
+                let block = vec![0.25f32; 2 * 960];
+                ring_writer.push(tick_ns, &block);
+                let mut tick = AudioTick::new(
+                    n,
+                    tick_ns + 40 * MS,
+                    OnAir {
+                        from: Some(InputId(7)),
+                        to: None,
+                        mix: 0.0,
+                    },
+                );
+                tick.shown[0] = Some((InputId(7), tick_ns));
+                mix.tick(&tick);
+            }
+        };
+        // No settings: silent.
+        level(&mut mix, &mut ring_writer, 0, 60);
+        let mut out = vec![0.0f32; 2 * buses.master.written() as usize];
+        buses.master.read(0, &mut out);
+        assert_eq!(peak(&out), 0.0);
+        writer.publish(&plan_of(&[(InputId(7), default_audio())]));
+        level(&mut mix, &mut ring_writer, 60, 120);
+        let [pre, post] = meters.read(Level::Input(InputId(7))).unwrap();
+        assert!((pre.peak[0] - 0.25).abs() < 1e-4, "{pre:?}");
+        assert!((post.rms[1] - 0.25).abs() < 1e-3, "{post:?}");
+        let [_, master] = meters.read(Level::Bus(AudioBus::Master)).unwrap();
+        assert!((master.peak[0] - 0.25).abs() < 1e-4, "{master:?}");
     }
 
     #[test]

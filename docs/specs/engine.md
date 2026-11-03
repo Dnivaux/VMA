@@ -171,3 +171,24 @@ Voir l'ADR 0006 (§§ 1–3, 5 et « Mise en œuvre côté moteur »).
 | C1 : source de synchro → Program → enregistrement relu, < 1 image, aux 6 cadences maîtres (source à une autre cadence) | `io-gst` : `outputs::tests::lip_sync_*` (6 tests) | CI |
 | C2 (1re moitié) : son en avance de 80 ms mesuré −80 ms à une image près | `io-gst` : `outputs::tests::early_sound_is_measured_early` | CI |
 | C3 (temps réel) : ± 100 ppm pendant 60 s, < 1 image, sans trou | `io-gst` : `outputs::tests::drifting_sources_stay_in_sync_for_a_minute` | CI |
+
+## Phase 3 — Réglages audio et bus des sorties (étape 4, 2026-11-03)
+- **`vma-audio`** lit le plan audio (`AudioPlanReader`, seqlock) avant chaque bloc : fader,
+  mute, solo, envois de chaque input, fader et mute des bus, mode de solo ; temps de lecture
+  d'un input = temps de l'image affichée − son **décalage** ; audio-follow-video désactivé →
+  part à l'antenne 1. Un input sans réglages dans le plan n'est pas mixé.
+- **Vumètres** : `RenderEngine::audio_meters()` → `AudioMeters::read(Level)` (input, bus,
+  casque ; avant et après fader). Les vumètres du mixeur sont rangés par case ; la case de
+  chaque input est publiée dans des atomiques, l'UI retrouve celle d'un input sans verrou.
+- **`vma-output`** lit les **trois** anneaux de bus : `OutputFrame::buses` (Master, A, B ;
+  `OutputFrame::audio(bus)`), chaque sortie prend le sien (`OutputFeed::with_bus`, gardé par
+  les reconnexions d'un stream). L'image attend que le dernier bus écrit (B) ait son son.
+  `--sync-test` : le bip sur les trois bus.
+
+### Critères (étape 4)
+| Critère | Test | Statut |
+|---|---|---|
+| Les réglages du plan façonnent le son : −6 dB, mute, envoi vers A seul (A ne suit pas l'image), audio-follow-video désactivé, décalage de 80 ms à 2 échantillons près | `audio::tests::the_audio_plan_shapes_the_sound` | CI |
+| Input sans réglages : non mixé ; vumètres d'un input retrouvés par son identifiant, avant / après fader, et du Master | `audio::tests::meters_by_input_and_inputs_without_settings` | CI |
+| **C2 (2de moitié)** : son en avance de 80 ms, input décalé de 80 ms → < 1 image ; décalage appliqué à ± 1 ms (mesuré : 80,13 ms) | `io-gst` : `outputs::tests::a_delayed_input_is_back_in_sync` | CI (Linux) |
+| Un enregistrement du bus A porte le son envoyé au bus A seul, synchro < 1 image | `io-gst` : `outputs::tests::a_recording_carries_its_bus` | CI (Linux) |

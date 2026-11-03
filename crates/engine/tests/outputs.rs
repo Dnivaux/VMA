@@ -123,7 +123,7 @@ impl OutputConsumer for Collect {
             white: luma.iter().all(|&y| y == 235),
             black: luma.iter().all(|&y| y == 16) && frame.chroma().iter().all(|&c| c == 128),
             audio: frame
-                .audio
+                .audio(vma_core::AudioBus::Master)
                 .iter()
                 .step_by(AUDIO_CHANNELS)
                 .copied()

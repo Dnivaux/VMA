@@ -9,6 +9,7 @@
 //!   every attached [`OutputConsumer`] ([`OutputHub`]).
 
 mod audio;
+mod audio_plan;
 mod command;
 mod control;
 mod feed;
@@ -25,10 +26,11 @@ mod stats;
 mod timeline;
 mod triple;
 
-pub use audio::{AudioStatsSnapshot, MIX_DELAY_TICKS};
+pub use audio::{AudioMeters, AudioStatsSnapshot, Level, MIX_DELAY_TICKS};
+pub use audio_plan::AudioPlan;
 pub use command::{
-    AutoPlay, Command, CommandId, DeviceId, Effect, InputSpec, MAX_TRANSITION_MS, MixDomain,
-    Source, TRANSITION_BUTTONS, TransitionSetting,
+    AutoPlay, Command, CommandId, Db, DeviceId, Effect, InputSpec, MAX_AUDIO_DELAY_MS,
+    MAX_TRANSITION_MS, MixDomain, Source, TRANSITION_BUTTONS, TransitionSetting,
 };
 pub use control::{
     CommandProbe, CommandSender, ControlStats, InputFeedStats, InputStatsReader, IoEvent,
@@ -49,9 +51,10 @@ pub use plan::{PlanFtb, PlanProgress, PlanReader, PlanTransition, RenderPlan};
 pub use render::{EngineConfig, EngineError, FrameReader, IoPort, Readers, RenderEngine};
 pub use sequencer::{Composition, OnAir, RenderFeedback, Sequencer};
 pub use state::{
-    Ending, Event, FadeToBlack, Format, InputState, InputStatus, IoRequest, MAX_INPUTS,
-    MAX_NAME_CHARS, OutputState, OutputStatus, Playback, Rejection, SourceFormat, State,
-    TransitionState,
+    AudioState, BusState, Ending, Event, FadeToBlack, Format, InputAudio, InputState, InputStatus,
+    IoRequest, MAX_INPUTS, MAX_NAME_CHARS, Monitor, OutputState, OutputStatus, Playback, Rejection,
+    SourceFormat, State, TransitionState,
 };
 pub use stats::{RenderCpuSummary, RenderStats, RenderStatsSnapshot};
 pub use timeline::{Timeline, Timelines};
+pub use vma_audio::{MAX_GAIN_DB, MeterReading, SoloMode, to_db};

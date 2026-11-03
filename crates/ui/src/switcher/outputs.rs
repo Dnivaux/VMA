@@ -10,12 +10,13 @@ use std::path::PathBuf;
 
 use egui::{Color32, RichText, Vec2};
 use vma_core::FrameRate;
-use vma_core::{Container, OutputId, VideoCodec};
+use vma_core::{AudioBus, Container, OutputId, VideoCodec};
 use vma_engine::{
     Command, FullscreenSpec, MAX_OUTPUTS, MAX_TRANSITION_MS, OutputSpec, OutputState, OutputStatus,
     RecordSpec, RtmpSpec, STREAM_SLOTS, Secret, SrtMode, SrtSpec, VIDEO_KBPS_RANGE,
 };
 
+use super::mixer::bus_name;
 use super::{Switcher, View, WARNING};
 use crate::output_stats::{duration, kind_label, status_label};
 use crate::{Screen, default_screen, screen_index};
@@ -242,6 +243,22 @@ impl Switcher {
                 view.state.format.rate,
                 output.status.is_on(),
             );
+        }
+        if !output.spec.is_fullscreen() {
+            ui.horizontal(|ui| {
+                ui.label("Son :");
+                ui.add_enabled_ui(!output.status.is_active(), |ui| {
+                    for bus in AudioBus::ALL {
+                        if ui
+                            .selectable_label(output.bus == bus, bus_name(bus))
+                            .clicked()
+                            && output.bus != bus
+                        {
+                            self.send(ui, view, Command::SetOutputBus { output: id, bus });
+                        }
+                    }
+                });
+            });
         }
         if output.status.is_active() {
             self.outputs.forget(id);

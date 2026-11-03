@@ -139,27 +139,76 @@ impl RenderPlan {
     }
 }
 
-#[derive(Debug, Default)]
-struct PlanCell {
+/// A seqlock of `N` words: one writer, wait-free readers that retry when a write overlapped
+/// their read. Shared by the render plan and the audio plan.
+#[derive(Debug)]
+pub(crate) struct SeqLock<const N: usize> {
     /// Odd while a write is in progress.
     seq: AtomicU64,
-    words: [AtomicU64; WORDS],
+    words: [AtomicU64; N],
+}
+
+impl<const N: usize> Default for SeqLock<N> {
+    fn default() -> Self {
+        Self {
+            seq: AtomicU64::new(0),
+            words: std::array::from_fn(|_| AtomicU64::new(0)),
+        }
+    }
+}
+
+impl<const N: usize> SeqLock<N> {
+    /// Attempts before giving up on a read that keeps overlapping writes.
+    const TRIES: usize = 8;
+
+    /// Only one thread may write.
+    pub(crate) fn write(&self, words: &[u64; N]) {
+        let seq = self.seq.load(Ordering::Relaxed);
+        self.seq.store(seq.wrapping_add(1), Ordering::Relaxed);
+        // Orders the odd sequence before the data stores.
+        fence(Ordering::Release);
+        for (slot, &word) in self.words.iter().zip(words) {
+            slot.store(word, Ordering::Relaxed);
+        }
+        self.seq.store(seq.wrapping_add(2), Ordering::Release);
+    }
+
+    /// The latest consistent words, or `None` if every try overlapped a write.
+    pub(crate) fn read(&self) -> Option<[u64; N]> {
+        for _ in 0..Self::TRIES {
+            let before = self.seq.load(Ordering::Acquire);
+            if before % 2 == 1 {
+                std::hint::spin_loop();
+                continue;
+            }
+            let mut words = [0u64; N];
+            for (word, slot) in words.iter_mut().zip(&self.words) {
+                *word = slot.load(Ordering::Relaxed);
+            }
+            // Orders the data loads before the second sequence load.
+            fence(Ordering::Acquire);
+            if self.seq.load(Ordering::Relaxed) == before {
+                return Some(words);
+            }
+        }
+        None
+    }
 }
 
 /// Single writer of the plan (`vma-control`).
 #[derive(Debug)]
 pub(crate) struct PlanWriter {
-    cell: Arc<PlanCell>,
+    cell: Arc<SeqLock<WORDS>>,
 }
 
 /// Wait-free reader of the plan (render thread). Clonable for tests and the UI.
 #[derive(Debug, Clone)]
 pub struct PlanReader {
-    cell: Arc<PlanCell>,
+    cell: Arc<SeqLock<WORDS>>,
 }
 
 pub(crate) fn plan_channel() -> (PlanWriter, PlanReader) {
-    let cell = Arc::new(PlanCell::default());
+    let cell = Arc::new(SeqLock::default());
     (
         PlanWriter {
             cell: Arc::clone(&cell),
@@ -170,43 +219,15 @@ pub(crate) fn plan_channel() -> (PlanWriter, PlanReader) {
 
 impl PlanWriter {
     pub(crate) fn publish(&self, plan: &RenderPlan) {
-        let cell = &*self.cell;
-        let seq = cell.seq.load(Ordering::Relaxed);
-        cell.seq.store(seq.wrapping_add(1), Ordering::Relaxed);
-        // Orders the odd sequence before the data stores.
-        fence(Ordering::Release);
-        for (slot, word) in cell.words.iter().zip(plan.encode()) {
-            slot.store(word, Ordering::Relaxed);
-        }
-        cell.seq.store(seq.wrapping_add(2), Ordering::Release);
+        self.cell.write(&plan.encode());
     }
 }
 
 impl PlanReader {
-    /// Attempts before giving up on a read that keeps overlapping writes.
-    const TRIES: usize = 8;
-
     /// The latest consistent plan, or `None` if every try overlapped a write (the caller
     /// keeps its previous plan).
     pub fn read(&self) -> Option<RenderPlan> {
-        let cell = &*self.cell;
-        for _ in 0..Self::TRIES {
-            let before = cell.seq.load(Ordering::Acquire);
-            if before % 2 == 1 {
-                std::hint::spin_loop();
-                continue;
-            }
-            let mut words = [0u64; WORDS];
-            for (word, slot) in words.iter_mut().zip(&cell.words) {
-                *word = slot.load(Ordering::Relaxed);
-            }
-            // Orders the data loads before the second sequence load.
-            fence(Ordering::Acquire);
-            if cell.seq.load(Ordering::Relaxed) == before {
-                return Some(RenderPlan::decode(words));
-            }
-        }
-        None
+        self.cell.read().map(RenderPlan::decode)
     }
 }
 

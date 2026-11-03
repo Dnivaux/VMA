@@ -1,5 +1,5 @@
 //! Outputs, engine side (ADR 0006 §§ 2, 3, 5): the `vma-output` thread turns each read-back
-//! frame into an [`OutputFrame`] — NV12 picture, timestamps from *n*, generated audio — and
+//! frame into an [`OutputFrame`] — NV12 picture, timestamps from *n*, the sound of the buses — and
 //! hands the same frame (shared, read-only) to every attached [`OutputConsumer`].
 //!
 //! - One copy per frame (mapped buffer → pooled `OutputFrame`), whatever the number of outputs.
@@ -11,14 +11,14 @@
 //! - GPU lost (ADR 0006 § 7): the render thread sends [`Delivery::Black`] on every tick, and
 //!   the outputs get a black picture with the PTS and audio of *n*, until they are finalised.
 
+use crate::audio::BusReaders;
 use crate::readback::{Nv12Layout, Ready, Ring};
 use crossbeam_channel::{Receiver, Sender, TrySendError};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
-use vma_audio::RingReader;
-use vma_core::{FrameRate, OutputId, Resolution};
+use vma_core::{AudioBus, FrameRate, OutputId, Resolution};
 
 /// Sample rate of the output audio track.
 pub const AUDIO_RATE: u32 = 48_000;
@@ -99,9 +99,10 @@ pub struct OutputFrame {
     pub nv12: Vec<u8>,
     /// Index (in samples since frame 0) of the first audio sample carried.
     pub audio_first_sample: u64,
-    /// Interleaved stereo `f32` samples, from `audio_first_sample` to the start of frame
-    /// `index + 1`.
-    pub audio: Vec<f32>,
+    /// The sound of each bus ([`AudioBus::index`]): interleaved stereo `f32` samples, from
+    /// `audio_first_sample` to the start of frame `index + 1`. Each output takes its bus
+    /// ([`Self::audio`]).
+    pub buses: [Vec<f32>; 3],
     /// The audio does not follow the previous frame's (first frame, or a gap over a second).
     pub discont: bool,
 }
@@ -115,7 +116,7 @@ impl OutputFrame {
             resolution,
             nv12: vec![0; Nv12Layout::new(resolution).packed_len()],
             audio_first_sample: 0,
-            audio: Vec::new(),
+            buses: Default::default(),
             discont: false,
         }
     }
@@ -140,38 +141,47 @@ impl OutputFrame {
         self.nv12.get(len..).unwrap_or(&[])
     }
 
-    /// Audio samples carried, per channel.
+    /// The sound of `bus`.
+    pub fn audio(&self, bus: AudioBus) -> &[f32] {
+        self.buses
+            .get(bus.index())
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+    }
+
+    /// Audio samples carried, per channel (the same for every bus).
     pub fn audio_samples(&self) -> u64 {
-        (self.audio.len() / AUDIO_CHANNELS) as u64
+        (self.audio(AudioBus::Master).len() / AUDIO_CHANNELS) as u64
     }
 }
 
-/// Fills the audio of successive frames: the sync beep, the Master of the mixer (by output
-/// sample index), or silence.
+/// Fills the audio of successive frames: the buses of the mixer (by output sample index), the
+/// sync beep on every bus, or silence.
 #[derive(Debug)]
 struct AudioTrack {
     rate: FrameRate,
     sync: Option<SyncTest>,
-    master: Option<RingReader>,
+    buses: Option<BusReaders>,
     /// First sample not yet delivered.
     next: Option<u64>,
 }
 
 impl AudioTrack {
-    fn new(rate: FrameRate, sync: Option<SyncTest>, master: Option<RingReader>) -> Self {
+    fn new(rate: FrameRate, sync: Option<SyncTest>, buses: Option<BusReaders>) -> Self {
         Self {
             rate,
             sync,
-            master: master.filter(|_| sync.is_none()),
+            buses: buses.filter(|_| sync.is_none()),
             next: None,
         }
     }
 
-    /// Whether the sound of frame `n` is ready (always, unless it comes from the mixer).
+    /// Whether the sound of frame `n` is ready (always, unless it comes from the mixer). The
+    /// mixer writes the three buses one after the other: the last one tells.
     fn ready(&self, n: u64) -> bool {
-        self.master
+        self.buses
             .as_ref()
-            .is_none_or(|m| m.written() >= audio_sample_at(self.rate, n.saturating_add(1)))
+            .is_none_or(|b| b.b.written() >= audio_sample_at(self.rate, n.saturating_add(1)))
     }
 
     /// Writes the audio of frame `n` (and of the frames skipped since the previous one, up to
@@ -187,15 +197,25 @@ impl AudioTrack {
         };
         frame.discont = self.next != Some(first);
         frame.audio_first_sample = first;
-        frame.audio.clear();
-        if let Some(master) = &self.master {
-            frame
-                .audio
-                .resize((end - first) as usize * AUDIO_CHANNELS, 0.0);
-            let outcome = master.read(i64::try_from(first).unwrap_or(i64::MAX), &mut frame.audio);
-            self.next = Some(end);
-            return (outcome.missing + outcome.overwritten) as u64;
+        for bus in &mut frame.buses {
+            bus.clear();
         }
+        if let Some(buses) = &self.buses {
+            let len = (end - first) as usize * AUDIO_CHANNELS;
+            let at = i64::try_from(first).unwrap_or(i64::MAX);
+            let mut late = 0;
+            for (ring, out) in [&buses.master, &buses.a, &buses.b]
+                .into_iter()
+                .zip(&mut frame.buses)
+            {
+                out.resize(len, 0.0);
+                let outcome = ring.read(at, out);
+                late = late.max((outcome.missing + outcome.overwritten) as u64);
+            }
+            self.next = Some(end);
+            return late;
+        }
+        let [master, others @ ..] = &mut frame.buses;
         // Frame containing the first sample, then walk forward to `n`.
         let mut k = n - frames_back_to(rate, n, first);
         let mut k_end = audio_sample_at(rate, k + 1);
@@ -205,7 +225,10 @@ impl AudioTrack {
                 k_end = audio_sample_at(rate, k + 1);
             }
             let v = self.sync.map_or(0.0, |sync| sync.sample(rate, k, s));
-            frame.audio.extend_from_slice(&[v; AUDIO_CHANNELS]);
+            master.extend_from_slice(&[v; AUDIO_CHANNELS]);
+        }
+        for other in others {
+            other.extend_from_slice(master);
         }
         self.next = Some(end);
         0
@@ -403,7 +426,7 @@ pub(crate) fn spawn(
     settings: OutputSettings,
     ring: Arc<Ring>,
     frames: Receiver<Delivery>,
-    master: Option<RingReader>,
+    buses: Option<BusReaders>,
 ) -> std::io::Result<(OutputHub, ActiveOutputs, JoinHandle<()>)> {
     let shared = Arc::new(HubShared::default());
     let (tx, control) = crossbeam_channel::unbounded();
@@ -411,7 +434,7 @@ pub(crate) fn spawn(
         settings,
         ring,
         shared: Arc::clone(&shared),
-        audio: AudioTrack::new(settings.rate, settings.sync, master),
+        audio: AudioTrack::new(settings.rate, settings.sync, buses),
         held: std::collections::VecDeque::with_capacity(HELD_MAX + 1),
         pool: Vec::with_capacity(POOL_MAX),
         attached: Vec::new(),
@@ -722,7 +745,10 @@ mod tests {
                 out.audio_first_sample + out.audio_samples(),
                 audio_sample_at(rate, n + 1)
             );
-            assert!(out.audio.iter().all(|&v| v == 0.0), "silence");
+            assert!(
+                out.audio(AudioBus::Master).iter().all(|&v| v == 0.0),
+                "silence"
+            );
         }
         // Frame 15 carried 13 and 14 as well.
         assert_eq!(
@@ -746,7 +772,12 @@ mod tests {
             let mut samples = Vec::new();
             for n in 0..sync.period * 2 + 1 {
                 track.fill(n, &mut out);
-                samples.extend(out.audio.iter().step_by(AUDIO_CHANNELS).copied());
+                samples.extend(
+                    out.audio(AudioBus::Master)
+                        .iter()
+                        .step_by(AUDIO_CHANNELS)
+                        .copied(),
+                );
             }
             for flash in [0, sync.period, sync.period * 2] {
                 let start = audio_sample_at(rate, flash) as usize;

@@ -71,7 +71,7 @@ fn frame(format: OutputFormat, n: u64, first_sample: u64, discont: bool) -> Arc<
         resolution: format.resolution,
         nv12,
         audio_first_sample: first_sample,
-        audio: vec![0.0; (end - first_sample) as usize * AUDIO_CHANNELS],
+        buses: std::array::from_fn(|_| vec![0.0; (end - first_sample) as usize * AUDIO_CHANNELS]),
         discont,
     })
 }

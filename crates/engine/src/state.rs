@@ -4,11 +4,13 @@
 //! at a time, in order, so a journal replay gives the same state back.
 
 use serde::{Deserialize, Serialize};
-use vma_core::{FrameRate, InputId, OutputId, PixelFormat, Resolution};
+use vma_audio::{MAX_GAIN_DB, SoloMode};
+use vma_core::{AudioBus, FrameRate, InputId, OutputId, PixelFormat, Resolution};
 
+use crate::audio_plan::AudioPlan;
 use crate::command::{
-    AutoPlay, Command, Effect, InputSpec, MAX_TRANSITION_MS, MixDomain, TRANSITION_BUTTONS,
-    TransitionSetting,
+    AutoPlay, Command, Db, DeviceId, Effect, InputSpec, MAX_AUDIO_DELAY_MS, MAX_TRANSITION_MS,
+    MixDomain, TRANSITION_BUTTONS, TransitionSetting,
 };
 use crate::output_spec::{InvalidSpec, MAX_OUTPUTS, OutputSpec, RecordSpec, STREAM_SLOTS};
 use crate::plan::{PlanFtb, PlanProgress, PlanTransition, RenderPlan};
@@ -64,6 +66,73 @@ pub struct InputState {
     pub status: InputStatus,
     /// `Some` for inputs with a timeline only.
     pub playback: Option<Playback>,
+    /// `Some` for inputs that may carry sound ([`InputSpec::has_audio`]).
+    #[serde(default)]
+    pub audio: Option<InputAudio>,
+}
+
+/// Audio settings of an input (`phase-3.md` § 5–6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InputAudio {
+    /// Fader, −∞ to +10 dB.
+    pub gain: Db,
+    pub mute: bool,
+    pub solo: bool,
+    /// Delay of the sound, 0 to 1 000 ms.
+    pub delay_ms: u32,
+    /// Sends, indexed by [`AudioBus::index`].
+    pub sends: [bool; 3],
+    /// The share of the input in the Master follows its passage on air.
+    pub follow_video: bool,
+}
+
+impl InputAudio {
+    /// Defaults of a new input (`phase-3.md` § 6): 0 dB, to the Master; audio-follow-video
+    /// for an input with pictures; a sound-only input starts muted (no surprise on air).
+    pub fn for_spec(spec: &InputSpec) -> Self {
+        let follow_video = spec.kind().has_video();
+        Self {
+            gain: Db::ZERO,
+            mute: !follow_video,
+            solo: false,
+            delay_ms: 0,
+            sends: [true, false, false],
+            follow_video,
+        }
+    }
+
+    pub fn sends_to(&self, bus: AudioBus) -> bool {
+        self.sends.get(bus.index()).copied().unwrap_or(false)
+    }
+}
+
+/// Settings of an audio bus.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct BusState {
+    pub gain: Db,
+    pub mute: bool,
+}
+
+/// The headphones (`phase-3.md` § 5): played from step 5 of Phase 3.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct Monitor {
+    /// `None`: the system's default device.
+    pub device: Option<DeviceId>,
+    pub solo_mode: SoloMode,
+}
+
+/// Settings of the audio mixer beyond the inputs.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct AudioState {
+    /// Indexed by [`AudioBus::index`].
+    pub buses: [BusState; 3],
+    pub monitor: Monitor,
+}
+
+impl AudioState {
+    pub fn bus(&self, bus: AudioBus) -> BusState {
+        self.buses.get(bus.index()).copied().unwrap_or_default()
+    }
 }
 
 /// Life cycle of an output (`phase-2.md` § 5).
@@ -117,6 +186,9 @@ pub struct OutputState {
     pub status: OutputStatus,
     /// Each start gets a new run number; `io-gst` events of an older run are ignored.
     pub run: u64,
+    /// The bus whose sound it carries (none for the full screen).
+    #[serde(default)]
+    pub bus: AudioBus,
 }
 
 /// Fade to black of the outputs (not of the UI's Program view, ADR 0006 § 1).
@@ -262,6 +334,14 @@ pub enum Rejection {
     SecretMissing(OutputId),
     #[error("invalid output settings: {0}")]
     InvalidOutput(#[from] InvalidSpec),
+    #[error("{0} has no sound")]
+    NoAudio(InputId),
+    #[error("{0} has no sound")]
+    OutputWithoutSound(OutputId),
+    #[error("gain {0} is out of range (-inf to +10 dB)")]
+    GainOutOfRange(Db),
+    #[error("delay {0} ms is out of range (0–1000)")]
+    DelayOutOfRange(u32),
 }
 
 /// Work for `io-gst` that follows from an accepted command.
@@ -290,11 +370,13 @@ pub enum IoRequest {
         input: InputId,
         enabled: bool,
     },
-    /// Build and start the pipeline of an output; report under `run`.
+    /// Build and start the pipeline of an output, carrying the sound of `bus`; report under
+    /// `run`.
     StartOutput {
         output: OutputId,
         run: u64,
         spec: OutputSpec,
+        bus: AudioBus,
     },
     /// Finalise and stop it (also when it is removed).
     StopOutput {
@@ -373,6 +455,9 @@ pub struct State {
     /// start (ADR 0006 § 7).
     #[serde(default)]
     pub device_lost: Option<u64>,
+    /// Buses and headphones (the inputs carry their own settings).
+    #[serde(default)]
+    pub audio: AudioState,
     next_input: u32,
     next_transition: u64,
     next_output: u32,
@@ -430,9 +515,11 @@ impl State {
                 slot: None,
                 status: OutputStatus::Idle,
                 run: 0,
+                bus: AudioBus::Master,
             }],
             ftb: FadeToBlack::default(),
             device_lost: None,
+            audio: AudioState::default(),
             next_input: 1,
             next_transition: 1,
             next_output: Self::DEFAULT_RECORDING.0 + 1,
@@ -514,6 +601,21 @@ impl State {
                     .unwrap_or(0),
             },
         }
+    }
+
+    /// What the audio thread needs from this state.
+    pub fn audio_plan(&self) -> AudioPlan {
+        let mut plan = AudioPlan {
+            version: self.version,
+            buses: self.audio.buses,
+            solo_mode: self.audio.monitor.solo_mode,
+            ..AudioPlan::default()
+        };
+        let with_sound = self.inputs.iter().filter_map(|i| Some((i.id, i.audio?)));
+        for (entry, input) in plan.inputs.iter_mut().zip(with_sound) {
+            *entry = Some(input);
+        }
+        plan
     }
 
     /// Applies one command. On success returns the requests for `io-gst`; on refusal the
@@ -807,7 +909,80 @@ impl State {
                 self.ftb.duration_ms = *ms;
                 Ok(Change::changed())
             }
+            Command::SetInputGain { input, db } => {
+                let db = valid_gain(*db)?;
+                self.audio_mut(*input)?.gain = db;
+                Ok(Change::changed())
+            }
+            Command::SetInputMute { input, mute } => {
+                self.audio_mut(*input)?.mute = *mute;
+                Ok(Change::changed())
+            }
+            Command::SetInputSolo { input, solo } => {
+                self.audio_mut(*input)?.solo = *solo;
+                Ok(Change::changed())
+            }
+            Command::SetInputDelay { input, ms } => {
+                if *ms > MAX_AUDIO_DELAY_MS {
+                    return Err(Rejection::DelayOutOfRange(*ms));
+                }
+                self.audio_mut(*input)?.delay_ms = *ms;
+                Ok(Change::changed())
+            }
+            Command::SetInputBus { input, bus, on } => {
+                if let Some(send) = self.audio_mut(*input)?.sends.get_mut(bus.index()) {
+                    *send = *on;
+                }
+                Ok(Change::changed())
+            }
+            Command::SetAudioFollowVideo { input, on } => {
+                self.audio_mut(*input)?.follow_video = *on;
+                Ok(Change::changed())
+            }
+            Command::SetBusGain { bus, db } => {
+                let db = valid_gain(*db)?;
+                if let Some(b) = self.audio.buses.get_mut(bus.index()) {
+                    b.gain = db;
+                }
+                Ok(Change::changed())
+            }
+            Command::SetBusMute { bus, mute } => {
+                if let Some(b) = self.audio.buses.get_mut(bus.index()) {
+                    b.mute = *mute;
+                }
+                Ok(Change::changed())
+            }
+            Command::SetOutputBus { output, bus } => {
+                let o = self.require_output(*output)?;
+                if o.spec.is_fullscreen() {
+                    return Err(Rejection::OutputWithoutSound(*output));
+                }
+                if o.status.is_active() {
+                    return Err(Rejection::OutputActive(*output));
+                }
+                if let Some(o) = self.outputs.iter_mut().find(|o| o.id == *output) {
+                    o.bus = *bus;
+                }
+                Ok(Change::changed())
+            }
+            Command::SetMonitor { device, solo_mode } => {
+                if device.as_ref().is_some_and(|d| d.0.is_empty()) {
+                    return Err(Rejection::InvalidName);
+                }
+                self.audio.monitor = Monitor {
+                    device: device.clone(),
+                    solo_mode: *solo_mode,
+                };
+                Ok(Change::changed())
+            }
         }
+    }
+
+    fn audio_mut(&mut self, input: InputId) -> Result<&mut InputAudio, Rejection> {
+        self.input_mut(input)?
+            .audio
+            .as_mut()
+            .ok_or(Rejection::NoAudio(input))
     }
 
     fn add_output(&mut self, spec: &OutputSpec, name: Option<&str>) -> Result<Change, Rejection> {
@@ -838,6 +1013,7 @@ impl State {
             slot,
             status: OutputStatus::Idle,
             run: 0,
+            bus: AudioBus::Master,
         });
         Ok(Change::changed())
     }
@@ -904,6 +1080,7 @@ impl State {
                     output: o.id,
                     run,
                     spec: o.spec.clone(),
+                    bus: o.bus,
                 });
             }
         }
@@ -1012,6 +1189,7 @@ impl State {
                 InputStatus::Starting
             },
             playback: spec.kind().has_playback().then(Playback::default),
+            audio: spec.has_audio().then(|| InputAudio::for_spec(spec)),
         });
         if self.transition.is_none() {
             if self.program.is_none() {
@@ -1261,6 +1439,14 @@ fn valid_setting(effect: Effect, duration_ms: u32) -> Result<TransitionSetting, 
     })
 }
 
+/// A fader level: −∞ to +10 dB.
+fn valid_gain(db: Db) -> Result<Db, Rejection> {
+    if db.get() > MAX_GAIN_DB {
+        return Err(Rejection::GainOutOfRange(db));
+    }
+    Ok(db)
+}
+
 fn valid_name(name: &str) -> Result<String, Rejection> {
     let name = name.trim();
     let chars = name.chars().count();
@@ -1318,6 +1504,252 @@ mod tests {
     fn done(state: &mut State) {
         let id = state.transition.unwrap().id();
         state.apply_event(&Event::TransitionDone { id });
+    }
+
+    /// `phase-3.md` § 6: an input with pictures and sound follows the video and is heard; a
+    /// sound-only one starts muted; colours, images and test patterns have no strip.
+    #[test]
+    fn inputs_with_sound_get_their_default_settings() {
+        let mut s = state();
+        let file = video(&mut s);
+        let audio = s.input(file).unwrap().audio.unwrap();
+        assert_eq!(audio.gain, Db::ZERO);
+        assert!(audio.follow_video && !audio.mute && !audio.solo);
+        assert_eq!((audio.delay_ms, audio.sends), (0, [true, false, false]));
+        let sync = InputSpec::SyncSource {
+            rate: FrameRate::FPS_25,
+            sample_rate: 48_000,
+            drift_ppm: 0,
+            audio_lead_ms: 0,
+        };
+        assert!(sync.has_audio());
+        let capture = InputSpec::Capture {
+            device: DeviceId("cam".into()),
+        };
+        assert!(InputAudio::for_spec(&capture).follow_video);
+        let c = color(&mut s, 1);
+        assert_eq!(s.input(c).unwrap().audio, None);
+        for spec in [
+            InputSpec::Image {
+                path: "a.png".into(),
+            },
+            InputSpec::TestSource {
+                rate: FrameRate::FPS_50,
+                resolution: Resolution::HD_1080,
+            },
+            InputSpec::Synthetic {
+                rate: FrameRate::FPS_50,
+                resolution: Resolution::HD_1080,
+            },
+        ] {
+            assert!(!spec.has_audio(), "{spec:?}");
+        }
+        assert_eq!(s.audio.bus(AudioBus::Master), BusState::default());
+        assert_eq!(s.audio.monitor, Monitor::default());
+        assert_eq!(
+            s.output(State::DEFAULT_RECORDING).unwrap().bus,
+            AudioBus::Master
+        );
+        // The audio plan lists the inputs with sound only, in order.
+        let second = video(&mut s);
+        let plan = s.audio_plan();
+        assert_eq!(plan.version, s.version);
+        let listed: Vec<_> = plan.inputs.iter().flatten().map(|(id, _)| *id).collect();
+        assert_eq!(listed, [file, second]);
+    }
+
+    #[test]
+    fn audio_commands_change_the_settings() {
+        let mut s = state();
+        let v = video(&mut s);
+        let audio = |s: &State| s.input(v).unwrap().audio.unwrap();
+        let before = s.version;
+        s.apply(&Command::SetInputGain {
+            input: v,
+            db: Db::new(MAX_GAIN_DB).unwrap(),
+        })
+        .unwrap();
+        assert_eq!(audio(&s).gain.get(), MAX_GAIN_DB);
+        s.apply(&Command::SetInputGain {
+            input: v,
+            db: Db::SILENT,
+        })
+        .unwrap();
+        assert_eq!(audio(&s).gain, Db::SILENT);
+        s.apply(&Command::SetInputMute {
+            input: v,
+            mute: true,
+        })
+        .unwrap();
+        s.apply(&Command::SetInputSolo {
+            input: v,
+            solo: true,
+        })
+        .unwrap();
+        s.apply(&Command::SetInputDelay {
+            input: v,
+            ms: MAX_AUDIO_DELAY_MS,
+        })
+        .unwrap();
+        s.apply(&Command::SetInputBus {
+            input: v,
+            bus: AudioBus::Master,
+            on: false,
+        })
+        .unwrap();
+        s.apply(&Command::SetInputBus {
+            input: v,
+            bus: AudioBus::A,
+            on: true,
+        })
+        .unwrap();
+        s.apply(&Command::SetAudioFollowVideo {
+            input: v,
+            on: false,
+        })
+        .unwrap();
+        let a = audio(&s);
+        assert!(a.mute && a.solo && !a.follow_video);
+        assert_eq!(a.delay_ms, MAX_AUDIO_DELAY_MS);
+        assert!(!a.sends_to(AudioBus::Master) && a.sends_to(AudioBus::A));
+        assert!(!a.sends_to(AudioBus::B));
+        s.apply(&Command::SetBusGain {
+            bus: AudioBus::B,
+            db: Db::new(-20.0).unwrap(),
+        })
+        .unwrap();
+        s.apply(&Command::SetBusMute {
+            bus: AudioBus::A,
+            mute: true,
+        })
+        .unwrap();
+        assert_eq!(s.audio.bus(AudioBus::B).gain.get(), -20.0);
+        assert!(s.audio.bus(AudioBus::A).mute);
+        assert!(!s.audio.bus(AudioBus::Master).mute);
+        s.apply(&Command::SetMonitor {
+            device: None,
+            solo_mode: SoloMode::Pfl,
+        })
+        .unwrap();
+        assert_eq!(s.audio.monitor.solo_mode, SoloMode::Pfl);
+        assert_eq!(s.version, before + 11);
+    }
+
+    #[test]
+    fn audio_commands_are_refused_without_effect() {
+        let mut s = state();
+        let v = video(&mut s);
+        let c = color(&mut s, 1);
+        let unknown = InputId(99);
+        assert_eq!(
+            refused(
+                &mut s,
+                Command::SetInputMute {
+                    input: c,
+                    mute: true
+                }
+            ),
+            Rejection::NoAudio(c)
+        );
+        assert_eq!(
+            refused(
+                &mut s,
+                Command::SetInputSolo {
+                    input: unknown,
+                    solo: true
+                }
+            ),
+            Rejection::UnknownInput(unknown)
+        );
+        let loud = Db::new(10.5).unwrap();
+        assert_eq!(
+            refused(&mut s, Command::SetInputGain { input: v, db: loud }),
+            Rejection::GainOutOfRange(loud)
+        );
+        assert_eq!(
+            refused(
+                &mut s,
+                Command::SetBusGain {
+                    bus: AudioBus::Master,
+                    db: loud
+                }
+            ),
+            Rejection::GainOutOfRange(loud)
+        );
+        assert_eq!(
+            refused(
+                &mut s,
+                Command::SetInputDelay {
+                    input: v,
+                    ms: 1_001
+                }
+            ),
+            Rejection::DelayOutOfRange(1_001)
+        );
+        assert_eq!(
+            refused(
+                &mut s,
+                Command::SetMonitor {
+                    device: Some(DeviceId(String::new())),
+                    solo_mode: SoloMode::Afl
+                }
+            ),
+            Rejection::InvalidName
+        );
+    }
+
+    /// Each output carries the bus chosen while it was stopped; the full screen has none.
+    #[test]
+    fn outputs_carry_their_bus() {
+        let mut s = state();
+        let rec = State::DEFAULT_RECORDING;
+        s.apply(&Command::SetOutputBus {
+            output: rec,
+            bus: AudioBus::B,
+        })
+        .unwrap();
+        let io = s.apply(&Command::StartRecording).unwrap();
+        assert!(
+            matches!(
+                io[..],
+                [IoRequest::StartOutput {
+                    bus: AudioBus::B,
+                    ..
+                }]
+            ),
+            "{io:?}"
+        );
+        assert_eq!(
+            refused(
+                &mut s,
+                Command::SetOutputBus {
+                    output: rec,
+                    bus: AudioBus::A
+                }
+            ),
+            Rejection::OutputActive(rec)
+        );
+        let fs = add_output(&mut s, OutputSpec::Fullscreen(Default::default()));
+        assert_eq!(
+            refused(
+                &mut s,
+                Command::SetOutputBus {
+                    output: fs,
+                    bus: AudioBus::A
+                }
+            ),
+            Rejection::OutputWithoutSound(fs)
+        );
+        assert_eq!(
+            refused(
+                &mut s,
+                Command::SetOutputBus {
+                    output: OutputId(42),
+                    bus: AudioBus::A
+                }
+            ),
+            Rejection::UnknownOutput(OutputId(42))
+        );
     }
 
     #[test]
@@ -2130,6 +2562,7 @@ mod tests {
                 output: REC,
                 run: 1,
                 spec: OutputSpec::Record(RecordSpec::default()),
+                bus: AudioBus::Master,
             }]
         );
         assert_eq!(status(&s, REC), OutputStatus::Starting);

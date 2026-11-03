@@ -15,7 +15,7 @@ pub use fullscreen::{
     screen_index,
 };
 pub use output_stats::{OutputStatsRow, output_stats};
-pub use switcher::{CaptureChoice, FileKind, Images, IoView, Switcher, View};
+pub use switcher::{AudioView, CaptureChoice, FileKind, Images, IoView, Switcher, View};
 pub use tally::{TALLY_PREVIEW, TALLY_PROGRAM, Tally};
 
 use std::path::PathBuf;
@@ -187,6 +187,8 @@ impl MainUi {
         let devices = io.devices();
         let activity = |output| io.output_activity(output);
         let record_folder = io.default_record_folder();
+        let meters = self.engine.audio_meters();
+        let levels = |level| meters.read(level);
         let view = View {
             state: &state,
             commands: &commands,
@@ -208,6 +210,7 @@ impl MainUi {
             frame: self.engine.feedback().last_frame(),
             fade_to_black: self.engine.feedback().fade_to_black(),
             rejection: rejection.as_deref(),
+            audio: AudioView { levels: &levels },
         };
         self.switcher.show(ui, &view);
         self.fullscreen
