@@ -190,5 +190,5 @@ Voir l'ADR 0006 (§§ 1–3, 5 et « Mise en œuvre côté moteur »).
 |---|---|---|
 | Les réglages du plan façonnent le son : −6 dB, mute, envoi vers A seul (A ne suit pas l'image), audio-follow-video désactivé, décalage de 80 ms à 2 échantillons près | `audio::tests::the_audio_plan_shapes_the_sound` | CI |
 | Input sans réglages : non mixé ; vumètres d'un input retrouvés par son identifiant, avant / après fader, et du Master | `audio::tests::meters_by_input_and_inputs_without_settings` | CI |
-| **C2 (2de moitié)** : son en avance de 80 ms, input décalé de 80 ms → < 1 image ; décalage appliqué à ± 1 ms (mesuré : 80,13 ms) | `io-gst` : `outputs::tests::a_delayed_input_is_back_in_sync` | CI (Linux) |
+| **C2 (2de moitié)** : son en avance de 80 ms, input décalé de 80 ms au milieu d'un même enregistrement → < 1 image ensuite ; décalage appliqué à ± 1 ms (mesuré : 79,92 ms ; d'un enregistrement à l'autre, la chaîne de mesure varie jusqu'à 2 ms sur la CI, d'où la mesure dans un seul) | `io-gst` : `outputs::tests::a_delayed_input_is_back_in_sync` | CI (Linux) |
 | Un enregistrement du bus A porte le son envoyé au bus A seul, synchro < 1 image | `io-gst` : `outputs::tests::a_recording_carries_its_bus` | CI (Linux) |

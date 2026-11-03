@@ -878,17 +878,20 @@ mod tests {
         spec: vma_engine::InputSpec,
         seconds: u64,
     ) -> crate::SyncSnapshot {
-        sync_source_recording_with(name, master, spec, seconds, &|_| Vec::new())
+        sync_source_recording_with(name, master, spec, seconds, &|_| Vec::new(), &|_| {
+            Vec::new()
+        })
     }
 
     /// [`sync_source_recording`], with the commands of `setup` (given the input) sent once
-    /// the source is live.
+    /// the source is live, and those of `midway` half-way through the recording.
     fn sync_source_recording_with(
         name: &str,
         master: FrameRate,
         spec: vma_engine::InputSpec,
         seconds: u64,
         setup: &dyn Fn(vma_core::InputId) -> Vec<Command>,
+        midway: &dyn Fn(vma_core::InputId) -> Vec<Command>,
     ) -> crate::SyncSnapshot {
         let (mut engine, _device) = spawn_engine_with(EngineConfig {
             rate: master,
@@ -924,7 +927,11 @@ mod tests {
         let OutputStatus::Running { target, .. } = status else {
             unreachable!()
         };
-        std::thread::sleep(Duration::from_secs(seconds));
+        std::thread::sleep(Duration::from_millis(seconds * 500));
+        for command in midway(input) {
+            send(&engine, command);
+        }
+        std::thread::sleep(Duration::from_millis(seconds * 500));
         let counters = engine.outputs().counters(REC);
         let render = engine.render_stats().snapshot();
         send(&engine, Command::StopRecording);
@@ -1054,9 +1061,11 @@ mod tests {
         }
     }
 
-    /// C2 (second half): the same source, its input delayed by 80 ms, is in sync to a frame;
-    /// the delay moves the sound by 80 ms ± 1 ms. A 25p source in a 50p master: its pictures
-    /// are never skipped, the measure is to a sample.
+    /// C2 (second half): a source whose sound is 80 ms early, its input delayed by 80 ms
+    /// half-way through one recording: in sync to a frame from then on, and the delay moves
+    /// the sound by 80 ms ± 1 ms. Both halves of one recording share the measuring chain
+    /// (two recordings differ by up to 2 ms on CI). A 25p source in a 50p master: its
+    /// pictures are never skipped.
     #[test]
     #[cfg_attr(
         windows,
@@ -1064,25 +1073,27 @@ mod tests {
     )]
     fn a_delayed_input_is_back_in_sync() {
         let master = FrameRate::FPS_50;
-        let spec = sync_source(FrameRate::FPS_25, 0, 80);
-        let mean = |sync: &crate::SyncSnapshot| {
-            sync.offsets_ns.iter().sum::<i64>() as f64 / sync.offsets_ns.len() as f64 / 1e6
-        };
-        let early = sync_source_recording("c2-early", master, spec.clone(), 5);
-        let delayed = sync_source_recording_with("c2-delayed", master, spec, 5, &|input| {
-            vec![Command::SetInputDelay { input, ms: 80 }]
-        });
-        let shift = mean(&delayed) - mean(&early);
-        eprintln!(
-            "early {:.2} ms, delayed {:.2} ms, shift {shift:.2} ms",
-            mean(&early),
-            mean(&delayed)
+        let sync = sync_source_recording_with(
+            "c2-delay",
+            master,
+            sync_source(FrameRate::FPS_25, 0, 80),
+            12,
+            &|_| Vec::new(),
+            &|input| vec![Command::SetInputDelay { input, ms: 80 }],
         );
-        assert!(delayed.flashes >= 4, "{delayed:?}");
-        assert!(
-            delayed.worst_ns().unwrap() < video_pts_ns(master, 1) as i64,
-            "{delayed:?}"
-        );
+        eprintln!("{sync:?}");
+        // Pairs once a second; the delay changes at 6 s: the first 4 and the last 4 pairs
+        // are clear of it.
+        let pairs = &sync.offsets_ns;
+        assert!(pairs.len() >= 10, "{sync:?}");
+        let mean = |p: &[i64]| p.iter().sum::<i64>() as f64 / p.len() as f64 / 1e6;
+        let (early, delayed) = (mean(&pairs[..4]), mean(&pairs[pairs.len() - 4..]));
+        let shift = delayed - early;
+        eprintln!("early {early:.2} ms, delayed {delayed:.2} ms, shift {shift:.2} ms");
+        assert!((early + 80.0).abs() < video_pts_ns(master, 1) as f64 / 1e6);
+        for &offset in &pairs[pairs.len() - 4..] {
+            assert!(offset.abs() < video_pts_ns(master, 1) as i64, "{sync:?}");
+        }
         assert!((shift - 80.0).abs() <= 1.0, "shift {shift:.2} ms");
     }
 
@@ -1120,6 +1131,7 @@ mod tests {
                     },
                 ]
             },
+            &|_| Vec::new(),
         );
         eprintln!("{sync:?}");
         assert!(sync.flashes >= 4 && sync.beeps >= 4, "{sync:?}");
