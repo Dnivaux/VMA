@@ -43,6 +43,8 @@ Options :
   --journal-dir <dossier>
                          dossier du journal des commandes (défaut : logs)
   --no-journal           n'écrit pas de journal des commandes
+  --no-headphones        ne joue pas le casque (coupé d'office pendant un soak : rien sur
+                         les haut-parleurs de la machine)
   -h, --help             affiche cette aide
 ";
 
@@ -66,6 +68,8 @@ pub struct Options {
     pub soak: Option<SoakOptions>,
     /// `None` = no journal.
     pub journal_dir: Option<PathBuf>,
+    /// Play the headphones: not with `--no-headphones`, nor during a soak.
+    pub headphones: bool,
     pub help: bool,
 }
 
@@ -135,6 +139,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> anyhow::Result<Options> 
     let mut report = None;
     let mut help = false;
     let mut journal_dir = Some(PathBuf::from(DEFAULT_JOURNAL_DIR));
+    let mut headphones = true;
 
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
@@ -181,6 +186,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> anyhow::Result<Options> 
                 journal_dir = Some(PathBuf::from(value::<String>(&mut args, &arg)?));
             }
             "--no-journal" => journal_dir = None,
+            "--no-headphones" => headphones = false,
             "-h" | "--help" => help = true,
             other => bail!("option inconnue : {other} (voir --help)"),
         }
@@ -240,6 +246,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> anyhow::Result<Options> 
         gpu_loss_grace,
         stream,
         sync_test,
+        headphones: headphones && soak.is_none(),
         soak,
         journal_dir,
         help,
@@ -323,6 +330,12 @@ mod tests {
             Some(PathBuf::from("/tmp/j"))
         );
         assert_eq!(parse_str("--no-journal").unwrap().journal_dir, None);
+        assert!(o.headphones);
+        assert!(!parse_str("--no-headphones").unwrap().headphones);
+        assert!(
+            !parse_str("--soak 10").unwrap().headphones,
+            "never during a soak"
+        );
         assert_eq!(o.record, None);
         assert_eq!(
             parse_str("--record /media/rec").unwrap().record,

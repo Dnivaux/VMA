@@ -57,6 +57,14 @@ pub trait IoStatus: std::fmt::Debug {
     fn default_record_folder(&self) -> Option<PathBuf> {
         None
     }
+    /// Microphones and line inputs, headphones and speakers connected now.
+    fn audio_devices(&self) -> (Vec<CaptureChoice>, Vec<CaptureChoice>) {
+        (Vec::new(), Vec::new())
+    }
+    /// What the headphones are doing (`None`: off in this session).
+    fn headphones(&self) -> Option<HeadphonesActivity> {
+        None
+    }
 }
 
 /// What `vma-io` reports about a running output (no GStreamer type in the UI).
@@ -70,6 +78,16 @@ pub struct OutputActivity {
     pub kbps: Option<u32>,
     /// Streams: connections lost since the start.
     pub reconnections: u32,
+}
+
+/// What `vma-io` reports about the headphones (no GStreamer type in the UI).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct HeadphonesActivity {
+    /// The device played, as shown (`None`: the system's default).
+    pub device: Option<String>,
+    pub playing: bool,
+    /// Why they are not playing.
+    pub error: Option<String>,
 }
 
 /// What a native dialog was opened for.
@@ -187,6 +205,8 @@ impl MainUi {
         let devices = io.devices();
         let activity = |output| io.output_activity(output);
         let record_folder = io.default_record_folder();
+        let (audio_sources, audio_sinks) = io.audio_devices();
+        let headphones = io.headphones();
         let meters = self.engine.audio_meters();
         let levels = |level| meters.read(level);
         let view = View {
@@ -205,6 +225,9 @@ impl MainUi {
                 capture_mode: &capture_mode,
                 output_activity: &activity,
                 record_folder: record_folder.as_deref(),
+                audio_sources: &audio_sources,
+                audio_sinks: &audio_sinks,
+                headphones: headphones.as_ref(),
             },
             screens: &screens,
             frame: self.engine.feedback().last_frame(),

@@ -15,9 +15,11 @@
 //!   closest to the master format ([`CaptureMode`], [`IoRuntime::pipeline_info`]).
 
 mod audio;
+mod audio_devices;
 mod clock;
 mod devices;
 mod feeds;
+mod headphones;
 mod mode;
 mod output;
 mod outputs;
@@ -28,15 +30,17 @@ mod supervisor;
 mod sync;
 mod sync_source;
 
+pub use audio_devices::AudioDevices;
 pub use clock::stream_clock;
 pub use devices::CaptureDevice;
 pub use feeds::{Feeds, PictureOut, VideoFormat};
+pub use headphones::HeadphonesStatus;
 pub use mode::{CaptureMode, Encoding};
 pub use output::{
     EncoderChoice, GstOutput, OutputFeed, OutputFormat, RecordSettings, Skipped, StreamSettings,
 };
 pub use outputs::{OutputActivity, default_record_folder};
-pub use runtime::{IoRuntime, PipelineInfo};
+pub use runtime::{IoOptions, IoRuntime, PipelineInfo};
 pub use sync::{SyncAnalyser, SyncSnapshot};
 
 /// Errors of `io-gst`.

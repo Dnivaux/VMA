@@ -425,3 +425,43 @@ Windows (pas de MediaMTX en CI), ils sont sautés.
 | Son d'un fichier dans son anneau à 48 kHz stéréo, au temps de ses images (< 5 ms ; mesuré 0) | `pipeline::tests::file_sound_reaches_its_ring_on_the_time_of_the_pictures` | CI |
 | Le temps de flux suit la case du feed | `engine` : `feed::tests::each_new_picture_is_uploaded_once` | CI |
 | Source de synchro : bip au temps de son flash, ou de son avance plus tôt, dans l'anneau, par le vrai chemin (29,97p, 44,1 kHz → 48 kHz, +100 ppm) : < 2 ms (mesuré 0,2–0,3 ms ; avance 80 ms → −79,8 ms) | `sync_source::tests::the_beep_reaches_the_ring_on_the_time_of_its_flash` | CI |
+
+## Phase 3 — Périphériques audio et casque (étape 5, 2026-11-03)
+- **Inventaire** (`audio_devices.rs`) : un second `gst::DeviceMonitor` (classes
+  `Audio/Source` et `Audio/Sink`), **sans** les fournisseurs masqués : sous Linux, PipeWire
+  masque les vues PulseAudio et ALSA des mêmes cartes (vérifié sur la machine de dev : 4
+  sources, 6 sorties, une vue chacune). Identifiant stable : `<device.api>:<node.name>`
+  (« alsa:alsa_input.usb-…-00.mono-fallback », gardé d'un branchement à l'autre, contrairement
+  à `object.serial`), sinon `device.strid`, `device.id` (point de terminaison WASAPI sous
+  Windows), `device.path`. Les moniteurs des sorties (`device.class = monitor`) sont écartés.
+  Relu toutes les secondes, comme les caméras ; `IoRuntime::audio_devices()`.
+- **Input son seul** (`InputSpec::AudioDevice`, `AudioInputSlot`) : l'élément du périphérique
+  (`pipewiresrc`, `wasapi2src`…) ` ! audioconvert ! audioresample ! F32LE 48 kHz stéréo !
+  appsink` vers l'anneau de l'input (même branche que le son des fichiers), sur l'horloge
+  maître, `appsink` non cadencé (source live). `IoEvent::AudioLive` au premier tampon après
+  chaque démarrage ; perdu sur une erreur, une fin de flux, **2 s sans tampon** (5 s au
+  démarrage) ; périphérique absent : « audio device … is not connected » ; reconnexion 1 / 2 /
+  5 / 10 s, recherché par son identifiant à chaque démarrage, nouvel anneau.
+- **Casque** (`headphones.rs`) : `appsrc ! audioconvert ! audioresample ! <sink du
+  périphérique>` (`autoaudiosink` sans choix), sur l'horloge maître (le sink s'y asservit).
+  Un thread `vma-phones` pousse toutes les 10 ms les nouveaux échantillons de l'anneau du
+  casque (horodatés à l'arrivée) ; en retard de plus de 250 ms, il saute aux plus récents.
+  `IoRequest::SetMonitor` change de périphérique (pipeline reconstruit) ; absent ou en erreur :
+  raison publiée (`IoRuntime::headphones()`), nouvel essai 1 / 2 / 5 / 10 s. **Activé par
+  `IoOptions::headphones`** : l'application l'active sauf `--no-headphones` et pendant un
+  soak ; les tests ne jouent jamais rien sur les haut-parleurs de la machine.
+- **Faux périphériques en CI** : sous-classe de `gst::Device` dont l'élément est un bin
+  `gst-launch` (comme la fausse caméra) : `audiotestsrc` (micro, 44,1 kHz mono) ou `appsink` /
+  `fakesink` (casque). Point d'entrée de test de `IoRuntime` avec une liste donnée (sans
+  moniteur).
+- Non vérifié : sous Windows, que `wasapi2` masque bien les vues WASAPI / DirectSound (sinon
+  un micro apparaîtrait deux fois) ; à voir avec la checklist sous Windows (⏸).
+
+### Critères (étape 5)
+| Critère | Test | Statut |
+|---|---|---|
+| Identifiant stable : `node.name` avant le numéro de série, point de terminaison WASAPI, moniteurs écartés | `audio_devices::tests::the_node_name_is_the_stable_key` | CI |
+| **C12** (micro, CI) : son dans l'anneau, daté sur l'horloge maître ; en marche ; débranché → perdu → « not connected » → rebranché, retrouvé par son identifiant, nouvel anneau | `audio_devices::tests::a_microphone_is_heard_lost_and_found_again` | CI |
+| **C12** (casque, CI) : l'anneau joué sur le périphérique choisi (1 s de son reçue, niveau exact) ; débranché → raison, nouvel essai ; rebranché → joue | `headphones::tests::the_headphones_play_the_ring_on_their_device` | CI |
+| **C12** de bout en bout (moteur + `vma-io`, faux périphériques) : micro en marche, casque sur le périphérique choisi par commande ; micro au Master ; muet en solo PFL → Master silencieux, casque au niveau du micro | `runtime::tests::a_microphone_and_the_headphones_through_the_engine` | CI |
+| **C12** (vrai matériel) : micro, débranchement, casque, solo audible | checklist [`phase3-audio.md`](../manual-tests/phase3-audio.md) | manuel |

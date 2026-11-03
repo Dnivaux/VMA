@@ -175,15 +175,18 @@ impl<'a> App<'a> {
         )?;
         // Images, capture and files (ADR 0004). Without GStreamer the runtime still serves
         // still images; without the thread at all, those inputs stay « Démarrage ».
-        let io = engine
-            .take_io_port()
-            .and_then(|port| match vma_io_gst::IoRuntime::start(port) {
+        let io = engine.take_io_port().and_then(|port| {
+            let io_options = vma_io_gst::IoOptions {
+                headphones: options.headphones,
+            };
+            match vma_io_gst::IoRuntime::start_with_options(port, io_options) {
                 Ok(io) => Some(io),
                 Err(e) => {
                     tracing::error!(error = %e, "io runtime not started");
                     None
                 }
-            });
+            }
+        });
         // Synthetic sources asked for on the command line (soaks, rate tests). Without them a
         // soak still needs a moving picture on air: the test pattern. A normal session starts
         // empty, like the reference.
@@ -298,7 +301,7 @@ impl<'a> App<'a> {
             readers,
             textures,
             adapter,
-            Box::new(Io(io)),
+            Box::new(Io(io, options.headphones)),
             screens,
         );
         if let Some((options, mut context)) = soak_context {
@@ -367,7 +370,8 @@ fn start_fullscreen(
 
 /// `vma-io` as the UI sees it (the UI does not depend on GStreamer).
 #[derive(Debug)]
-struct Io(Option<vma_io_gst::IoRuntime>);
+/// The runtime, and whether it plays the headphones.
+struct Io(Option<vma_io_gst::IoRuntime>, bool);
 
 impl vma_ui::IoStatus for Io {
     fn unavailable(&self) -> Option<String> {
@@ -408,6 +412,36 @@ impl vma_ui::IoStatus for Io {
 
     fn default_record_folder(&self) -> Option<std::path::PathBuf> {
         Some(vma_io_gst::default_record_folder())
+    }
+
+    fn audio_devices(&self) -> (Vec<vma_ui::CaptureChoice>, Vec<vma_ui::CaptureChoice>) {
+        let Some(io) = &self.0 else {
+            return (Vec::new(), Vec::new());
+        };
+        let choices = |devices: Vec<vma_io_gst::CaptureDevice>| {
+            devices
+                .into_iter()
+                .map(|d| vma_ui::CaptureChoice {
+                    id: d.id,
+                    name: d.name,
+                })
+                .collect()
+        };
+        let devices = io.audio_devices();
+        (choices(devices.sources), choices(devices.sinks))
+    }
+
+    fn headphones(&self) -> Option<vma_ui::HeadphonesActivity> {
+        let io = self.0.as_ref()?;
+        if !self.1 {
+            return None;
+        }
+        let status = io.headphones();
+        Some(vma_ui::HeadphonesActivity {
+            device: status.device,
+            playing: status.playing,
+            error: status.error,
+        })
     }
 }
 

@@ -228,6 +228,12 @@ Commandes de `phase-3.md` § 5, mises en œuvre telles quelles ; précisions app
   écran (`OutputWithoutSound`) ; `IoRequest::StartOutput` porte le bus.
 - **`SetMonitor`** : périphérique (nom vide refusé) et mode de solo. Le mode agit dès
   maintenant sur le mix casque et son vumètre ; le périphérique n'est joué qu'à l'étape 5.
+- *(Étape 5)* **Input son seul** : `InputSpec::AudioDevice { device }` (identifiant de
+  `io-gst`), nommé par l'UI d'après le périphérique (« Son » sinon). Muet et sans
+  audio-follow-video à l'ajout ; il **n'occupe ni le Program ni la Preview** (pas d'image) ;
+  `Event::AudioLive { input }` (son qui arrive) le met en `Live { source: None }`, journalisé
+  comme les autres événements. `SetMonitor` envoie `IoRequest::SetMonitor { device }` à
+  `vma-io` quand le périphérique change (pas pour le seul mode de solo).
 - **Plan audio** : `State::audio_plan()` (les inputs avec son dans l'ordre d'affichage, les
   bus, le mode de solo), publié par `vma-control` après chaque changement par un seqlock
   d'atomiques (`audio_plan.rs`, 133 mots ; le seqlock du plan du rendu est devenu générique,
@@ -252,4 +258,5 @@ Commandes de `phase-3.md` § 5, mises en œuvre telles quelles ; précisions app
 | *(Phase 2, étape 9)* **B14** côté état et contrôle : perte journalisée une fois, démarrages refusés, sorties qui produisent finalisées au bout du délai (pas avant, une fois), sorties en erreur ou à l'arrêt intactes | `state::tests::a_lost_gpu_refuses_starts_then_finalises_what_runs`, `control::tests::a_lost_gpu_is_journaled_and_finalises_the_outputs_after_the_grace` (temps simulé) |
 | *(Phase 2, étape 8)* Plein écran : en marche sans `vma-io`, une seule, réglages figés en marche, type figé, arrêt et suppression sans requête, drapeau du plan | `state::tests::the_full_screen_runs_without_io_and_sets_the_plan`, `plan::tests::encoding_round_trips` |
 | *(Phase 3, étape 4)* Audio : défauts par type d'input, chaque commande, refus sans effet (input sans son, inconnu, hors bornes), bus des sorties (figé en marche, refusé au plein écran) | `state::tests::{inputs_with_sound_get_their_default_settings, audio_commands_change_the_settings, audio_commands_are_refused_without_effect, outputs_carry_their_bus}` |
+| *(Phase 3, étape 5)* Input son seul (défauts, ni Program ni Preview, `AudioLive` une fois) ; casque : `SetMonitor` vers `vma-io` au changement de périphérique seulement | `state::tests::{a_sound_only_input, the_headphones_device_goes_to_io}` |
 | *(Phase 3, étape 4)* **C13** côté moteur : toute commande audio journalisée (−∞ compris), rejeu → même état, plan audio publié | `control::tests::audio_settings_are_journaled_replayed_and_published`, `command::tests::levels_in_the_journal`, `audio_plan::tests` (aller-retour, lectures concurrentes jamais déchirées) |

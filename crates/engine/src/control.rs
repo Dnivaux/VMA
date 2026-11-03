@@ -141,6 +141,8 @@ pub enum IoEvent {
         attempts: u32,
         reason: String,
     },
+    /// The sound of a sound-only input flows.
+    AudioLive { input: InputId },
     /// Run `run` of an output started (`IoRequest::StartOutput`).
     OutputRunning {
         output: OutputId,
@@ -370,6 +372,10 @@ impl Controller {
                     frame: self.feedback.last_frame(),
                     attempts,
                 });
+            }
+            IoEvent::AudioLive { input } => {
+                tracing::info!(%input, "sound input live");
+                self.event(Event::AudioLive { input });
             }
             IoEvent::OutputRunning {
                 output,

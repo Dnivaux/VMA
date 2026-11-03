@@ -10,12 +10,22 @@ use crate::command::Db;
 use crate::plan::SeqLock;
 use crate::state::{BusState, InputAudio, MAX_INPUTS};
 
+/// An input with sound, as `vma-audio` sees it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PlanInput {
+    pub id: InputId,
+    pub audio: InputAudio,
+    /// It has pictures: its sound is read at the time of the picture shown; a sound-only
+    /// input is read at the latency of its ring (ADR 0007 § 3).
+    pub video: bool,
+}
+
 /// The audio settings, as of state `version`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AudioPlan {
     pub version: u64,
     /// The inputs with sound, in display order (then empty entries).
-    pub inputs: [Option<(InputId, InputAudio)>; MAX_INPUTS],
+    pub inputs: [Option<PlanInput>; MAX_INPUTS],
     /// Indexed by [`AudioBus::index`].
     pub buses: [BusState; 3],
     pub solo_mode: SoloMode,
@@ -33,13 +43,9 @@ impl Default for AudioPlan {
 }
 
 impl AudioPlan {
-    /// The settings of `input`, if it has sound.
-    pub fn input(&self, input: InputId) -> Option<&InputAudio> {
-        self.inputs
-            .iter()
-            .flatten()
-            .find(|(id, _)| *id == input)
-            .map(|(_, a)| a)
+    /// `input`, if it has sound.
+    pub fn input(&self, input: InputId) -> Option<&PlanInput> {
+        self.inputs.iter().flatten().find(|i| i.id == input)
     }
 
     pub fn bus(&self, bus: AudioBus) -> BusState {
@@ -62,12 +68,18 @@ impl AudioPlan {
         }
         let (_, inputs) = w.split_at_mut(HEAD);
         for (pair, entry) in inputs.as_chunks_mut::<2>().0.iter_mut().zip(&self.inputs) {
-            let Some((id, a)) = entry else {
+            let Some(PlanInput {
+                id,
+                audio: a,
+                video,
+            }) = entry
+            else {
                 continue;
             };
             let flags = u64::from(a.mute)
                 | (u64::from(a.solo) << 1)
                 | (u64::from(a.follow_video) << 2)
+                | (u64::from(*video) << 6)
                 | a.sends
                     .iter()
                     .enumerate()
@@ -102,9 +114,9 @@ impl AudioPlan {
                 continue;
             };
             let flags = second >> 32;
-            *entry = Some((
-                InputId(id as u32),
-                InputAudio {
+            *entry = Some(PlanInput {
+                id: InputId(id as u32),
+                audio: InputAudio {
                     gain: gain(second),
                     mute: flags & 1 == 1,
                     solo: (flags >> 1) & 1 == 1,
@@ -112,7 +124,8 @@ impl AudioPlan {
                     sends: std::array::from_fn(|i| (flags >> (3 + i)) & 1 == 1),
                     delay_ms: (first >> 32) as u32,
                 },
-            ));
+                video: (flags >> 6) & 1 == 1,
+            });
         }
         plan
     }
@@ -182,9 +195,10 @@ mod tests {
         let count = (n as usize) % (MAX_INPUTS + 1);
         for (k, entry) in plan.inputs.iter_mut().take(count).enumerate() {
             let k = k as u32;
-            *entry = Some((
-                InputId(n.wrapping_mul(7).wrapping_add(k) % (u32::MAX - 1)),
-                InputAudio {
+            *entry = Some(PlanInput {
+                id: InputId(n.wrapping_mul(7).wrapping_add(k) % (u32::MAX - 1)),
+                video: !k.is_multiple_of(4),
+                audio: InputAudio {
                     gain: if k.is_multiple_of(5) {
                         Db::SILENT
                     } else {
@@ -200,7 +214,7 @@ mod tests {
                     ],
                     follow_video: k.is_multiple_of(7),
                 },
-            ));
+            });
         }
         plan
     }

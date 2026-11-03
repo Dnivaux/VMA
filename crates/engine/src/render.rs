@@ -164,6 +164,8 @@ pub struct IoPort {
     pub format: Format,
     /// Where `vma-io` attaches the outputs it starts.
     pub outputs: OutputHub,
+    /// What the headphones hear (taken by the player of `vma-io`).
+    pub headphones: Option<vma_audio::RingReader>,
 }
 
 /// The single consumer of one output's frames (typically the UI).
@@ -212,6 +214,7 @@ impl RenderEngine {
             ticks: audio_ticks,
             rings,
             buses,
+            headphones,
             meters: audio_meters,
             stats: audio_stats,
             thread: audio_thread,
@@ -370,6 +373,7 @@ impl RenderEngine {
                         resolution: config.resolution,
                     },
                     outputs: outputs.clone(),
+                    headphones: Some(headphones),
                 }),
             },
             Readers {

@@ -15,8 +15,8 @@ use vma_engine::{
     RejectionNotice, SendError, Source, State, Timeline, TransitionSetting, TransitionState,
 };
 
-use crate::OutputActivity;
 use crate::tally::{TALLY_PREVIEW, TALLY_PROGRAM, Tally};
+use crate::{HeadphonesActivity, OutputActivity};
 
 mod mixer;
 mod outputs;
@@ -101,6 +101,12 @@ pub struct IoView<'a> {
     pub output_activity: &'a dyn Fn(OutputId) -> Option<OutputActivity>,
     /// Where recordings go when no folder is chosen.
     pub record_folder: Option<&'a Path>,
+    /// Microphones and line inputs connected now.
+    pub audio_sources: &'a [CaptureChoice],
+    /// Headphones and speakers connected now.
+    pub audio_sinks: &'a [CaptureChoice],
+    /// What the headphones are doing (`None`: off in this session).
+    pub headphones: Option<&'a HeadphonesActivity>,
 }
 
 impl IoView<'static> {
@@ -122,6 +128,9 @@ impl IoView<'static> {
             capture_mode: &no_mode,
             output_activity: &no_activity,
             record_folder: None,
+            audio_sources: &[],
+            audio_sinks: &[],
+            headphones: None,
         }
     }
 }
@@ -646,6 +655,26 @@ impl Switcher {
                     }
                 }
             });
+            ui.menu_button("Son (micro, ligne)", |ui| {
+                if view.io.audio_sources.is_empty() {
+                    ui.label(RichText::new("Aucun périphérique audio détecté").weak());
+                }
+                for device in view.io.audio_sources {
+                    if ui
+                        .button(&device.name)
+                        .on_hover_text(&device.id.0)
+                        .clicked()
+                    {
+                        let name: String = device.name.chars().take(MAX_NAME_CHARS).collect();
+                        let spec = InputSpec::AudioDevice {
+                            device: device.id.clone(),
+                        };
+                        let name = (!name.trim().is_empty()).then_some(name);
+                        self.send(ui, view, Command::AddInput { spec, name });
+                        ui.close();
+                    }
+                }
+            });
             if ui.button("Vidéo…").clicked() {
                 self.file_request = Some(FileKind::Video);
                 ui.close();
@@ -701,6 +730,16 @@ impl Switcher {
                         ui.painter().rect_filled(rect, 0.0, Color32::BLACK);
                     }
                 }
+                let sound_only = !input.spec.kind().has_video();
+                if sound_only && matches!(input.status, InputStatus::Live { .. }) {
+                    ui.painter().text(
+                        rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        "Son seul",
+                        egui::FontId::proportional(13.0),
+                        ui.visuals().weak_text_color(),
+                    );
+                }
                 status_overlay(ui, rect, input);
                 thumb.widget_info(|| {
                     egui::WidgetInfo::labeled(
@@ -735,17 +774,20 @@ impl Switcher {
                     {
                         self.send(ui, view, Command::RemoveInput { input: id });
                     }
-                    if ui
-                        .small_button("QP")
-                        .on_hover_text("Quick Play : cet input au Program")
-                        .clicked()
+                    // A sound-only input has no picture to put on air.
+                    if !sound_only
+                        && ui
+                            .small_button("QP")
+                            .on_hover_text("Quick Play : cet input au Program")
+                            .clicked()
                     {
                         self.send(ui, view, Command::QuickPlay { input: Some(id) });
                     }
-                    if ui
-                        .small_button("Cut")
-                        .on_hover_text("Cet input au Program, sans transition")
-                        .clicked()
+                    if !sound_only
+                        && ui
+                            .small_button("Cut")
+                            .on_hover_text("Cet input au Program, sans transition")
+                            .clicked()
                     {
                         self.send(ui, view, Command::CutDirect { input: id });
                     }

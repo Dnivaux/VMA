@@ -211,6 +211,12 @@ refusées, `journal_dropped`.
   en trait, crête maintenue en blanc, échelle −60 à 0 dBFS, après fader ; lus à chaque frame
   UI dans `AudioView::levels` (`AudioMeters` du moteur), jamais dans l'état. Nom accessible :
   « Vumètre 5 clip : crête −6,0 dB, RMS −9,0 dB », « … : pas de son ».
+- *(Étape 5)* **Ajouter → Son (micro, ligne)** : les entrées audio de `vma-io` (nom du
+  périphérique), `AddInput { AudioDevice }` nommé comme lui. Vignette d'un input son seul :
+  « Son seul » quand il est en marche, ni Quick Play ni Cut. Tranche **Casque** : liste
+  **Sortie** (« Par défaut » et les sorties audio, `SetMonitor`), « Casque muet » (raison au
+  survol) s'il ne joue pas, « Casque coupé » s'il est désactivé pour la session
+  (`IoStatus::headphones` → `None`).
 - **Fenêtre Sorties** : chaque sortie (sauf le plein écran) a **Son : Master / Bus A /
   Bus B** (`SetOutputBus`), grisé pendant qu'elle tourne.
 - Tests d'UI dans une fenêtre de 1 920 × 1 040 (écran 1080p) : inputs et mélangeur côte à
@@ -233,5 +239,6 @@ refusées, `journal_dropped`.
 | *(Phase 2, étape 8)* Plein écran : ajout sur le 2ᵉ écran, choix de l'écran, Démarrer (réglages d'abord), Arrêter ; avertissements écran absent, écran unique, fréquence | `switcher::fullscreen_output_screen_choice_start_and_stop`, `fullscreen_output_warns_about_its_screen`, `fullscreen::tests` (4 tests : écran par nom, saccades, images sautées, proportions) |
 | *(Phase 2, étape 8)* **B12** : plein écran réel sur un écran secondaire | checklist `docs/manual-tests/phase2-outputs.md` |
 | *(Phase 3, étape 4)* Mélangeur : Muet, Solo, envois, Suit l'image, Muet des bus, AFL / PFL, décalage, faders (glissement jusqu'à −∞, double-clic 0 dB), bus d'une sortie (figé en marche) émettent la bonne `Command` (A11, **C13** côté UI) | `switcher::{mixer_strip_buttons_send_their_commands, faders_send_their_level_and_double_click_goes_back_to_zero, the_delay_of_an_input_is_sent, each_output_chooses_its_bus_while_stopped}`, `mixer::tests::fader_law_and_texts` |
+| *(Phase 3, étape 5)* **C12** côté UI : micro ajouté depuis le menu, vignette son seul, périphérique du casque choisi, état du casque | `switcher::{a_microphone_is_added_from_the_menu, a_sound_only_card, the_headphones_device_is_chosen_and_its_trouble_shown}` |
 | *(Phase 3, étape 4)* **C7** côté UI : les vumètres affichent crête et RMS mesurés, « pas de son » sinon | `switcher::meters_show_the_levels` |
 | Utilisation réelle : chaque type d'input, Quick Play, Cut, 4 boutons, T-Bar, contrôles vidéo, à la souris et au clavier ; sélecteur de fichier natif (Linux, Windows) | checklist `docs/manual-tests/phase1-inputs.md` |

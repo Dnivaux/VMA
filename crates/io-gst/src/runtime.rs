@@ -14,8 +14,10 @@ use vma_core::{ColorInfo, InputId, OutputId};
 use vma_engine::{InputSpec, IoEvent, IoEventSender, IoPort, IoRequest, Timeline};
 
 use crate::IoError;
+use crate::audio_devices::{AudioDeviceList, AudioDevices, AudioInputSlot, AudioMonitor};
 use crate::devices::{CaptureDevice, DeviceList, Monitor};
 use crate::feeds::{Feeds, VideoFormat};
+use crate::headphones::{Headphones, HeadphonesStatus};
 use crate::mode::CaptureMode;
 use crate::output::OutputFormat;
 use crate::outputs::{Activities, OutputActivity, Outputs};
@@ -143,6 +145,14 @@ impl<F: Feeds> PipelineSlot<F> {
     }
 }
 
+/// Options of [`IoRuntime::start_with_options`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct IoOptions {
+    /// Play the headphones (on the system's default device until one is chosen). Off by
+    /// default: tests and soaks play nothing on the machine's speakers.
+    pub headphones: bool,
+}
+
 /// The `vma-io` thread. Dropping it stops every pipeline and joins the thread.
 #[derive(Debug)]
 pub struct IoRuntime {
@@ -150,6 +160,8 @@ pub struct IoRuntime {
     thread: Option<JoinHandle<()>>,
     gstreamer: Result<(), String>,
     devices: DeviceList,
+    audio_devices: AudioDeviceList,
+    headphones: Arc<ArcSwap<HeadphonesStatus>>,
     infos: Infos,
     activities: Activities,
 }
@@ -157,15 +169,28 @@ pub struct IoRuntime {
 impl IoRuntime {
     /// Initialises GStreamer and starts `vma-io` on the engine's port. Without GStreamer
     /// (initialisation failed), still images keep working and capture / file inputs are
-    /// reported lost ([`Self::gstreamer_error`]).
+    /// reported lost ([`Self::gstreamer_error`]). No headphones.
     pub fn start(port: IoPort) -> Result<Self, IoError> {
-        Self::start_with(port, || gstreamer::init().map_err(|e| e.to_string()))
+        Self::start_with_options(port, IoOptions::default())
+    }
+
+    pub fn start_with_options(port: IoPort, options: IoOptions) -> Result<Self, IoError> {
+        Self::start_with(
+            port,
+            options,
+            || gstreamer::init().map_err(|e| e.to_string()),
+            None,
+        )
     }
 
     pub(crate) fn start_with(
-        port: IoPort,
+        mut port: IoPort,
+        options: IoOptions,
         init: impl FnOnce() -> Result<(), String>,
+        // Tests: these audio devices, without a monitor.
+        audio_devices: Option<AudioDeviceList>,
     ) -> Result<Self, IoError> {
+        let monitor_audio = audio_devices.is_none();
         let gstreamer = init();
         if let Err(e) = &gstreamer {
             tracing::error!(error = %e, "GStreamer unavailable: capture and file inputs disabled");
@@ -183,14 +208,29 @@ impl IoRuntime {
             gstreamer.clone().err(),
             Arc::clone(&activities),
         );
+        let audio_devices = audio_devices.unwrap_or_default();
+        let headphones_status = Arc::new(ArcSwap::from_pointee(HeadphonesStatus::default()));
+        let headphones = match (port.headphones.take(), &gstreamer) {
+            (Some(ring), Ok(())) if options.headphones => Some(Headphones::new(
+                ring,
+                audio_devices.clone(),
+                Arc::clone(&headphones_status),
+            )?),
+            _ => None,
+        };
         let worker = Worker {
             port,
             outputs,
             gstreamer: gstreamer.clone(),
             pipelines: Vec::new(),
+            audio_inputs: Vec::new(),
             timelines_at: Instant::now(),
             devices: devices.clone(),
             monitor: None,
+            audio_devices: audio_devices.clone(),
+            audio_monitor: None,
+            monitor_audio,
+            headphones,
             devices_at: Instant::now(),
             infos: Arc::clone(&infos),
         };
@@ -203,6 +243,8 @@ impl IoRuntime {
             thread: Some(thread),
             gstreamer,
             devices,
+            audio_devices,
+            headphones: headphones_status,
             infos,
             activities,
         })
@@ -217,6 +259,17 @@ impl IoRuntime {
     /// up to date by `vma-io`.
     pub fn devices(&self) -> Vec<CaptureDevice> {
         self.devices.infos()
+    }
+
+    /// The audio devices connected now: microphones and line inputs, headphones and
+    /// speakers (empty without GStreamer).
+    pub fn audio_devices(&self) -> AudioDevices {
+        self.audio_devices.infos()
+    }
+
+    /// What the headphones are doing (default status when they are off).
+    pub fn headphones(&self) -> HeadphonesStatus {
+        HeadphonesStatus::clone(&self.headphones.load())
     }
 
     /// What a running output is doing (`None` while it does not run).
@@ -255,9 +308,16 @@ struct Worker {
     outputs: Outputs,
     gstreamer: Result<(), String>,
     pipelines: Vec<PipelineSlot<vma_engine::FeedRegistry>>,
+    /// Sound-only inputs (microphones, line inputs).
+    audio_inputs: Vec<AudioInputSlot<vma_engine::FeedRegistry>>,
     timelines_at: Instant,
     devices: DeviceList,
     monitor: Option<Monitor>,
+    audio_devices: AudioDeviceList,
+    audio_monitor: Option<AudioMonitor>,
+    /// `false` in tests that set the audio devices themselves.
+    monitor_audio: bool,
+    headphones: Option<Headphones>,
     devices_at: Instant,
     infos: Infos,
 }
@@ -268,6 +328,12 @@ impl Worker {
             match Monitor::start(self.devices.clone()) {
                 Ok(monitor) => self.monitor = Some(monitor),
                 Err(e) => tracing::error!(error = %e, "no device monitor: no capture device"),
+            }
+            if self.monitor_audio {
+                match AudioMonitor::start(self.audio_devices.clone()) {
+                    Ok(monitor) => self.audio_monitor = Some(monitor),
+                    Err(e) => tracing::error!(error = %e, "no audio device monitor"),
+                }
             }
         }
         while !stop.load(Ordering::Acquire) {
@@ -281,6 +347,12 @@ impl Worker {
             for slot in &mut self.pipelines {
                 slot.tick(now, &mut |e| send(events, e));
             }
+            for slot in &mut self.audio_inputs {
+                slot.tick(now, &mut |e| send(events, e));
+            }
+            if let Some(headphones) = &mut self.headphones {
+                headphones.tick(now);
+            }
             self.outputs.tick(now, &mut |e| send(events, e));
             if now >= self.timelines_at {
                 self.timelines_at = now + TIMELINE_PERIOD;
@@ -292,12 +364,18 @@ impl Worker {
                 if let Some(monitor) = &self.monitor {
                     monitor.refresh();
                 }
+                if let Some(monitor) = &self.audio_monitor {
+                    monitor.refresh();
+                }
             }
         }
         // Pipelines and the monitor stop here, on `vma-io`; recordings are finalised first.
         self.outputs.shutdown();
         self.pipelines.clear();
+        self.audio_inputs.clear();
+        self.headphones = None;
         self.monitor = None;
+        self.audio_monitor = None;
         tracing::info!("io thread stopped");
     }
 
@@ -306,6 +384,7 @@ impl Worker {
             IoRequest::Open { input, spec } => self.open(input, &spec),
             IoRequest::Close { input } => {
                 self.pipelines.retain(|p| p.input != input);
+                self.audio_inputs.retain(|p| p.input != input);
                 self.publish_timelines();
             }
             IoRequest::Play { input } => self.with(input, |s| s.set_playing(true)),
@@ -326,6 +405,10 @@ impl Worker {
                 let events = &self.port.events;
                 self.outputs.stop(output, &mut |e| send(events, e));
             }
+            IoRequest::SetMonitor { device } => match &mut self.headphones {
+                Some(headphones) => headphones.set_device(device),
+                None => tracing::debug!("headphones off: device not played"),
+            },
         }
     }
 
@@ -381,6 +464,7 @@ impl Worker {
             | InputSpec::File { .. }
             | InputSpec::Synthetic { .. }
             | InputSpec::SyncSource { .. }
+            | InputSpec::AudioDevice { .. }
                 if self.gstreamer.is_err() =>
             {
                 let e = self.gstreamer.clone().err().unwrap_or_default();
@@ -432,6 +516,16 @@ impl Worker {
                 self.pipelines.push(PipelineSlot::new(
                     input,
                     Recipe::capture(capture),
+                    self.port.feeds.clone(),
+                    Instant::now(),
+                ));
+            }
+            InputSpec::AudioDevice { device } => {
+                tracing::info!(%input, device = %device.0, "opening audio device");
+                self.audio_inputs.push(AudioInputSlot::new(
+                    input,
+                    device.clone(),
+                    self.audio_devices.clone(),
                     self.port.feeds.clone(),
                     Instant::now(),
                 ));
@@ -598,8 +692,13 @@ mod tests {
         };
         let (mut engine, _readers) =
             RenderEngine::spawn(gpu.device, gpu.queue, config, Journal::Disabled).unwrap();
-        let io = IoRuntime::start_with(engine.take_io_port().unwrap(), || Err("simulated".into()))
-            .unwrap();
+        let io = IoRuntime::start_with(
+            engine.take_io_port().unwrap(),
+            IoOptions::default(),
+            || Err("simulated".into()),
+            None,
+        )
+        .unwrap();
         assert_eq!(io.gstreamer_error(), Some("simulated"));
 
         let png = std::env::temp_dir().join(format!("vma-io-nogst-{}.png", std::process::id()));
@@ -629,5 +728,102 @@ mod tests {
         }
         assert!(done(&state.load()), "{:?}", state.load().inputs);
         let _ = std::fs::remove_file(png);
+    }
+
+    /// C12 (CI side, fake devices): a microphone chosen by its identifier goes live; the
+    /// headphones play on the device chosen by command; the muted microphone in PFL solo is
+    /// silent in the Master and heard in the headphones.
+    #[test]
+    fn a_microphone_and_the_headphones_through_the_engine() {
+        use crate::audio_devices::AudioDeviceList;
+        use crate::pipeline::tests::fake_audio_device;
+        use vma_engine::{
+            Command, EngineConfig, InputStatus, Journal, Level, RenderEngine, SoloMode, Source,
+        };
+
+        let mic = fake_audio_device(
+            "Audio/Source",
+            "alsa_input.test-mic",
+            "audiotestsrc is-live=true samplesperbuffer=480 freq=1000 volume=0.5",
+        );
+        let phones = fake_audio_device(
+            "Audio/Sink",
+            "alsa_output.test-phones",
+            "fakesink sync=true",
+        );
+        let list = AudioDeviceList::default();
+        list.set(vec![mic.clone()], vec![phones.clone()]);
+
+        let gpu = pollster::block_on(vma_compositor::headless::request_gpu())
+            .expect("GPU adapter required");
+        let config = EngineConfig {
+            resolution: vma_core::Resolution::new(320, 180).unwrap(),
+            stream_clock: Some(crate::stream_clock()),
+            ..EngineConfig::default()
+        };
+        let (mut engine, _readers) =
+            RenderEngine::spawn(gpu.device, gpu.queue, config, Journal::Disabled).unwrap();
+        let io = IoRuntime::start_with(
+            engine.take_io_port().unwrap(),
+            IoOptions { headphones: true },
+            || gstreamer::init().map_err(|e| e.to_string()),
+            Some(list),
+        )
+        .unwrap();
+        assert_eq!(io.audio_devices().sources, std::slice::from_ref(&mic.info));
+        let commands = engine.commands();
+        let send = |command| commands.send(Source::Script, command).unwrap();
+        send(Command::SetMonitor {
+            device: Some(phones.info.id.clone()),
+            solo_mode: SoloMode::Pfl,
+        });
+        send(Command::AddInput {
+            spec: InputSpec::AudioDevice {
+                device: mic.info.id.clone(),
+            },
+            name: Some("Micro".into()),
+        });
+        let state = engine.state();
+        let wait = |what: &str, done: &dyn Fn() -> bool| {
+            let end = Instant::now() + Duration::from_secs(10);
+            while !done() {
+                assert!(Instant::now() < end, "{what}: {:?}", state.load().inputs);
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        };
+        wait("microphone live", &|| {
+            state
+                .load()
+                .inputs
+                .first()
+                .is_some_and(|i| i.status == InputStatus::Live { source: None })
+        });
+        wait("headphones on their device", &|| io.headphones().playing);
+        assert_eq!(
+            io.headphones().device.as_deref(),
+            Some("Son de test alsa_output.test-phones")
+        );
+        let input = state.load().inputs[0].id;
+        let meters = engine.audio_meters();
+        let peak = |level| {
+            meters
+                .read(level)
+                .map_or(0.0, |[_, post]: [vma_engine::MeterReading; 2]| {
+                    post.peak[0].max(post.peak[1])
+                })
+        };
+        // Unmuted: in the Master (and the headphones, without a solo).
+        send(Command::SetInputMute { input, mute: false });
+        wait("microphone in the Master", &|| {
+            (peak(Level::Bus(vma_core::AudioBus::Master)) - 0.5).abs() < 0.01
+        });
+        // Muted and in PFL solo: out of the Master, in the headphones.
+        send(Command::SetInputMute { input, mute: true });
+        send(Command::SetInputSolo { input, solo: true });
+        wait("solo in the headphones only", &|| {
+            peak(Level::Bus(vma_core::AudioBus::Master)) == 0.0
+                && (peak(Level::Headphones) - 0.5).abs() < 0.01
+        });
+        drop(io);
     }
 }

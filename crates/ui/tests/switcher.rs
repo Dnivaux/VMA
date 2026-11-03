@@ -21,7 +21,8 @@ use vma_engine::{
     MeterReading, MixDomain, Source, State, Timeline,
 };
 use vma_ui::{
-    AudioView, CaptureChoice, FileKind, Images, IoView, OutputActivity, Screen, Switcher, View,
+    AudioView, CaptureChoice, FileKind, HeadphonesActivity, Images, IoView, OutputActivity, Screen,
+    Switcher, View,
 };
 
 struct Rig {
@@ -44,6 +45,10 @@ struct Rig {
     screens: Vec<Screen>,
     /// Meters of the mixer.
     levels: fn(Level) -> Option<[MeterReading; 2]>,
+    /// Audio devices `vma-io` lists, and the headphones.
+    audio_sources: Vec<CaptureChoice>,
+    audio_sinks: Vec<CaptureChoice>,
+    headphones: Option<HeadphonesActivity>,
 }
 
 impl Rig {
@@ -108,6 +113,12 @@ fn harness(state: State) -> Harness<'static, Rig> {
         fade_to_black: 0.0,
         screens: Vec::new(),
         levels: |_| None,
+        audio_sources: Vec::new(),
+        audio_sinks: Vec::new(),
+        headphones: Some(HeadphonesActivity {
+            playing: true,
+            ..HeadphonesActivity::default()
+        }),
     };
     let mut harness = Harness::builder()
         // A 1080p screen: the inputs and the mixer side by side.
@@ -138,6 +149,9 @@ fn harness(state: State) -> Harness<'static, Rig> {
                         capture_mode: &no_mode,
                         output_activity: &activity,
                         record_folder: Some(std::path::Path::new("/home/op/Vidéos")),
+                        audio_sources: &rig.audio_sources,
+                        audio_sinks: &rig.audio_sinks,
+                        headphones: rig.headphones.as_ref(),
                     },
                     screens: &rig.screens,
                     frame: 0,
@@ -1146,4 +1160,87 @@ fn each_output_chooses_its_bus_while_stopped() {
     click_button(&h, "Bus B", 0);
     h.run();
     assert!(h.state().sent().is_empty());
+}
+
+// ── Audio devices (Phase 3 step 5): C12 (UI side) ──
+
+#[test]
+fn a_microphone_is_added_from_the_menu() {
+    let mut h = harness(state());
+    h.state_mut().audio_sources = vec![CaptureChoice {
+        id: DeviceId("alsa:alsa_input.usb-Mic-00.mono-fallback".into()),
+        name: "Micro USB".into(),
+    }];
+    h.run();
+    h.get_by_label("+ Ajouter").click();
+    h.run();
+    h.get_by_label("Son (micro, ligne)").hover();
+    h.run();
+    h.get_by_label("Micro USB").click();
+    h.run();
+    assert_eq!(
+        h.state().sent(),
+        [Command::AddInput {
+            spec: InputSpec::AudioDevice {
+                device: DeviceId("alsa:alsa_input.usb-Mic-00.mono-fallback".into()),
+            },
+            name: Some("Micro USB".into()),
+        }]
+    );
+}
+
+/// A sound-only input has no Quick Play nor Cut on its card, and says what it is.
+#[test]
+fn a_sound_only_card() {
+    let mut state = state();
+    state
+        .apply(&Command::AddInput {
+            spec: InputSpec::AudioDevice {
+                device: DeviceId("mic".into()),
+            },
+            name: Some("Micro".into()),
+        })
+        .unwrap();
+    let mic = state.inputs.last().unwrap().id;
+    state.apply_event(&vma_engine::Event::AudioLive { input: mic });
+    let h = harness(state);
+    assert_eq!(h.get_all_by_role_and_label(Role::Button, "QP").count(), 4);
+    assert_eq!(
+        h.get_all_by_role_and_label(Role::Button, "Cut").count(),
+        4 + 1
+    );
+    // Its card and its mixer strip.
+    assert_eq!(h.get_all_by_label("5 Micro").count(), 2);
+}
+
+#[test]
+fn the_headphones_device_is_chosen_and_its_trouble_shown() {
+    use vma_engine::SoloMode;
+
+    let mut h = harness(with_sound());
+    h.state_mut().audio_sinks = vec![CaptureChoice {
+        id: DeviceId("alsa:alsa_output.usb-Headphones".into()),
+        name: "Casque USB".into(),
+    }];
+    h.run();
+    h.get_by_label("Sortie").click();
+    h.run();
+    h.get_by_label("Casque USB").click();
+    h.run();
+    assert_eq!(
+        h.state().sent(),
+        [Command::SetMonitor {
+            device: Some(DeviceId("alsa:alsa_output.usb-Headphones".into())),
+            solo_mode: SoloMode::Afl,
+        }]
+    );
+    h.state_mut().headphones = Some(HeadphonesActivity {
+        error: Some("audio device x is not connected".into()),
+        ..HeadphonesActivity::default()
+    });
+    h.run();
+    h.get_by_label("Casque muet");
+    h.state_mut().headphones = None;
+    h.run();
+    h.get_by_label("Casque coupé");
 }

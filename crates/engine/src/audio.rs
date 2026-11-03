@@ -239,6 +239,8 @@ pub(crate) struct AudioMix {
     params: AudioPlan,
     mixer: Mixer,
     buses: [RingWriter; 3],
+    /// What the headphones hear, by output sample index like the buses (played by `vma-io`).
+    headphones: RingWriter,
     /// Output sample index of the next sample written.
     next_sample: Option<u64>,
     /// Ticks received, oldest first, waiting for their delay.
@@ -265,10 +267,11 @@ impl AudioMix {
         rate: FrameRate,
         stats: Arc<AudioStats>,
         plan: AudioPlanReader,
-    ) -> (Self, BusReaders) {
+    ) -> (Self, BusReaders, RingReader) {
         let (master_w, master) = ring(RING_FRAMES);
         let (a_w, a) = ring(RING_FRAMES);
         let (b_w, b) = ring(RING_FRAMES);
+        let (headphones_w, headphones) = ring(RING_FRAMES);
         let period_ns = u64::try_from(rate.frame_offset_nanos(1)).unwrap_or(20_000_000);
         let mix = Self {
             rate,
@@ -279,6 +282,7 @@ impl AudioMix {
             plan,
             mixer: Mixer::new(MAX_INPUTS),
             buses: [master_w, a_w, b_w],
+            headphones: headphones_w,
             next_sample: None,
             pending: (0..PENDING).map(|_| None).collect(),
             pending_head: 0,
@@ -288,7 +292,7 @@ impl AudioMix {
             silence: vec![0.0; MAX_BLOCK * CHANNELS].into_boxed_slice(),
             stats,
         };
-        (mix, BusReaders { master, a, b })
+        (mix, BusReaders { master, a, b }, headphones)
     }
 
     pub(crate) fn meters(&self) -> AudioMeters {
@@ -410,6 +414,7 @@ impl AudioMix {
                 for bus in &mut self.buses {
                     bus.push(tick.tick_ns, silence);
                 }
+                self.headphones.push(tick.tick_ns, silence);
                 gap -= frames as u64;
             }
         } else if next > start {
@@ -425,7 +430,13 @@ impl AudioMix {
                 continue;
             };
             strip.block.fill(0.0);
+            let planned = self.params.input(strip.input);
             let reading = match tick.shown(strip.input) {
+                // Sound only: read at the latency of its ring, one tick of margin (its
+                // blocks arrive within the mixing delay).
+                _ if planned.is_some_and(|p| !p.video) => {
+                    Some(tick.tick_ns.saturating_sub(self.period_ns))
+                }
                 Some(_) if rebuilt => strip.latency.held_reading_time(tick.tick_ns),
                 Some(picture) => strip.latency.reading_time(tick.tick_ns, picture),
                 None => None,
@@ -433,10 +444,7 @@ impl AudioMix {
             match reading {
                 Some(at) => {
                     strip.unseen = 0;
-                    let delay_ns = self
-                        .params
-                        .input(strip.input)
-                        .map_or(0, |a| u64::from(a.delay_ms) * 1_000_000);
+                    let delay_ns = planned.map_or(0, |p| u64::from(p.audio.delay_ms) * 1_000_000);
                     if let Some(block) = strip.block.get_mut(..len) {
                         strip.reader.read(at.saturating_sub(delay_ns), block);
                     }
@@ -457,7 +465,7 @@ impl AudioMix {
         // An input without sound settings (removed meanwhile) is not mixed.
         let inputs = self.strips.iter().enumerate().filter_map(|(slot, s)| {
             let s = s.as_ref().filter(|s| s.unseen == 0)?;
-            let audio = params.input(s.input)?;
+            let audio = params.input(s.input)?.audio;
             Some(StripInput {
                 slot,
                 samples: s.block.get(..len).unwrap_or_default(),
@@ -487,6 +495,7 @@ impl AudioMix {
                 writer.push(tick.tick_ns, self.mixer.bus(bus));
             }
         }
+        self.headphones.push(tick.tick_ns, self.mixer.headphones());
         self.next_sample = Some(start + frames as u64);
         self.stats.blocks.fetch_add(1, Ordering::Relaxed);
     }
@@ -524,6 +533,8 @@ pub(crate) struct AudioThread {
     pub(crate) ticks: TickSender,
     pub(crate) rings: RingAttacher,
     pub(crate) buses: BusReaders,
+    /// What the headphones hear, for `vma-io`.
+    pub(crate) headphones: RingReader,
     pub(crate) meters: AudioMeters,
     pub(crate) stats: Arc<AudioStats>,
     pub(crate) thread: JoinHandle<()>,
@@ -532,7 +543,7 @@ pub(crate) struct AudioThread {
 /// Spawns `vma-audio`. It ends when the render thread drops its [`TickSender`].
 pub(crate) fn spawn(rate: FrameRate, plan: AudioPlanReader) -> std::io::Result<AudioThread> {
     let stats = Arc::new(AudioStats::default());
-    let (mut mix, buses) = AudioMix::new(rate, Arc::clone(&stats), plan);
+    let (mut mix, buses, headphones) = AudioMix::new(rate, Arc::clone(&stats), plan);
     let meters = mix.meters();
     let (tx, ticks) = crossbeam_channel::bounded(TICK_QUEUE);
     let (attach_tx, attach) = crossbeam_channel::bounded(ATTACH_QUEUE);
@@ -546,6 +557,7 @@ pub(crate) fn spawn(rate: FrameRate, plan: AudioPlanReader) -> std::io::Result<A
         },
         rings: RingAttacher(attach_tx),
         buses,
+        headphones,
         meters,
         stats,
         thread,
@@ -571,7 +583,7 @@ fn run(mix: &mut AudioMix, ticks: &Receiver<AudioTick>, attach: &Receiver<(Input
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::audio_plan::audio_plan_channel;
+    use crate::audio_plan::{PlanInput, audio_plan_channel};
     use crate::command::{Db, InputSpec};
     use crate::state::InputAudio;
 
@@ -621,8 +633,12 @@ mod tests {
     /// An audio plan with `inputs`.
     fn plan_of(inputs: &[(InputId, InputAudio)]) -> AudioPlan {
         let mut plan = AudioPlan::default();
-        for (entry, input) in plan.inputs.iter_mut().zip(inputs) {
-            *entry = Some(*input);
+        for (entry, &(id, audio)) in plan.inputs.iter_mut().zip(inputs) {
+            *entry = Some(PlanInput {
+                id,
+                audio,
+                video: true,
+            });
         }
         plan
     }
@@ -657,7 +673,7 @@ mod tests {
         let rate = FrameRate::FPS_50;
         let (writer, plan) = audio_plan_channel();
         writer.publish(&plan_of(&[(InputId(3), audio)]));
-        let (mut mix, buses) = AudioMix::new(rate, Arc::default(), plan);
+        let (mut mix, buses, _) = AudioMix::new(rate, Arc::default(), plan);
         let ring_of = |b: AudioBus| match b {
             AudioBus::Master => &buses.master,
             AudioBus::A => &buses.a,
@@ -860,7 +876,7 @@ mod tests {
     fn meters_by_input_and_inputs_without_settings() {
         let rate = FrameRate::FPS_50;
         let (writer, plan) = audio_plan_channel();
-        let (mut mix, buses) = AudioMix::new(rate, Arc::default(), plan);
+        let (mut mix, buses, _) = AudioMix::new(rate, Arc::default(), plan);
         let meters = mix.meters();
         let (mut ring_writer, reader) = ring(RING_FRAMES);
         mix.attach(InputId(7), reader);
@@ -895,6 +911,100 @@ mod tests {
         assert!((post.rms[1] - 0.25).abs() < 1e-3, "{post:?}");
         let [_, master] = meters.read(Level::Bus(AudioBus::Master)).unwrap();
         assert!((master.peak[0] - 0.25).abs() < 1e-4, "{master:?}");
+    }
+
+    /// A sound-only input (microphone) is read one tick behind the tick time: its blocks,
+    /// captured as they come, are all there when the tick is mixed; a beep captured at `t`
+    /// sounds from the block of the tick at `t` + one period. The headphones hear the Master,
+    /// then the input alone when it is in solo (muted in the Master meanwhile).
+    #[test]
+    fn a_sound_only_input_and_the_headphones() {
+        let rate = FrameRate::FPS_50;
+        let (writer, plan) = audio_plan_channel();
+        let mic = InputAudio::for_spec(&InputSpec::AudioDevice {
+            device: crate::DeviceId("mic".into()),
+        });
+        assert!(mic.mute && !mic.follow_video);
+        let publish = |audio: InputAudio| {
+            let mut plan = AudioPlan::default();
+            plan.inputs[0] = Some(PlanInput {
+                id: InputId(4),
+                audio,
+                video: false,
+            });
+            writer.publish(&plan);
+        };
+        publish(InputAudio { mute: false, ..mic });
+        let (mut mix, buses, headphones) = AudioMix::new(rate, Arc::default(), plan);
+        let (writer_ring, reader) = ring(RING_FRAMES);
+        mix.attach(InputId(4), reader);
+        let mut source = Source {
+            writer: writer_ring,
+            fps: 50,
+            written: 0,
+            signal: beep_every_second,
+        };
+        let (mut master, mut phones) = (Vec::new(), Vec::new());
+        let mut read = 0u64;
+        for n in 0..400u64 {
+            if n == 300 {
+                publish(InputAudio {
+                    mute: true,
+                    solo: true,
+                    ..mic
+                });
+            }
+            let tick_ns = START + n * 20 * MS;
+            // Captured in blocks of 10 ms, delivered when complete.
+            source.capture_until(tick_ns);
+            mix.tick(&AudioTick::new(n, tick_ns, OnAir::default()));
+            let written = buses.master.written();
+            assert_eq!(headphones.written(), written);
+            let mut m = vec![0.0f32; 2 * (written - read) as usize];
+            let mut h = m.clone();
+            let outcome = buses.master.read(read as i64, &mut m);
+            assert!(outcome.is_complete());
+            headphones.read(read as i64, &mut h);
+            master.extend(m.iter().step_by(2));
+            phones.extend(h.iter().step_by(2));
+            read = written;
+        }
+        // Beep k (source second k + 1) in the block of tick (k + 1) × 50 + 1, to a sample.
+        let found = onsets(master.get(..300 * 960).unwrap());
+        assert!(found.len() >= 4, "{found:?}");
+        for (k, &s) in found.iter().enumerate() {
+            let expected = ((k as u64 + 1) * 50 + 1) * 960;
+            assert!((s as i64 - expected as i64).abs() <= 2, "beep {k} at {s}");
+        }
+        assert_eq!(phones.get(..300 * 960), master.get(..300 * 960));
+        // In solo and muted: silent in the Master, heard in the headphones (AFL hears the
+        // fader after the mute: PFL is the mode that hears a muted input).
+        let tail = 330 * 960..;
+        assert_eq!(peak(master.get(tail.clone()).unwrap()), 0.0);
+        assert_eq!(peak(phones.get(tail.clone()).unwrap()), 0.0);
+        let mut plan = AudioPlan {
+            solo_mode: vma_audio::SoloMode::Pfl,
+            ..AudioPlan::default()
+        };
+        plan.inputs[0] = Some(PlanInput {
+            id: InputId(4),
+            audio: InputAudio {
+                mute: true,
+                solo: true,
+                ..mic
+            },
+            video: false,
+        });
+        writer.publish(&plan);
+        for n in 400..520u64 {
+            let tick_ns = START + n * 20 * MS;
+            source.capture_until(tick_ns);
+            mix.tick(&AudioTick::new(n, tick_ns, OnAir::default()));
+        }
+        let written = headphones.written();
+        let mut h = vec![0.0f32; 2 * (written - read) as usize];
+        headphones.read(read as i64, &mut h);
+        assert!((peak(&h) - 0.5).abs() < 1e-4, "PFL hears the muted input");
     }
 
     #[test]

@@ -277,6 +277,10 @@ pub enum InputSpec {
         drift_ppm: i32,
         audio_lead_ms: i32,
     },
+    /// Sound only: a microphone or line input (`io-gst` audio device, stable identifier).
+    AudioDevice {
+        device: DeviceId,
+    },
 }
 
 impl InputSpec {
@@ -289,6 +293,7 @@ impl InputSpec {
             Self::TestSource { .. } | Self::Synthetic { .. } | Self::SyncSource { .. } => {
                 InputKind::TestSource
             }
+            Self::AudioDevice { .. } => InputKind::AudioDevice,
         }
     }
 
@@ -297,7 +302,10 @@ impl InputSpec {
     pub fn has_audio(&self) -> bool {
         matches!(
             self,
-            Self::Capture { .. } | Self::File { .. } | Self::SyncSource { .. }
+            Self::Capture { .. }
+                | Self::File { .. }
+                | Self::SyncSource { .. }
+                | Self::AudioDevice { .. }
         )
     }
 
@@ -321,6 +329,7 @@ impl InputSpec {
             Self::TestSource { .. } => "Mire".into(),
             Self::Synthetic { rate, resolution } => format!("Synthétique {resolution} {rate}"),
             Self::SyncSource { rate, .. } => format!("Synchro {rate}"),
+            Self::AudioDevice { .. } => "Son".into(),
         }
     }
 }

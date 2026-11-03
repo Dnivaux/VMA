@@ -1503,6 +1503,31 @@ pub(crate) mod tests {
             .unwrap()
     }
 
+    /// A fake audio device (`Audio/Source` or `Audio/Sink`) of node name `node`: its element
+    /// is the `gst-launch` bin `launch`.
+    pub(crate) fn fake_audio_device(
+        class: &str,
+        node: &str,
+        launch: &str,
+    ) -> crate::devices::Found {
+        use gstreamer::subclass::prelude::ObjectSubclassIsExt;
+        init();
+        let mut props = gst::Structure::new_empty("properties");
+        props.set("device.api", "test");
+        props.set("node.name", node);
+        let fake: fake_camera::FakeCamera = gst::glib::Object::builder()
+            .property("display-name", format!("Son de test {node}"))
+            .property("device-class", class)
+            .property("properties", props)
+            .build();
+        *fake.imp().launch.lock().unwrap() = launch.into();
+        let device: gst::Device = fake.upcast();
+        let key = crate::audio_devices::audio_key(&device.properties().unwrap()).unwrap();
+        crate::devices::keep(std::iter::once((key, device)))
+            .pop()
+            .unwrap()
+    }
+
     /// Webcam-like caps: YUY2 too slow at 720p, MJPEG fast enough.
     pub(crate) const WEBCAM_CAPS: &str = "\
         video/x-raw, format=YUY2, width=1280, height=720, framerate=10/1; \

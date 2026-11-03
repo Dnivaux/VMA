@@ -276,6 +276,7 @@ impl Switcher {
                         ui.visuals().text_color()
                     }),
             );
+            self.headphones_device(ui, view);
             for (mode, label, hover) in [
                 (SoloMode::Afl, "AFL", "Solo après fader"),
                 (
@@ -302,6 +303,56 @@ impl Switcher {
                 }
             }
         });
+    }
+
+    /// The device of the headphones (« Par défaut »: the system's), and why they do not play.
+    fn headphones_device(&mut self, ui: &mut egui::Ui, view: &View<'_>) {
+        let Some(activity) = view.io.headphones else {
+            ui.label(RichText::new("Casque coupé").small().weak())
+                .on_hover_text("Lancé sans sortie casque (--no-headphones, soak)");
+            return;
+        };
+        let monitor = &view.state.audio.monitor;
+        let shown = |id: &vma_engine::DeviceId| {
+            view.io
+                .audio_sinks
+                .iter()
+                .find(|d| d.id == *id)
+                .map_or_else(|| format!("{} (absent)", id.0), |d| d.name.clone())
+        };
+        let selected = monitor
+            .device
+            .as_ref()
+            .map_or_else(|| "Par défaut".to_owned(), shown);
+        let mut chosen = None;
+        let label = ui.label(RichText::new("Sortie").small());
+        egui::ComboBox::from_id_salt("headphones-device")
+            .width(STRIP_WIDTH - 8.0)
+            .selected_text(RichText::new(selected).small())
+            .show_ui(ui, |ui| {
+                if ui
+                    .selectable_label(monitor.device.is_none(), "Par défaut")
+                    .clicked()
+                {
+                    chosen = Some(None);
+                }
+                for sink in view.io.audio_sinks {
+                    let on = monitor.device.as_ref() == Some(&sink.id);
+                    if ui.selectable_label(on, &sink.name).clicked() {
+                        chosen = Some(Some(sink.id.clone()));
+                    }
+                }
+            })
+            .response
+            .labelled_by(label.id);
+        if let Some(device) = chosen.filter(|d| *d != monitor.device) {
+            let solo_mode = monitor.solo_mode;
+            self.send(ui, view, Command::SetMonitor { device, solo_mode });
+        }
+        if let Some(error) = &activity.error {
+            ui.label(RichText::new("Casque muet").small().color(super::WARNING))
+                .on_hover_text(error);
+        }
     }
 
     /// A vertical fader, −∞ to +10 dB; double-click: back to 0 dB. Sends each new level

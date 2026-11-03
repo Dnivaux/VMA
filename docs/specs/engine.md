@@ -192,3 +192,18 @@ Voir l'ADR 0006 (§§ 1–3, 5 et « Mise en œuvre côté moteur »).
 | Input sans réglages : non mixé ; vumètres d'un input retrouvés par son identifiant, avant / après fader, et du Master | `audio::tests::meters_by_input_and_inputs_without_settings` | CI |
 | **C2 (2de moitié)** : son en avance de 80 ms, input décalé de 80 ms au milieu d'un même enregistrement → < 1 image ensuite ; décalage appliqué à ± 1 ms (mesuré : 79,92 ms ; d'un enregistrement à l'autre, la chaîne de mesure varie jusqu'à 2 ms sur la CI, d'où la mesure dans un seul) | `io-gst` : `outputs::tests::a_delayed_input_is_back_in_sync` | CI (Linux) |
 | Un enregistrement du bus A porte le son envoyé au bus A seul, synchro < 1 image | `io-gst` : `outputs::tests::a_recording_carries_its_bus` | CI (Linux) |
+
+## Phase 3 — Son seul et casque (étape 5, 2026-11-03)
+- **Input son seul** (plan audio : `PlanInput::video = false`) : pas d'image affichée ; il est
+  lu au temps du tick **moins une période** (ADR 0007 § 3 : la latence de son anneau, plus
+  une marge). Avec le mixage différé de 3 ticks, ses blocs (10 à 21 ms selon le pilote) sont
+  arrivés quand le bloc est mixé. Le son d'un micro sort donc environ une image avant celui
+  d'une caméra au même instant (latence de l'image) : le décalage par input les recale.
+- **Casque** : `vma-audio` écrit le mix casque (`Mixer::headphones` : Master, ou les inputs en
+  solo) dans un quatrième anneau, par index d'échantillon comme les bus ; `IoPort::headphones`
+  le donne à `vma-io`.
+
+### Critères (étape 5)
+| Critère | Test | Statut |
+|---|---|---|
+| Son seul : lu une période derrière le tick, aucun échantillon manquant, bip à l'échantillon près ; casque = Master sans solo ; solo AFL d'un input muet : silence ; PFL : entendu au casque, absent du Master | `audio::tests::a_sound_only_input_and_the_headphones` | CI |
