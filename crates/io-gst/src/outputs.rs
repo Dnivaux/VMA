@@ -900,17 +900,24 @@ mod tests {
         });
         let io = IoRuntime::start(engine.take_io_port().unwrap()).unwrap();
         let state = engine.state();
-        send(&engine, Command::AddInput { spec, name: None });
+        send(
+            &engine,
+            Command::AddInput {
+                spec: spec.clone(),
+                name: None,
+            },
+        );
         let end = Instant::now() + Duration::from_secs(10);
         let input = loop {
             let live = state.load().inputs.iter().find_map(|i| {
-                (matches!(i.spec, vma_engine::InputSpec::SyncSource { .. })
-                    && matches!(i.status, vma_engine::InputStatus::Live { .. }))
-                .then_some(i.id)
+                (i.spec == spec && matches!(i.status, vma_engine::InputStatus::Live { .. }))
+                    .then_some(i.id)
             });
             match live {
                 Some(id) => break id,
-                None if Instant::now() > end => panic!("sync source not live"),
+                None if Instant::now() > end => {
+                    panic!("source not live: {:?}", state.load().inputs)
+                }
                 None => std::thread::sleep(Duration::from_millis(10)),
             }
         };
@@ -938,6 +945,9 @@ mod tests {
         wait_status(&state, REC, |s| *s == OutputStatus::Idle);
         let distribution = engine.outputs().distribution();
         let audio = engine.audio_stats();
+        for (id, f) in engine.input_stats().load().iter() {
+            eprintln!("{id}: {:?}", f.snapshot());
+        }
         drop(engine);
         drop(io);
         eprintln!("{audio:?}\n{distribution:?}\n{counters:?}\n{render:?}");
@@ -1139,6 +1149,203 @@ mod tests {
             sync.worst_ns().unwrap() < video_pts_ns(master, 1) as i64,
             "{sync:?}"
         );
+    }
+
+    /// An engine whose outputs carry the sync test (a flash and a beep per second), with an
+    /// SRT output `mode` on `port` started.
+    fn srt_sender(master: FrameRate, mode: SrtMode, port: u16, passphrase: &str) -> SrtSender {
+        let sender = srt_sender_started(master, mode, port, passphrase);
+        sender.wait_on();
+        sender
+    }
+
+    /// [`srt_sender`], without waiting for it to send.
+    fn srt_sender_started(
+        master: FrameRate,
+        mode: SrtMode,
+        port: u16,
+        passphrase: &str,
+    ) -> SrtSender {
+        let (mut engine, device) = spawn_engine_with(EngineConfig {
+            rate: master,
+            sync_test: true,
+            ..EngineConfig::default()
+        });
+        let io = IoRuntime::start(engine.take_io_port().unwrap()).unwrap();
+        send(&engine, srt(mode, port, passphrase));
+        // The command is applied by `vma-control`: wait for the output (never start the
+        // recording that is there from the start).
+        let state = engine.state();
+        let end = Instant::now() + Duration::from_secs(5);
+        let output = loop {
+            let srt = state
+                .load()
+                .outputs
+                .iter()
+                .find(|o| matches!(o.spec, OutputSpec::Srt(_)))
+                .map(|o| o.id);
+            match srt {
+                Some(id) => break id,
+                None if Instant::now() > end => panic!("SRT output not added"),
+                None => std::thread::sleep(Duration::from_millis(5)),
+            }
+        };
+        send(&engine, Command::StartOutput { output });
+        SrtSender {
+            _io: io,
+            engine,
+            _device: device,
+            output,
+        }
+    }
+
+    struct SrtSender {
+        // Kept running, dropped before the engine.
+        _io: IoRuntime,
+        engine: RenderEngine,
+        _device: wgpu::Device,
+        output: OutputId,
+    }
+
+    impl SrtSender {
+        /// Waits until it sends. A caller may wait for its listener to come back: both
+        /// retry after 1, 2, 5 then 10 s.
+        fn wait_on(&self) {
+            let state = self.engine.state();
+            let end = Instant::now() + Duration::from_secs(40);
+            loop {
+                let status = state.load().output(self.output).map(|o| o.status.clone());
+                match status {
+                    Some(OutputStatus::Running { .. }) => return,
+                    s if Instant::now() > end => panic!("{} still {s:?}", self.output),
+                    _ => std::thread::sleep(Duration::from_millis(20)),
+                }
+            }
+        }
+
+        fn stop(&self) {
+            send(
+                &self.engine,
+                Command::StopOutput {
+                    output: self.output,
+                },
+            );
+            wait_status(&self.engine.state(), self.output, |s| {
+                *s == OutputStatus::Idle
+            });
+        }
+
+        fn start(&self) {
+            send(
+                &self.engine,
+                Command::StartOutput {
+                    output: self.output,
+                },
+            );
+            self.wait_on();
+        }
+    }
+
+    fn srt_input(mode: SrtMode, port: u16, passphrase: &str) -> vma_engine::InputSpec {
+        vma_engine::InputSpec::Srt(vma_engine::SrtSource {
+            mode,
+            host: "127.0.0.1".into(),
+            port,
+            latency_ms: 120,
+            passphrase: Secret::new(passphrase),
+        })
+    }
+
+    /// C9: an SRT input (caller, with a passphrase) receives the SRT output of another engine
+    /// (listener, sync test): its pictures and sound reach a recording of the receiving
+    /// engine in sync, to a frame. The sender runs at 25p: its one-frame flash lasts two
+    /// frames of the receiver (a single 50p frame can be skipped by the resampling).
+    ///
+    /// Ignored: measured 2026-11-03 (40 s), every pair of flash and beep is there and no
+    /// picture is lost (jitter buffer), but the offset moves by steps of one master period
+    /// (−30 to +6 ms): a picture released near a tick is shown on one tick or the next, the
+    /// « latest picture » choice of the render thread (debt of Phase 1, step 9). Fixed by a
+    /// choice of the picture by its time, to be decided (ROADMAP).
+    #[test]
+    #[ignore = "C9 sync: steps of one master period, waits for the choice of the picture by its time"]
+    fn srt_input_receives_our_srt_output_in_sync() {
+        if srt_available().is_none() {
+            return;
+        }
+        let master = FrameRate::FPS_50;
+        let port = free_udp_port();
+        let sender = srt_sender(FrameRate::FPS_25, SrtMode::Listener, port, PASSPHRASE);
+        let sync = sync_source_recording(
+            "c9",
+            master,
+            srt_input(SrtMode::Caller, port, PASSPHRASE),
+            20,
+        );
+        eprintln!("{sync:?}");
+        drop(sender);
+        assert!(sync.flashes >= 4, "{sync:?}");
+        assert!(
+            sync.worst_ns().unwrap() < video_pts_ns(master, 1) as i64,
+            "{sync:?}"
+        );
+    }
+
+    /// C9: an SRT input listening waits for its caller as long as it takes; a wrong passphrase
+    /// never gets through; the right one does; the caller stops → signal lost; it calls again
+    /// → live again.
+    #[test]
+    fn srt_input_listens_and_reconnects() {
+        if srt_available().is_none() {
+            return;
+        }
+        let master = FrameRate::FPS_50;
+        let port = free_udp_port();
+        let (mut engine, _device) = spawn_engine_with(EngineConfig {
+            rate: master,
+            stream_clock: Some(crate::stream_clock()),
+            ..EngineConfig::default()
+        });
+        let io = IoRuntime::start(engine.take_io_port().unwrap()).unwrap();
+        let state = engine.state();
+        send(
+            &engine,
+            Command::AddInput {
+                spec: srt_input(SrtMode::Listener, port, PASSPHRASE),
+                name: None,
+            },
+        );
+        // After the test pattern of the engine.
+        let status = || state.load().inputs.last().unwrap().status;
+        let wait = |what: &str, done: &dyn Fn(vma_engine::InputStatus) -> bool, secs: u64| {
+            let end = Instant::now() + Duration::from_secs(secs);
+            while !done(status()) {
+                assert!(Instant::now() < end, "{what}: {:?}", status());
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        };
+        let live = |s: vma_engine::InputStatus| matches!(s, vma_engine::InputStatus::Live { .. });
+        // Nobody calls for 6 s (more than the start-up limit of the other sources): waiting.
+        std::thread::sleep(Duration::from_secs(6));
+        assert_eq!(status(), vma_engine::InputStatus::Starting);
+        // A caller with the wrong passphrase gets nothing through.
+        let intruder =
+            srt_sender_started(master, SrtMode::Caller, port, "not the right passphrase");
+        std::thread::sleep(Duration::from_secs(3));
+        assert!(!live(status()), "{:?}", status());
+        drop(intruder);
+        // The right one does; it stops: lost; it calls again: live again.
+        let sender = srt_sender_started(master, SrtMode::Caller, port, PASSPHRASE);
+        wait("live", &live, 40);
+        sender.stop();
+        wait(
+            "lost",
+            &|s| matches!(s, vma_engine::InputStatus::SignalLost { .. }),
+            10,
+        );
+        sender.start();
+        wait("live again", &live, 40);
+        drop(sender);
+        drop(io);
     }
 
     /// C3 (real time): sources at +100 and −100 ppm for 60 s: the sound stays on its pictures

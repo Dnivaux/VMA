@@ -267,24 +267,40 @@ impl OutputSpec {
                     _ => Err(InvalidSpec::RtmpUrl),
                 }
             }
-            Self::Srt(srt) => {
-                if srt.mode == SrtMode::Caller && srt.host.trim().is_empty() {
-                    return Err(InvalidSpec::SrtHost);
-                }
-                if srt.port == 0 {
-                    return Err(InvalidSpec::SrtPort);
-                }
-                if !SRT_LATENCY_RANGE.contains(&srt.latency_ms) {
-                    return Err(InvalidSpec::SrtLatency(srt.latency_ms));
-                }
-                match srt.passphrase.expose() {
-                    Some(p) if !p.is_empty() && !(10..=79).contains(&p.chars().count()) => {
-                        Err(InvalidSpec::SrtPassphrase)
-                    }
-                    _ => Ok(()),
-                }
-            }
+            Self::Srt(srt) => validate_srt(
+                srt.mode,
+                &srt.host,
+                srt.port,
+                srt.latency_ms,
+                &srt.passphrase,
+            ),
         }
+    }
+}
+
+/// The rules of an SRT link, output or input: a caller has a host, a port, a latency of 20 to
+/// 8 000 ms, no passphrase or one of 10 to 79 characters.
+pub(crate) fn validate_srt(
+    mode: SrtMode,
+    host: &str,
+    port: u16,
+    latency_ms: u32,
+    passphrase: &Secret,
+) -> Result<(), InvalidSpec> {
+    if mode == SrtMode::Caller && host.trim().is_empty() {
+        return Err(InvalidSpec::SrtHost);
+    }
+    if port == 0 {
+        return Err(InvalidSpec::SrtPort);
+    }
+    if !SRT_LATENCY_RANGE.contains(&latency_ms) {
+        return Err(InvalidSpec::SrtLatency(latency_ms));
+    }
+    match passphrase.expose() {
+        Some(p) if !p.is_empty() && !(10..=79).contains(&p.chars().count()) => {
+            Err(InvalidSpec::SrtPassphrase)
+        }
+        _ => Ok(()),
     }
 }
 

@@ -1244,3 +1244,48 @@ fn the_headphones_device_is_chosen_and_its_trouble_shown() {
     h.run();
     h.get_by_label("Casque coupé");
 }
+
+// ── SRT input (Phase 3 step 6): C9 / C13 (UI side) ──
+
+/// « Ajouter → SRT… »: the settings are typed, the passphrase in a password field shown
+/// nowhere; « Ajouter » sends them.
+#[test]
+fn an_srt_input_is_added_with_its_passphrase_hidden() {
+    use vma_engine::{Secret, SrtMode, SrtSource};
+    const PASSPHRASE: &str = "correct horse battery";
+    let mut h = harness(state());
+    h.get_by_label("+ Ajouter").click();
+    h.run();
+    h.get_by_label("SRT…").click();
+    h.run();
+    h.get_by_label("Écoute").click();
+    h.run();
+    h.get_by_label("Appelant").click();
+    h.run();
+    h.get_by_label("Hôte").click();
+    h.run();
+    h.get_by_label("Hôte").type_text("10.0.0.7");
+    h.run();
+    h.get_by_label("Phrase de passe").click();
+    h.run();
+    h.get_by_label("Phrase de passe").type_text(PASSPHRASE);
+    h.run();
+    assert!(h.query_by_label_contains(PASSPHRASE).is_none());
+    assert!(h.state().sent().is_empty(), "nothing before « Ajouter »");
+    h.get_by_label("Ajouter").click();
+    h.run();
+    assert_eq!(
+        h.state().sent(),
+        [Command::AddInput {
+            spec: InputSpec::Srt(SrtSource {
+                mode: SrtMode::Caller,
+                host: "10.0.0.7".into(),
+                port: 9000,
+                latency_ms: 120,
+                passphrase: Secret::new(PASSPHRASE),
+            }),
+            name: None,
+        }]
+    );
+    assert!(h.query_by_label("Nouvel input SRT").is_none(), "closed");
+}

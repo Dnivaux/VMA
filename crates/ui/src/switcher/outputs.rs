@@ -667,7 +667,7 @@ fn bitrate(ui: &mut egui::Ui, kbps: &mut Option<u32>) {
 
 /// A password field for a secret; a redacted one (read back from a journal) is empty, to be
 /// typed again.
-fn secret(ui: &mut egui::Ui, label: &str, secret: &mut Secret) {
+pub(super) fn secret(ui: &mut egui::Ui, label: &str, secret: &mut Secret) {
     let label = ui.label(label);
     let mut text = secret.expose().unwrap_or_default().to_owned();
     let hint = if secret.expose().is_none() {

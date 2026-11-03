@@ -1151,6 +1151,23 @@ mod tests {
                 }),
                 name: None,
             });
+            // C13: an SRT input, accepted, then refused (latency) and logged with its command.
+            let input = crate::command::SrtSource {
+                host: "10.0.0.3".into(),
+                passphrase: Secret::new(PASSPHRASE),
+                ..crate::command::SrtSource::default()
+            };
+            rig.send(Command::AddInput {
+                spec: InputSpec::Srt(input.clone()),
+                name: None,
+            });
+            rig.send(Command::AddInput {
+                spec: InputSpec::Srt(crate::command::SrtSource {
+                    latency_ms: 5,
+                    ..input
+                }),
+                name: None,
+            });
             rig.send(Command::StartStreaming { slot: None });
             // Refused (running), logged with the command.
             rig.send(Command::UpdateOutput {
@@ -1171,6 +1188,8 @@ mod tests {
             journal.contains("AddOutput") && journal.contains("***"),
             "{journal}"
         );
+        assert!(journal.contains(r#""Srt":{"mode":"caller""#), "{journal}");
+        assert!(logs.contains("SRT latency 5 ms"), "{logs}");
         assert!(logs.contains("command refused"), "{logs}");
         for (what, text) in [("journal", &journal), ("logs", &logs), ("state", &state)] {
             for secret in [KEY, PASSPHRASE] {

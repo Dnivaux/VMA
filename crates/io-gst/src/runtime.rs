@@ -465,6 +465,7 @@ impl Worker {
             | InputSpec::Synthetic { .. }
             | InputSpec::SyncSource { .. }
             | InputSpec::AudioDevice { .. }
+            | InputSpec::Srt(_)
                 if self.gstreamer.is_err() =>
             {
                 let e = self.gstreamer.clone().err().unwrap_or_default();
@@ -526,6 +527,15 @@ impl Worker {
                     input,
                     device.clone(),
                     self.audio_devices.clone(),
+                    self.port.feeds.clone(),
+                    Instant::now(),
+                ));
+            }
+            InputSpec::Srt(source) => {
+                tracing::info!(%input, uri = %source.uri(), mode = ?source.mode, "opening SRT input");
+                self.pipelines.push(PipelineSlot::new(
+                    input,
+                    Recipe::srt(source.clone()),
                     self.port.feeds.clone(),
                     Instant::now(),
                 ));

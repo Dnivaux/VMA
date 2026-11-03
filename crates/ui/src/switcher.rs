@@ -20,6 +20,7 @@ use crate::{HeadphonesActivity, OutputActivity};
 
 mod mixer;
 mod outputs;
+mod srt_input;
 
 /// Width of the transition column.
 const COLUMN_WIDTH: f32 = 150.0;
@@ -215,6 +216,8 @@ pub struct Switcher {
     scrub: Option<(InputId, f64)>,
     outputs: outputs::OutputsUi,
     mixer: mixer::MixerUi,
+    /// The SRT input being added (« Ajouter → SRT… »).
+    new_srt: Option<vma_engine::SrtSource>,
 }
 
 impl Default for Switcher {
@@ -232,6 +235,7 @@ impl Default for Switcher {
             scrub: None,
             outputs: outputs::OutputsUi::default(),
             mixer: mixer::MixerUi::default(),
+            new_srt: None,
         }
     }
 }
@@ -320,6 +324,7 @@ impl Switcher {
         self.input_settings_window(ui, view);
         self.settings_window(ui, view);
         self.outputs_window(ui, view);
+        self.srt_input_window(ui, view);
     }
 
     fn send(&mut self, ui: &egui::Ui, view: &View<'_>, command: Command) {
@@ -677,6 +682,10 @@ impl Switcher {
             });
             if ui.button("Vidéo…").clicked() {
                 self.file_request = Some(FileKind::Video);
+                ui.close();
+            }
+            if ui.button("SRT…").clicked() {
+                self.new_srt = Some(vma_engine::SrtSource::default());
                 ui.close();
             }
         });

@@ -8,7 +8,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use vma_audio::SoloMode;
 use vma_core::{AudioBus, FrameRate, InputId, InputKind, OutputId, Resolution, Rgb8};
 
-use crate::output_spec::OutputSpec;
+use crate::output_spec::{InvalidSpec, OutputSpec, Secret, SrtMode, validate_srt};
 
 /// Longest accepted transition, in milliseconds.
 pub const MAX_TRANSITION_MS: u32 = 10_000;
@@ -281,6 +281,45 @@ pub enum InputSpec {
     AudioDevice {
         device: DeviceId,
     },
+    /// An SRT stream (MPEG-TS, pictures and sound) received as caller or listener.
+    Srt(SrtSource),
+}
+
+/// An SRT input (`phase-3.md` § 5; same fields as an SRT output).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SrtSource {
+    pub mode: SrtMode,
+    /// Sender to call (caller), or local address to listen on (listener; empty = all).
+    pub host: String,
+    pub port: u16,
+    pub latency_ms: u32,
+    /// Empty: no encryption; otherwise 10 to 79 characters. Written `***` everywhere.
+    pub passphrase: Secret,
+}
+
+impl Default for SrtSource {
+    /// Caller, 120 ms (`phase-3.md` § 6, like the output).
+    fn default() -> Self {
+        Self {
+            mode: SrtMode::Caller,
+            host: String::new(),
+            port: 9000,
+            latency_ms: 120,
+            passphrase: Secret::none(),
+        }
+    }
+}
+
+impl SrtSource {
+    /// `srt://host:port`, an IPv6 host in brackets. No secret in it.
+    pub fn uri(&self) -> String {
+        let host = self.host.trim();
+        if host.contains(':') && !host.starts_with('[') {
+            format!("srt://[{host}]:{}", self.port)
+        } else {
+            format!("srt://{host}:{}", self.port)
+        }
+    }
 }
 
 impl InputSpec {
@@ -294,6 +333,7 @@ impl InputSpec {
                 InputKind::TestSource
             }
             Self::AudioDevice { .. } => InputKind::AudioDevice,
+            Self::Srt(_) => InputKind::Srt,
         }
     }
 
@@ -306,7 +346,16 @@ impl InputSpec {
                 | Self::File { .. }
                 | Self::SyncSource { .. }
                 | Self::AudioDevice { .. }
+                | Self::Srt(_)
         )
+    }
+
+    /// Checks the settings of a new input (an SRT input: like an SRT output).
+    pub(crate) fn validate(&self) -> Result<(), InvalidSpec> {
+        match self {
+            Self::Srt(s) => validate_srt(s.mode, &s.host, s.port, s.latency_ms, &s.passphrase),
+            _ => Ok(()),
+        }
     }
 
     /// True for inputs the engine draws itself (no `io-gst` pipeline): colour, test pattern.
@@ -330,6 +379,7 @@ impl InputSpec {
             Self::Synthetic { rate, resolution } => format!("Synthétique {resolution} {rate}"),
             Self::SyncSource { rate, .. } => format!("Synchro {rate}"),
             Self::AudioDevice { .. } => "Son".into(),
+            Self::Srt(srt) => format!("SRT {}", srt.uri().trim_start_matches("srt://")),
         }
     }
 }

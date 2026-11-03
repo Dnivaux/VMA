@@ -334,6 +334,8 @@ pub enum Rejection {
     SecretMissing(OutputId),
     #[error("invalid output settings: {0}")]
     InvalidOutput(#[from] InvalidSpec),
+    #[error("invalid input settings: {0}")]
+    InvalidInput(InvalidSpec),
     #[error("{0} has no sound")]
     NoAudio(InputId),
     #[error("{0} has no sound")]
@@ -1201,6 +1203,7 @@ impl State {
         if self.inputs.len() >= MAX_INPUTS {
             return Err(Rejection::TooManyInputs);
         }
+        spec.validate().map_err(Rejection::InvalidInput)?;
         let name = match name {
             Some(n) => valid_name(n)?,
             None => spec.default_name(),
@@ -1621,6 +1624,81 @@ mod tests {
         assert_eq!(s.input(file).unwrap().status, InputStatus::Starting);
         let plan = s.audio_plan();
         assert!(!plan.input(mic).unwrap().video && plan.input(file).unwrap().video);
+    }
+
+    /// An SRT input is checked like an SRT output; it has pictures and sound.
+    #[test]
+    fn srt_inputs_are_checked() {
+        use crate::command::SrtSource;
+        use crate::output_spec::{InvalidSpec, Secret, SrtMode};
+        let mut s = state();
+        let good = SrtSource {
+            host: "10.0.0.2".into(),
+            passphrase: Secret::new("correct horse battery"),
+            ..SrtSource::default()
+        };
+        let io = s
+            .apply(&Command::AddInput {
+                spec: InputSpec::Srt(good.clone()),
+                name: None,
+            })
+            .unwrap();
+        let id = s.inputs[0].id;
+        assert!(matches!(io[..], [IoRequest::Open { input, .. }] if input == id));
+        assert_eq!(s.inputs[0].name, "SRT 10.0.0.2:9000");
+        assert_eq!(s.program, Some(id), "it has pictures");
+        assert!(s.inputs[0].audio.is_some_and(|a| a.follow_video && !a.mute));
+        let listener = SrtSource {
+            mode: SrtMode::Listener,
+            host: String::new(),
+            ..SrtSource::default()
+        };
+        s.apply(&Command::AddInput {
+            spec: InputSpec::Srt(listener),
+            name: None,
+        })
+        .unwrap();
+        for (bad, why) in [
+            (
+                SrtSource {
+                    host: " ".into(),
+                    ..good.clone()
+                },
+                InvalidSpec::SrtHost,
+            ),
+            (
+                SrtSource {
+                    port: 0,
+                    ..good.clone()
+                },
+                InvalidSpec::SrtPort,
+            ),
+            (
+                SrtSource {
+                    latency_ms: 10,
+                    ..good.clone()
+                },
+                InvalidSpec::SrtLatency(10),
+            ),
+            (
+                SrtSource {
+                    passphrase: Secret::new("short"),
+                    ..good.clone()
+                },
+                InvalidSpec::SrtPassphrase,
+            ),
+        ] {
+            assert_eq!(
+                refused(
+                    &mut s,
+                    Command::AddInput {
+                        spec: InputSpec::Srt(bad),
+                        name: None
+                    }
+                ),
+                Rejection::InvalidInput(why)
+            );
+        }
     }
 
     /// The headphones device goes to `vma-io` when it changes, not when only the solo mode

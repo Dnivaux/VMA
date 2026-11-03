@@ -145,6 +145,8 @@ pub(crate) enum Media {
     Capture(Capture),
     /// The sync source of the tests (`sync_source`).
     Sync(crate::sync_source::SyncSpec),
+    /// An SRT stream (MPEG-TS): `uridecodebin` on `srt://`, live.
+    Srt(vma_engine::SrtSource),
 }
 
 /// A capture device to open in the mode closest to the master format.
@@ -164,6 +166,11 @@ pub(crate) struct Recipe {
     pub(crate) sync: bool,
     /// Whether silence means a lost signal (live sources; not a paused file).
     pub(crate) watchdog: bool,
+    /// Waits for its first picture without a limit (an SRT listener waits for its caller).
+    pub(crate) patient: bool,
+    /// Pictures released at an even pace ([`Pacer`]): a network source hands them out in
+    /// bursts.
+    pub(crate) pace: bool,
 }
 
 impl Recipe {
@@ -173,6 +180,8 @@ impl Recipe {
             media: Media::File(path),
             sync: true,
             watchdog: false,
+            patient: false,
+            pace: false,
         }
     }
 
@@ -189,6 +198,8 @@ impl Recipe {
             )),
             sync: false,
             watchdog: true,
+            patient: false,
+            pace: false,
         }
     }
 
@@ -198,6 +209,8 @@ impl Recipe {
             media: Media::Sync(spec),
             sync: false,
             watchdog: true,
+            patient: false,
+            pace: false,
         }
     }
 
@@ -207,6 +220,20 @@ impl Recipe {
             media: Media::Capture(capture),
             sync: false,
             watchdog: true,
+            patient: false,
+            pace: false,
+        }
+    }
+
+    /// An SRT input: live, lost when silent; a listener waits for its caller as long as it
+    /// takes.
+    pub(crate) fn srt(source: vma_engine::SrtSource) -> Self {
+        Self {
+            patient: source.mode == vma_engine::SrtMode::Listener,
+            media: Media::Srt(source),
+            sync: false,
+            watchdog: true,
+            pace: true,
         }
     }
 
@@ -243,6 +270,8 @@ pub(crate) struct GstInput {
     shared: Arc<Shared>,
     notes: Receiver<Note>,
     watchdog: bool,
+    /// Waits for its first picture without a limit.
+    patient: bool,
     /// `Some` for a video file.
     player: Option<Player>,
     /// `Some` for a capture device: the mode it was opened in.
@@ -276,6 +305,7 @@ impl GstInput {
             }
             Media::Launch(source) => launch_pipeline(source)?,
             Media::File(path) => file_pipeline(path, feeds.audio(input))?,
+            Media::Srt(source) => srt_pipeline(source, feeds.audio(input))?,
             Media::Capture(capture) => {
                 let (source, chosen) = open_device(capture)?;
                 let parts = capture_pipeline(source, &chosen)?;
@@ -327,6 +357,7 @@ impl GstInput {
             preroll_pts: None,
             shared: Arc::clone(&shared),
             convert,
+            pacer: recipe.pace.then(Pacer::default),
         }));
         let preroll = Arc::clone(&stream);
         sink.set_callbacks(
@@ -364,6 +395,7 @@ impl GstInput {
             shared,
             notes,
             watchdog: recipe.watchdog,
+            patient: recipe.patient,
             player: timeline.then_some(Player {
                 seeded: false,
                 start_ms: 0,
@@ -412,7 +444,9 @@ impl GstInput {
         }
         let since = now.saturating_duration_since(self.shared.start);
         match self.shared.last_picture.load(Ordering::Acquire) {
-            0 if since > STARTUP_TIMEOUT => Some(format!("no picture after {STARTUP_TIMEOUT:?}")),
+            0 if since > STARTUP_TIMEOUT && !self.patient => {
+                Some(format!("no picture after {STARTUP_TIMEOUT:?}"))
+            }
             0 => None,
             last => {
                 let period = Duration::from_nanos(self.shared.period_ns.load(Ordering::Relaxed));
@@ -551,17 +585,68 @@ fn file_pipeline(path: &Path, audio: Option<RingWriter>) -> Result<Parts, IoErro
         .map_err(|e| pipeline_error(&e))?;
     convert.link(&sink).map_err(|e| pipeline_error(&e))?;
 
-    route_decoded(&decode, &pipeline, &convert, audio);
+    route_decoded(&decode, &pipeline, &convert, audio, true);
+    Ok((pipeline, convert, sink))
+}
+
+/// An SRT stream through `uridecodebin` (`srtsrc ! tsdemux ! decoders`), live: the sound is
+/// taken as it comes. Mode and latency go in the URI (as for the output); the passphrase is
+/// set on `srtsrc` (never in the URI nor in a message). `srtsrc` does not reconnect by
+/// itself: a lost stream is restarted by the common policy (1, 2, 5, 10 s).
+fn srt_pipeline(
+    source: &vma_engine::SrtSource,
+    audio: Option<RingWriter>,
+) -> Result<Parts, IoError> {
+    let pipeline_error = |e: &dyn std::fmt::Display| IoError::Pipeline(e.to_string());
+    let Some(passphrase) = source.passphrase.expose().map(str::to_owned) else {
+        return Err(IoError::Pipeline(
+            "the SRT passphrase is missing (read back from a journal): add the input again".into(),
+        ));
+    };
+    let mode = match source.mode {
+        vma_engine::SrtMode::Caller => "caller",
+        vma_engine::SrtMode::Listener => "listener",
+    };
+    let uri = format!("{}?mode={mode}&latency={}", source.uri(), source.latency_ms);
+    let decode = gst::ElementFactory::make("uridecodebin")
+        .property("uri", uri.as_str())
+        .build()
+        .map_err(|e| pipeline_error(&e))?;
+    decode.connect("source-setup", false, move |values| {
+        let element = values.get(1).and_then(|v| v.get::<gst::Element>().ok());
+        if let Some(src) = element {
+            if src.has_property("passphrase") && !passphrase.is_empty() {
+                src.set_property("passphrase", passphrase.as_str());
+            }
+            if src.has_property("auto-reconnect") {
+                src.set_property("auto-reconnect", false);
+            }
+        }
+        None
+    });
+    let convert = gst::ElementFactory::make("videoconvert")
+        .name("vma_convert")
+        .build()
+        .map_err(|e| pipeline_error(&e))?;
+    let sink = gst_app::AppSink::builder().name("vma_sink").build();
+    let pipeline = gst::Pipeline::new();
+    pipeline
+        .add_many([&decode, &convert, sink.upcast_ref()])
+        .map_err(|e| pipeline_error(&e))?;
+    convert.link(&sink).map_err(|e| pipeline_error(&e))?;
+    route_decoded(&decode, &pipeline, &convert, audio, false);
     Ok((pipeline, convert, sink))
 }
 
 /// Links the pads `decode` creates: the first video stream to `convert`, the first sound
-/// stream to `audio` (if any), any other stream to a `fakesink`.
+/// stream to `audio` (if any; `sync`: paced by the clock, a file), any other stream to a
+/// `fakesink`.
 fn route_decoded(
     decode: &gst::Element,
     pipeline: &gst::Pipeline,
     convert: &gst::Element,
     audio: Option<RingWriter>,
+    sync: bool,
 ) {
     let weak_pipeline = pipeline.downgrade();
     let weak_convert = convert.downgrade();
@@ -579,7 +664,7 @@ fn route_decoded(
             .structure(0)
             .is_some_and(|s| s.name().starts_with("audio/"));
         if is_audio && let Some(ring) = audio.lock().ok().and_then(|mut a| a.take()) {
-            if let Err(e) = crate::audio::link(&pipeline, pad, ring, true) {
+            if let Err(e) = crate::audio::link(&pipeline, pad, ring, sync) {
                 tracing::warn!(error = %e, "cannot link the sound stream");
                 discard(&pipeline, pad);
             }
@@ -643,7 +728,7 @@ pub(crate) fn capture_pipeline(source: gst::Element, mode: &CaptureMode) -> Resu
                 .map_err(|e| pipeline_error(&e))?;
             pipeline.add(&decode).map_err(|e| pipeline_error(&e))?;
             filter.link(&decode).map_err(|e| pipeline_error(&e))?;
-            route_decoded(&decode, &pipeline, &convert, None);
+            route_decoded(&decode, &pipeline, &convert, None, false);
         }
     }
     Ok((pipeline, convert, sink))
@@ -742,6 +827,51 @@ struct Stream<F: Feeds> {
     preroll_pts: Option<gst::ClockTime>,
     shared: Arc<Shared>,
     convert: gst::Element,
+    pacer: Option<Pacer>,
+}
+
+/// A jitter buffer of one source period for a network source (SRT): pictures that arrive in
+/// bursts are released at the pace of their timestamps, one period after the earliest
+/// arrivals, so that none is overwritten before the render thread sees it. Their stream time
+/// (and so the sound) does not change. Waits on the streaming thread of the input (upstream
+/// queues hold the rest).
+///
+/// The reference is the smallest arrival − PTS seen: it drops at once to an earlier arrival,
+/// and rises by at most [`PACE_RISE`] per second (a sender clock slower than ours, a stream
+/// that restarted): no step in the release times, so none in the lip sync.
+#[derive(Debug, Default)]
+struct Pacer {
+    start: Option<Instant>,
+    /// Smallest arrival − PTS (ns), and when it was last moved.
+    floor: Option<(f64, Instant)>,
+}
+
+/// How fast the reference of a [`Pacer`] may rise: 1 ms per second (1 000 ppm).
+const PACE_RISE: f64 = 1e-3;
+/// Longest wait for one picture (a timestamp jump is not waited for).
+const PACE_MAX_WAIT: Duration = Duration::from_millis(200);
+
+impl Pacer {
+    /// Waits until the picture of PTS `pts_ns` is due; `period`: one source period.
+    fn wait(&mut self, pts_ns: u64, period: Duration) {
+        let now = Instant::now();
+        let start = *self.start.get_or_insert(now);
+        let arrival = now.duration_since(start).as_nanos() as f64;
+        let offset = arrival - pts_ns as f64;
+        let floor = match self.floor {
+            Some((floor, at)) => {
+                let risen = floor + PACE_RISE * now.duration_since(at).as_nanos() as f64;
+                risen.min(offset)
+            }
+            None => offset,
+        };
+        self.floor = Some((floor, now));
+        let due = pts_ns as f64 + floor + period.as_nanos() as f64;
+        let wait = due - arrival;
+        if wait > 0.0 {
+            std::thread::sleep(Duration::from_nanos(wait as u64).min(PACE_MAX_WAIT));
+        }
+    }
 }
 
 impl<F: Feeds> Stream<F> {
@@ -774,6 +904,13 @@ impl<F: Feeds> Stream<F> {
         let info =
             gst_video::VideoInfo::from_caps(caps).map_err(|_| gst::FlowError::NotNegotiated)?;
         let format = video_format(&info).ok_or(gst::FlowError::NotNegotiated)?;
+        if let (Some(pacer), Some(pts)) = (&mut self.pacer, pts) {
+            let period = format
+                .rate
+                .and_then(|r| u64::try_from(r.frame_offset_nanos(1)).ok())
+                .map_or(Duration::from_millis(40), Duration::from_nanos);
+            pacer.wait(pts.nseconds(), period);
+        }
         if self.out.as_ref().is_none_or(|(f, _)| *f != format) {
             self.on_new_format(format)?;
         }
@@ -965,6 +1102,8 @@ pub(crate) mod tests {
             media: Media::Launch(source.into()),
             sync: false,
             watchdog: true,
+            patient: false,
+            pace: false,
         }
     }
 

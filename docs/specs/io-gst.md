@@ -465,3 +465,39 @@ Windows (pas de MediaMTX en CI), ils sont sautés.
 | **C12** (casque, CI) : l'anneau joué sur le périphérique choisi (1 s de son reçue, niveau exact) ; débranché → raison, nouvel essai ; rebranché → joue | `headphones::tests::the_headphones_play_the_ring_on_their_device` | CI |
 | **C12** de bout en bout (moteur + `vma-io`, faux périphériques) : micro en marche, casque sur le périphérique choisi par commande ; micro au Master ; muet en solo PFL → Master silencieux, casque au niveau du micro | `runtime::tests::a_microphone_and_the_headphones_through_the_engine` | CI |
 | **C12** (vrai matériel) : micro, débranchement, casque, solo audible | checklist [`phase3-audio.md`](../manual-tests/phase3-audio.md) | manuel |
+
+## Phase 3 — Entrée SRT (étape 6, 2026-11-03)
+- **Réglages** (`InputSpec::Srt(SrtSource)`) : les mêmes que la sortie SRT (mode appelant /
+  écoute, hôte, port, latence 20–8 000 ms, phrase de passe vide ou de 10 à 79 caractères),
+  validés par la même fonction. Écart de forme à `phase-3.md` § 5 (qui donnait une
+  `uri`) : mêmes champs que la sortie, pour un seul formulaire et une seule validation.
+- **Pipeline** : `uridecodebin` sur `srt://hôte:port?mode=…&latency=…` (`srtsrc ! tsdemux !`
+  décodeurs), la phrase de passe posée sur `srtsrc` au `source-setup` (jamais dans l'URI ni
+  un message), `auto-reconnect` coupé : perte → politique commune 1 / 2 / 5 / 10 s. Même
+  aiguillage que les fichiers (première vidéo, premier son vers l'anneau, le reste jeté), son
+  non cadencé (source live). En **écoute**, l'input attend son appelant sans limite (pas de
+  « no picture after 5 s ») ; une fois des images reçues, le silence le perd et il se remet à
+  l'écoute.
+- **Tampon de gigue d'une image** (`Pacer`, entrée SRT seulement) : mesuré, les images d'un
+  flux SRT arrivent par rafales (deux d'un coup, décodeur matériel ou logiciel) ; avec le
+  choix « dernière image arrivée » du rendu, 243 images sur 582 n'étaient jamais montrées
+  (source 25p dans un maître 50p). Chaque image est relâchée au rythme de son PTS, une
+  période de source après les arrivées les plus précoces (référence qui descend tout de
+  suite, remonte d'au plus 1 ms/s) : **0 image perdue**. Coût : une période de source de
+  latence pour cet input. Le temps de flux de l'image (et donc le son) ne change pas.
+- `appsink sync=true` (pacer par l'horloge) essayé et écarté : le pipeline se fige (même avec
+  `gst-launch`), les temps du flux ne sont pas alignés sur l'horloge locale.
+- **Synchro (C9) : pas encore < 1 image.** Mesuré sur 40 s (deux moteurs, sortie SRT en
+  mode synchro → entrée SRT → enregistrement relu) : toutes les paires flash / bip sont là,
+  mais le décalage fait des **sauts d'une période du maître** (20 ms à 50p) puis se rattrape
+  lentement (−30 à +6 ms). Une image relâchée près d'un tick est montrée tantôt sur ce tick,
+  tantôt sur le suivant : c'est le choix « dernière image arrivée » du rendu (dette de la
+  Phase 1, étape 9). Correction proposée : choisir l'image par son temps (une image de
+  latence), dans le moteur, pour tous les inputs ; décision du mainteneur à prendre.
+
+### Critères (étape 6)
+| Critère | Test | Statut |
+|---|---|---|
+| Réglages validés comme la sortie ; phrase de passe jamais écrite (journal, logs, état) | `engine` : `state::tests::srt_inputs_are_checked`, `control::tests::secrets_never_reach_the_journal_the_logs_nor_the_published_state` | CI |
+| **C9** : écoute sans limite ; mauvaise phrase de passe sans image ; la bonne → en marche ; émetteur arrêté → perdu ; revenu → reconnecté (deux moteurs, notre sortie SRT appelante) | `outputs::tests::srt_input_listens_and_reconnects` | CI (si `srtsrc`, comme B8) |
+| **C9** : synchro < 1 image (appelant + phrase de passe vers notre sortie SRT en écoute, mode synchro) | `outputs::tests::srt_input_receives_our_srt_output_in_sync` | **ignoré** : sauts d'une période du maître, en attente du choix de l'image par son temps |
