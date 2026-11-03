@@ -28,6 +28,26 @@ fn gpu_loss_handled(state: &State, lost_for: Duration, grace: Duration) -> bool 
     !busy || lost_for >= grace + FINALISE_TIMEOUT
 }
 
+/// The engine's settings from the command line.
+fn engine_config(options: &cli::Options) -> EngineConfig {
+    let mut config = EngineConfig {
+        rate: options.rate,
+        resolution: options.resolution,
+        // Ticks dated on the clock of the pipelines: without it the sound of every input is
+        // looked for where there is none (ADR 0007 § 1).
+        stream_clock: Some(vma_io_gst::stream_clock()),
+        ..EngineConfig::default()
+    };
+    if let Some(margin) = options.spin_margin {
+        config.spin_margin = margin;
+    }
+    config.sync_test = options.sync_test;
+    if let Some(grace) = options.gpu_loss_grace {
+        config.device_lost_grace = grace;
+    }
+    config
+}
+
 fn main() -> anyhow::Result<ExitCode> {
     let options = cli::parse(std::env::args().skip(1))?;
     if options.help {
@@ -48,18 +68,7 @@ fn main() -> anyhow::Result<ExitCode> {
         .with_writer(log_writer)
         .init();
 
-    let mut config = EngineConfig {
-        rate: options.rate,
-        resolution: options.resolution,
-        ..EngineConfig::default()
-    };
-    if let Some(margin) = options.spin_margin {
-        config.spin_margin = margin;
-    }
-    config.sync_test = options.sync_test;
-    if let Some(grace) = options.gpu_loss_grace {
-        config.device_lost_grace = grace;
-    }
+    let config = engine_config(&options);
 
     let native_options = eframe::NativeOptions {
         renderer: eframe::Renderer::Wgpu,
@@ -477,6 +486,17 @@ mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
     use vma_engine::{Command, Event, FullscreenSpec, OutputSpec};
+
+    /// The engine dates its ticks on the clock of the pipelines, as `vma-io` dates the sound
+    /// (without it, no input is ever heard: found in the manual test of 2026-11-03).
+    #[test]
+    fn the_engine_ticks_on_the_clock_of_the_pipelines() {
+        let options = cli::parse(Vec::<String>::new()).unwrap();
+        let clock = engine_config(&options).stream_clock.unwrap();
+        let pipelines = vma_io_gst::stream_clock();
+        let gap = clock.now().abs_diff(pipelines.now());
+        assert!(gap < 1_000_000, "{gap} ns apart");
+    }
 
     #[test]
     fn after_a_gpu_loss_the_window_waits_for_the_outputs() {
