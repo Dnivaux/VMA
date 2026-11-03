@@ -129,8 +129,9 @@ Constatées en mesurant la synchro de bout en bout ; elles ne changent pas la d�
   cadence (dérive) perd une image, la latence de ses images baisse d'une période de source
   d'un coup ; le son, qui ne saute pas, la rattrape à 0,5 % au plus (≈ 4 s pour 20 ms).
   Pendant ce temps l'écart son − image va jusqu'à une période de source (16,9 ms mesurés à
-  50p ← 50p + 100 ppm, une fois en 60 s). À reprendre si le partenaire le remarque (pistes :
-  viser le milieu de la bande de phase, rattrapage plus rapide).
+  50p ← 50p + 100 ppm, une fois en 60 s). **Acceptée** par le mainteneur le 2026-11-03 ; à
+  reprendre si le partenaire le remarque (pistes : viser le milieu de la bande de phase,
+  rattrapage plus rapide).
 
 ## Conséquences
 - `vma-output` ne génère plus l'audio (sauf `--sync-test`) : il assemble l'image *n* et le bloc

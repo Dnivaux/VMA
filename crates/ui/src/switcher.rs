@@ -269,16 +269,25 @@ impl Switcher {
                 }
             });
         });
-        if self.mixer.open {
-            egui::Panel::bottom("mixer")
-                .resizable(false)
-                .exact_size(mixer::MIXER_HEIGHT)
-                .show(ui, |ui| self.mixer_panel(ui, view));
-        }
+        // Inputs at the bottom left, the audio mixer beside them at the bottom right.
+        let bottom = if self.mixer.open {
+            mixer::MIXER_HEIGHT.max(THUMB.y + 96.0)
+        } else {
+            THUMB.y + 96.0
+        };
         egui::Panel::bottom("inputs")
             .resizable(false)
-            .exact_size(THUMB.y + 96.0)
-            .show(ui, |ui| self.input_bar(ui, view));
+            .exact_size(bottom)
+            .show(ui, |ui| {
+                if self.mixer.open {
+                    let width = mixer::panel_width(view.state, ui.available_width());
+                    egui::Panel::right("mixer")
+                        .resizable(true)
+                        .default_size(width)
+                        .show(ui, |ui| self.mixer_panel(ui, view));
+                }
+                self.input_bar(ui, view);
+            });
         egui::CentralPanel::default().show(ui, |ui| {
             let full = ui.available_rect_before_wrap();
             let side = ((full.width() - COLUMN_WIDTH) / 2.0).max(0.0);

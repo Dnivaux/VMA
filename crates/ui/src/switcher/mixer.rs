@@ -16,6 +16,8 @@ use super::{Switcher, View};
 pub(super) const MIXER_HEIGHT: f32 = 236.0;
 /// Width of a strip.
 const STRIP_WIDTH: f32 = 92.0;
+/// Width a strip takes in the panel, spacing and separator included.
+const STRIP_SPAN: f32 = 136.0;
 /// Height of a fader and of its meter.
 const FADER_HEIGHT: f32 = 120.0;
 /// Bottom of the fader and of the meters: below, −∞.
@@ -32,6 +34,14 @@ const METER_ZONES: [(f32, Color32); 3] = [
 const MUTED: Color32 = Color32::from_rgb(200, 40, 40);
 /// Fill of an active solo.
 const SOLOED: Color32 = Color32::from_rgb(220, 180, 40);
+
+/// Width the mixer asks for beside the inputs: every strip, at most 60 % of `available`.
+pub(super) fn panel_width(state: &vma_engine::State, available: f32) -> f32 {
+    let inputs = state.inputs.iter().filter(|i| i.audio.is_some()).count();
+    // Input strips, the three buses and the headphones, with their spacing and separators.
+    let strips = (inputs.max(1) + 4) as f32;
+    (strips * STRIP_SPAN + 24.0).min(available * 0.6)
+}
 
 /// What a fader moves.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -403,7 +403,7 @@ Windows (pas de MediaMTX en CI), ils sont sautés.
   vers l'anneau de l'input (`Feeds::audio`, crate `audio`), chaque tampon daté par son temps
   de flux. Mono dupliqué ; plus de 2 canaux : mixage par la matrice par défaut
   d'`audioconvert` (tous les canaux restent audibles ; écart à la lettre de Q9, « les 2
-  premiers », signalé au mainteneur). Les autres flux audio vont à un `fakesink`. Sans anneau
+  premiers », **accepté** par le mainteneur le 2026-11-03). Les autres flux audio vont à un `fakesink`. Sans anneau
   (`Feeds::audio` → `None`), le son est jeté comme avant.
 - **Capture** : le son d'une webcam ou d'une carte de capture est un périphérique audio à
   part (ALSA / PipeWire, WASAPI) : il arrive avec les périphériques audio (étape 5).

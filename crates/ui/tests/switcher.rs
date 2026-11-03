@@ -110,7 +110,8 @@ fn harness(state: State) -> Harness<'static, Rig> {
         levels: |_| None,
     };
     let mut harness = Harness::builder()
-        .with_size(Vec2::new(1400.0, 820.0))
+        // A 1080p screen: the inputs and the mixer side by side.
+        .with_size(Vec2::new(1920.0, 1040.0))
         // Short simulated frames, so that two clicks one frame apart make a double-click.
         .with_step_dt(0.05)
         .build_ui_state(

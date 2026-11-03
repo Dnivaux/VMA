@@ -194,8 +194,10 @@ refusées, `journal_dropped`.
   démarre la sortie au lancement (commandes `Script`, journalisées).
 
 ## Phase 3 — Mélangeur audio (étape 4, 2026-11-03)
-- **Panneau « Mélangeur »**, en bas de la fenêtre sous la barre d'inputs, affiché par défaut,
-  interrupteur **Mélangeur** dans la barre du haut (comme Statistiques). Une **tranche par
+- **Panneau « Mélangeur »**, en bas à droite, à côté de la barre d'inputs (organisation de la
+  référence, validée par le mainteneur le 2026-11-03), redimensionnable, largeur de départ :
+  toutes ses tranches, au plus 60 % de la fenêtre (les inputs défilent à gauche) ; affiché
+  par défaut, interrupteur **Mélangeur** dans la barre du haut (comme Statistiques). Une **tranche par
   input avec son**, dans l'ordre des inputs (« n Nom ») : vumètre stéréo, fader vertical,
   à côté **Muet** (rouge), **Solo** (jaune), envois **M / A / B** ; sous le fader, le niveau
   (« −8,0 dB », « −∞ dB »), **Suit l'image** (audio-follow-video) et le **décalage** (ms,
@@ -211,8 +213,8 @@ refusées, `journal_dropped`.
   « Vumètre 5 clip : crête −6,0 dB, RMS −9,0 dB », « … : pas de son ».
 - **Fenêtre Sorties** : chaque sortie (sauf le plein écran) a **Son : Master / Bus A /
   Bus B** (`SetOutputBus`), grisé pendant qu'elle tourne.
-- Disposition propre à VMA (un mélangeur logiciel classique a ses tranches en bas à droite) :
-  à revoir avec le partenaire.
+- Tests d'UI dans une fenêtre de 1 920 × 1 040 (écran 1080p) : inputs et mélangeur côte à
+  côte.
 
 ## Critères d'acceptation
 | Critère | Test |
