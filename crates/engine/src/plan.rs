@@ -306,10 +306,14 @@ mod tests {
     fn concurrent_reads_are_never_torn() {
         let (writer, reader) = plan_channel();
         let stop = Arc::new(AtomicBool::new(false));
+        // Readers that read at least once: on a loaded machine the writer may finish before
+        // a reader is even scheduled.
+        let seen = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let readers: Vec<_> = (0..3)
             .map(|_| {
                 let reader = reader.clone();
                 let stop = Arc::clone(&stop);
+                let seen = Arc::clone(&seen);
                 std::thread::spawn(move || {
                     let (mut reads, mut last) = (0u64, 0u64);
                     while !stop.load(Ordering::Relaxed) {
@@ -325,6 +329,9 @@ mod tests {
                             );
                             assert!(plan.version >= last, "version went back");
                             last = plan.version;
+                            if reads == 0 {
+                                seen.fetch_add(1, Ordering::Relaxed);
+                            }
                             reads += 1;
                         }
                     }
@@ -334,6 +341,9 @@ mod tests {
             .collect();
         for n in 1..=200_000 {
             writer.publish(&sample(n));
+        }
+        while seen.load(Ordering::Relaxed) < 3 {
+            std::thread::yield_now();
         }
         stop.store(true, Ordering::Relaxed);
         for r in readers {

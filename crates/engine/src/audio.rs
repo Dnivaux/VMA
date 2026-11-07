@@ -185,14 +185,25 @@ impl AudioMeters {
 struct Latency {
     smoothed: Option<f64>,
     last_picture: u64,
+    /// The latest new picture was more than [`STEP_PERIODS`] away from the smoothed latency.
+    stepping: bool,
 }
 
+/// New pictures this many master periods away from the smoothed latency, twice in a row: the
+/// latency of the pictures stepped (a jitter buffer set again, a network hiccup). The
+/// smoothing starts again there, so the sound jumps with them (with its 5 ms cross-fade)
+/// instead of following at the reader's 0.5 % for seconds. The natural spread of the new
+/// pictures stays under one period.
+const STEP_PERIODS: f64 = 1.5;
+
 impl Latency {
-    /// Reading time of the block of the tick at `tick_ns`, or `None` if the picture is stale.
-    fn reading_time(&mut self, tick_ns: u64, picture_ns: u64) -> Option<u64> {
+    /// Reading time of the block of the tick at `tick_ns`, or `None` if the picture is stale;
+    /// `period_ns`: one master period.
+    fn reading_time(&mut self, tick_ns: u64, picture_ns: u64, period_ns: u64) -> Option<u64> {
         let lag = tick_ns as f64 - picture_ns as f64;
         let new_picture = picture_ns != self.last_picture;
         self.last_picture = picture_ns;
+        let step = STEP_PERIODS * period_ns as f64;
         let smoothed = match self.smoothed {
             None => lag,
             // The same picture again: the latency stays, unless the picture is stale.
@@ -203,7 +214,19 @@ impl Latency {
                 s
             }
             Some(s) if (lag - s).abs() > STALE_NS => lag,
-            Some(s) => s + SMOOTHING * (lag - s),
+            Some(s) if (lag - s).abs() > step => {
+                let again = std::mem::replace(&mut self.stepping, true);
+                if again {
+                    self.stepping = false;
+                    lag
+                } else {
+                    s
+                }
+            }
+            Some(s) => {
+                self.stepping = false;
+                s + SMOOTHING * (lag - s)
+            }
         };
         self.smoothed = Some(smoothed);
         Some((tick_ns as f64 - smoothed).max(0.0) as u64)
@@ -438,7 +461,9 @@ impl AudioMix {
                     Some(tick.tick_ns.saturating_sub(self.period_ns))
                 }
                 Some(_) if rebuilt => strip.latency.held_reading_time(tick.tick_ns),
-                Some(picture) => strip.latency.reading_time(tick.tick_ns, picture),
+                Some(picture) => strip
+                    .latency
+                    .reading_time(tick.tick_ns, picture, self.period_ns),
                 None => None,
             };
             match reading {
@@ -588,6 +613,8 @@ mod tests {
     use crate::state::InputAudio;
 
     const MS: u64 = 1_000_000;
+    /// One master period at 50p.
+    const P: u64 = 20 * MS;
     const START: u64 = 1_000_000_000_000;
 
     /// A source with sound at 48 kHz exactly, in the master clock: its picture `k` (at
@@ -1010,21 +1037,52 @@ mod tests {
     #[test]
     fn a_stale_picture_silences_its_input() {
         let mut latency = Latency::default();
-        assert_eq!(latency.reading_time(1_000 * MS, 980 * MS), Some(980 * MS));
+        assert_eq!(
+            latency.reading_time(1_000 * MS, 980 * MS, P),
+            Some(980 * MS)
+        );
         // The same picture for 150 ms more: stale.
         let mut t = 1_000 * MS;
         let mut silent = false;
         for _ in 0..8 {
             t += 20 * MS;
-            silent |= latency.reading_time(t, 980 * MS).is_none();
+            silent |= latency.reading_time(t, 980 * MS, P).is_none();
         }
         assert!(silent);
         // A new picture: heard again.
-        assert!(latency.reading_time(t, t - 50 * MS).is_some());
+        assert!(latency.reading_time(t, t - 50 * MS, P).is_some());
         // One far from the smoothed latency restarts it.
         let mut latency = Latency::default();
-        latency.reading_time(1_000 * MS, 980 * MS);
-        assert_eq!(latency.reading_time(1_020 * MS, 820 * MS), Some(820 * MS));
+        latency.reading_time(1_000 * MS, 980 * MS, P);
+        assert_eq!(
+            latency.reading_time(1_020 * MS, 820 * MS, P),
+            Some(820 * MS)
+        );
+    }
+
+    /// The latency of the pictures steps by 50 ms (a jitter buffer set again): after two new
+    /// pictures there, the sound is read at the new latency at once; one picture alone that
+    /// far (a late one) moves nothing; the spread of a 29.97p source in 50p (up to a period)
+    /// is smoothed as before.
+    #[test]
+    fn a_step_of_the_latency_is_followed_at_once() {
+        let mut latency = Latency::default();
+        let mut t = 1_000 * MS;
+        assert_eq!(latency.reading_time(t, t - 30 * MS, P), Some(t - 30 * MS));
+        t += P;
+        // One late picture: smoothing kept.
+        assert_eq!(latency.reading_time(t, t - 80 * MS, P), Some(t - 30 * MS));
+        t += P;
+        assert_eq!(latency.reading_time(t, t - 30 * MS, P), Some(t - 30 * MS));
+        // The step: the first picture is held, the second one restarts there.
+        t += P;
+        assert_eq!(latency.reading_time(t, t - 80 * MS, P), Some(t - 30 * MS));
+        t += P;
+        assert_eq!(latency.reading_time(t, t - 80 * MS, P), Some(t - 80 * MS));
+        // A spread under one period: smoothed, not jumped.
+        t += P;
+        let read = latency.reading_time(t, t - 95 * MS, P).unwrap();
+        assert!(read > t - 95 * MS && read < t - 80 * MS, "{read}");
     }
 
     #[test]

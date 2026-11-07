@@ -133,6 +133,15 @@ Constatées en mesurant la synchro de bout en bout ; elles ne changent pas la d�
   reprendre si le partenaire le remarque (pistes : viser le milieu de la bande de phase,
   rattrapage plus rapide).
 
+## Précision de mise en œuvre (Phase 3, étape 6, 2026-11-07)
+- **Saut de la latence des images** (§ 3) : deux images nouvelles de suite à plus d'une
+  période et demie du maître de la latence lissée → le lissage repart de là, donc le son
+  saute avec l'image (fondu de 5 ms, § 4). Avant, la latence lissée bougeait par petits pas
+  (sous le seuil de saut de 10 ms du lecteur) et le son suivait à 0,5 % au plus : 50 ms
+  rattrapés en 10 s (mesuré en CI après un délai relevé par le tampon de gigue de l'entrée
+  SRT). Une seule image à l'écart (une image en retard) ne change rien ; l'étalement naturel
+  des images nouvelles (moins d'une période) reste lissé.
+
 ## Conséquences
 - `vma-output` ne génère plus l'audio (sauf `--sync-test`) : il assemble l'image *n* et le bloc
   *n* du bus de chaque sortie. PTS inchangés (ADR 0006 § 3), compensation de l'amorçage AAC

@@ -234,8 +234,11 @@ mod tests {
     fn concurrent_reads_are_never_torn() {
         let (writer, reader) = audio_plan_channel();
         let stop = Arc::new(AtomicBool::new(false));
+        // On a loaded machine the writer may finish before the reader is even scheduled.
+        let seen = Arc::new(AtomicBool::new(false));
         let thread = {
             let stop = Arc::clone(&stop);
+            let seen = Arc::clone(&seen);
             std::thread::spawn(move || {
                 let (mut reads, mut last) = (0u64, 0u64);
                 while !stop.load(Ordering::Relaxed) {
@@ -250,6 +253,7 @@ mod tests {
                         assert!(plan.version >= last);
                         last = plan.version;
                         reads += 1;
+                        seen.store(true, Ordering::Relaxed);
                     }
                 }
                 reads
@@ -257,6 +261,9 @@ mod tests {
         };
         for n in 1..=20_000 {
             writer.publish(&sample(n));
+        }
+        while !seen.load(Ordering::Relaxed) {
+            std::thread::yield_now();
         }
         stop.store(true, Ordering::Relaxed);
         assert!(thread.join().unwrap() > 0);
