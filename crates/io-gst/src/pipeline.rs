@@ -1302,6 +1302,8 @@ pub(crate) mod tests {
         pub(crate) plane_bytes: Vec<usize>,
         pub(crate) arrivals: Vec<Instant>,
         pub(crate) stream_times: Vec<Option<u64>>,
+        /// First byte of each picture (its first luma sample).
+        pub(crate) first_bytes: Vec<u8>,
     }
 
     /// CPU stand-in for the engine's feeds.
@@ -1324,6 +1326,13 @@ pub(crate) mod tests {
             let mut f = self.0.lock().unwrap();
             f.frames.push(frame);
             f.stream_times.push(stream_ns);
+            f.first_bytes.push(
+                planes
+                    .first()
+                    .and_then(|p| p.data.first())
+                    .copied()
+                    .unwrap_or(0),
+            );
             f.plane_bytes = planes.iter().map(|p| p.data.len()).collect();
             f.arrivals.push(Instant::now());
             Ok(())

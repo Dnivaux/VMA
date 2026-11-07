@@ -534,6 +534,7 @@ impl Worker {
                 sample_rate,
                 drift_ppm,
                 audio_lead_ms,
+                resolution,
             } => {
                 self.pipelines.push(PipelineSlot::new(
                     input,
@@ -542,6 +543,8 @@ impl Worker {
                         sample_rate: *sample_rate,
                         drift_ppm: *drift_ppm,
                         audio_lead_ms: *audio_lead_ms,
+                        size: resolution
+                            .map_or(crate::sync_source::SMALL, |r| (r.width(), r.height())),
                     }),
                     self.port.feeds.clone(),
                     Instant::now(),

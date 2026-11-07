@@ -410,8 +410,9 @@ impl RenderEngine {
         self.audio_meters.clone()
     }
 
-    pub fn audio_stats(&self) -> crate::audio::AudioStatsSnapshot {
-        self.audio_stats.snapshot()
+    /// Counters of `vma-audio` (clonable): [`AudioStats::snapshot`], [`AudioStats::inputs`].
+    pub fn audio_stats(&self) -> Arc<AudioStats> {
+        Arc::clone(&self.audio_stats)
     }
 
     pub fn feeds(&self) -> FeedRegistry {

@@ -955,7 +955,7 @@ mod tests {
         send(&engine, Command::StopRecording);
         wait_status(&state, REC, |s| *s == OutputStatus::Idle);
         let distribution = engine.outputs().distribution();
-        let audio = engine.audio_stats();
+        let audio = engine.audio_stats().snapshot();
         for (id, f) in engine.input_stats().load().iter() {
             eprintln!("{id}: {:?}", f.snapshot());
         }
@@ -992,6 +992,7 @@ mod tests {
             sample_rate: 44_100,
             drift_ppm,
             audio_lead_ms,
+            resolution: None,
         }
     }
 

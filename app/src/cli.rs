@@ -20,6 +20,10 @@ Options :
                          boucle (défaut : la cadence maître) ; ex. 50,25,29.97,60
   --input-resolution <taille>
                          résolution de ces sources (défaut : celle du Program)
+  --sync-inputs          ces sources sont des sources synchro, avec son : une image blanche
+                         et un bip par seconde de leur horloge ; le Master suit la vidéo
+  --input-drifts <liste> avance de leurs horloges en ppm, réparties en boucle (défaut : 0) ;
+                         ex. 0,0,0,0,100,-100 (exige --sync-inputs)
   --spin-margin-us <µs>  marge d'attente active de l'horloge maître (défaut : 1000)
   --record <dossier>     enregistre le Program dès le démarrage, dans ce dossier
                          (sans l'option : bouton « Enregistrer », dossier Vidéos)
@@ -30,9 +34,11 @@ Options :
                          (rtmp://hôte/app) ; clé : --stream-key, ou la variable
                          d'environnement VMA_STREAM_KEY (jamais écrite dans le rapport)
   --stream-key <clé>     clé de stream de --stream
+  --ndi                  sortie NDI® du Program dès le démarrage (« VMA Program »)
   --sync-test            mode synchro des sorties : une image blanche et un bip par seconde
   --sync-check <url>     pendant le soak, relit ce flux (ex. rtmp://hôte/app/clé) et mesure
-                         le décalage bip − flash (exige --soak et --sync-test)
+                         le décalage bip − flash (exige --soak, et --sync-test ou
+                         --sync-inputs)
   --gpu-loss-grace <s>   GPU perdu : durée pendant laquelle les sorties reçoivent du noir
                          avant d'être finalisées et l'application fermée (défaut : 10)
   --soak <secondes>      soak : tourne N secondes, écrit un rapport, quitte
@@ -63,6 +69,8 @@ pub struct Options {
     pub stream: Option<StreamOption>,
     /// Sync test on the outputs (flash and beep every second).
     pub sync_test: bool,
+    /// NDI® output of the Program from start-up.
+    pub ndi: bool,
     /// After a GPU loss, black on the outputs for this long, then finalised.
     pub gpu_loss_grace: Option<Duration>,
     pub soak: Option<SoakOptions>,
@@ -78,6 +86,9 @@ pub struct Options {
 pub struct Synthetic {
     pub rate: FrameRate,
     pub resolution: Resolution,
+    /// `Some(ppm)`: a sync source (flash and beep), its clock this much faster than the
+    /// shared one; `None`: `videotestsrc`, no sound.
+    pub sync_drift_ppm: Option<i32>,
 }
 
 /// Default journal directory (spec `commands.md`).
@@ -133,6 +144,9 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> anyhow::Result<Options> 
     let mut stream_url = None;
     let mut stream_key: Option<String> = None;
     let mut sync_test = false;
+    let mut sync_inputs = false;
+    let mut input_drifts: Option<Vec<i32>> = None;
+    let mut ndi = false;
     let mut sync_check = None;
     let mut soak_secs = None;
     let mut hostile = false;
@@ -163,6 +177,23 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> anyhow::Result<Options> 
                         .collect::<anyhow::Result<_>>()?,
                 );
             }
+            "--sync-inputs" => sync_inputs = true,
+            "--input-drifts" => {
+                let raw: String = value(&mut args, &arg)?;
+                input_drifts = Some(
+                    raw.split(',')
+                        .map(|d| {
+                            d.trim()
+                                .trim_start_matches('+')
+                                .parse::<i32>()
+                                .ok()
+                                .filter(|ppm| ppm.abs() <= 1_000)
+                                .with_context(|| format!("avance invalide : {d} (±1000 ppm)"))
+                        })
+                        .collect::<anyhow::Result<_>>()?,
+                );
+            }
+            "--ndi" => ndi = true,
             "--input-resolution" => {
                 input_resolution = Some(parse_resolution(&value::<String>(&mut args, &arg)?)?);
             }
@@ -204,8 +235,16 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> anyhow::Result<Options> 
         }
         None => None,
     };
-    if sync_check.is_some() && !sync_test {
-        bail!("--sync-check exige --sync-test (sans flash ni bip, rien à mesurer)");
+    if sync_check.is_some() && !sync_test && !sync_inputs {
+        bail!(
+            "--sync-check exige --sync-test ou --sync-inputs (sans flash ni bip, rien à mesurer)"
+        );
+    }
+    if sync_test && sync_inputs {
+        bail!("--sync-test et --sync-inputs : deux flashs par seconde, la mesure serait fausse");
+    }
+    if input_drifts.is_some() && !sync_inputs {
+        bail!("--input-drifts exige --sync-inputs");
     }
     let stream = match (stream_url, stream_key) {
         (None, Some(_)) => bail!("--stream-key exige --stream"),
@@ -227,13 +266,16 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> anyhow::Result<Options> 
         bail!("--inputs : au plus {}", vma_engine::MAX_INPUTS);
     }
     let rates = input_rates.unwrap_or_else(|| vec![rate]);
+    let drifts = input_drifts.unwrap_or_else(|| vec![0]);
     let inputs = rates
         .iter()
         .cycle()
+        .zip(drifts.iter().cycle())
         .take(inputs)
-        .map(|&rate| Synthetic {
+        .map(|(&rate, &drift)| Synthetic {
             rate,
             resolution: input_resolution.unwrap_or(resolution),
+            sync_drift_ppm: sync_inputs.then_some(drift),
         })
         .collect();
     Ok(Options {
@@ -246,6 +288,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> anyhow::Result<Options> 
         gpu_loss_grace,
         stream,
         sync_test,
+        ndi,
         headphones: headphones && soak.is_none(),
         soak,
         journal_dir,
@@ -459,6 +502,33 @@ mod tests {
             assert_eq!(parse_rate(raw).unwrap(), rate, "{raw}");
         }
         assert_eq!(parse_resolution("1920×1080").unwrap(), Resolution::HD_1080);
+    }
+
+    #[test]
+    fn sync_inputs_with_drifts_and_ndi() {
+        let o =
+            parse_str("--inputs 6 --sync-inputs --input-drifts 0,0,0,0,+100,-100 --ndi").unwrap();
+        let drifts: Vec<_> = o.inputs.iter().map(|i| i.sync_drift_ppm).collect();
+        assert_eq!(
+            drifts,
+            [Some(0), Some(0), Some(0), Some(0), Some(100), Some(-100)]
+        );
+        assert!(o.ndi);
+        assert!(o.inputs.iter().all(|i| i.resolution == Resolution::HD_1080));
+        let o = parse_str("--inputs 2 --sync-inputs").unwrap();
+        assert!(o.inputs.iter().all(|i| i.sync_drift_ppm == Some(0)));
+        assert!(
+            parse_str("--inputs 2").unwrap().inputs[0]
+                .sync_drift_ppm
+                .is_none()
+        );
+        assert!(!parse_str("").unwrap().ndi);
+        // The analyser needs flashes; one kind of them.
+        assert!(parse_str("--inputs 2 --sync-inputs --soak 9 --sync-check rtmp://h/a/k").is_ok());
+        assert!(parse_str("--inputs 2 --sync-inputs --sync-test").is_err());
+        assert!(parse_str("--inputs 2 --input-drifts 100").is_err());
+        assert!(parse_str("--inputs 2 --sync-inputs --input-drifts 5000").is_err());
+        assert!(parse_str("--inputs 2 --sync-inputs --input-drifts abc").is_err());
     }
 
     #[test]

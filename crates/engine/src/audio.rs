@@ -110,7 +110,7 @@ impl AudioTick {
 }
 
 /// Counters of `vma-audio`, in atomics.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct AudioStats {
     blocks: AtomicU64,
     /// Ticks rebuilt because they did not arrive.
@@ -119,6 +119,50 @@ pub struct AudioStats {
     queue_full: AtomicU64,
     /// Samples written as silence over a gap too long to rebuild.
     skipped_samples: AtomicU64,
+    /// The reader of each strip, published after each of its blocks.
+    strips: [StripCounters; MAX_INPUTS],
+}
+
+impl Default for AudioStats {
+    fn default() -> Self {
+        Self {
+            blocks: AtomicU64::default(),
+            rebuilt: AtomicU64::default(),
+            queue_full: AtomicU64::default(),
+            skipped_samples: AtomicU64::default(),
+            strips: std::array::from_fn(|_| StripCounters::default()),
+        }
+    }
+}
+
+/// [`vma_audio::ReaderStats`] of one strip, since its ring was attached.
+#[derive(Debug, Default)]
+struct StripCounters {
+    /// Its input id + 1; 0: a free strip.
+    input: AtomicU32,
+    frames: AtomicU64,
+    missing: AtomicU64,
+    overwritten: AtomicU64,
+    resyncs: AtomicU64,
+    /// `f64` bits.
+    ppm: AtomicU64,
+}
+
+/// The sound of one input as read by the mixer, since its ring was attached (a new pipeline
+/// starts over).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct InputAudioSnapshot {
+    pub input: InputId,
+    /// Frames (48 kHz stereo) read.
+    pub frames: u64,
+    /// Source frames that were not there yet: read as silence.
+    pub missing: u64,
+    /// Source frames overwritten before they were read.
+    pub overwritten: u64,
+    /// Jumps of the reading (gap above 10 ms, restart of the source).
+    pub resyncs: u64,
+    /// Rate of the source measured by its DLL, in ppm from 48 kHz.
+    pub ppm: f64,
 }
 
 /// A copy of [`AudioStats`].
@@ -131,6 +175,41 @@ pub struct AudioStatsSnapshot {
 }
 
 impl AudioStats {
+    /// The inputs whose sound is read (allocates: not for the real-time threads).
+    pub fn inputs(&self) -> Vec<InputAudioSnapshot> {
+        self.strips
+            .iter()
+            .filter_map(|c| {
+                let id = c.input.load(Ordering::Acquire).checked_sub(1)?;
+                Some(InputAudioSnapshot {
+                    input: InputId(id),
+                    frames: c.frames.load(Ordering::Relaxed),
+                    missing: c.missing.load(Ordering::Relaxed),
+                    overwritten: c.overwritten.load(Ordering::Relaxed),
+                    resyncs: c.resyncs.load(Ordering::Relaxed),
+                    ppm: f64::from_bits(c.ppm.load(Ordering::Relaxed)),
+                })
+            })
+            .collect()
+    }
+
+    fn publish(&self, slot: usize, input: Option<(InputId, vma_audio::ReaderStats)>) {
+        let Some(c) = self.strips.get(slot) else {
+            return;
+        };
+        match input {
+            Some((id, r)) => {
+                c.frames.store(r.frames, Ordering::Relaxed);
+                c.missing.store(r.missing, Ordering::Relaxed);
+                c.overwritten.store(r.overwritten, Ordering::Relaxed);
+                c.resyncs.store(r.resyncs, Ordering::Relaxed);
+                c.ppm.store(r.ppm.to_bits(), Ordering::Relaxed);
+                c.input.store(id.0.wrapping_add(1), Ordering::Release);
+            }
+            None => c.input.store(0, Ordering::Release),
+        }
+    }
+
     pub fn snapshot(&self) -> AudioStatsSnapshot {
         AudioStatsSnapshot {
             blocks: self.blocks.load(Ordering::Relaxed),
@@ -473,6 +552,8 @@ impl AudioMix {
                     if let Some(block) = strip.block.get_mut(..len) {
                         strip.reader.read(at.saturating_sub(delay_ns), block);
                     }
+                    self.stats
+                        .publish(index, Some((strip.input, strip.reader.stats())));
                 }
                 None => {
                     strip.unseen += 1;
@@ -481,6 +562,7 @@ impl AudioMix {
                         if let Some(cell) = self.slots.get(index) {
                             cell.store(0, Ordering::Release);
                         }
+                        self.stats.publish(index, None);
                     }
                 }
             }
@@ -789,6 +871,44 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The reader of each input publishes its counters (C14 « 0 trou audio »).
+    #[test]
+    fn the_readers_publish_their_counters() {
+        let rate = FrameRate::FPS_50;
+        let (writer, plan) = audio_plan_channel();
+        writer.publish(&plan_of(&[(InputId(3), default_audio())]));
+        let stats = Arc::new(AudioStats::default());
+        let (mut mix, _buses, _) = AudioMix::new(rate, Arc::clone(&stats), plan);
+        assert!(stats.inputs().is_empty());
+        let (writer, reader) = ring(RING_FRAMES);
+        mix.attach(InputId(3), reader);
+        let mut source = Source {
+            writer,
+            fps: 50,
+            written: 0,
+            signal: beep_every_second,
+        };
+        let on_air = OnAir {
+            from: Some(InputId(3)),
+            to: None,
+            mix: 0.0,
+        };
+        for n in 0..200 {
+            let tick_ns = START + 200 * MS + n * 20 * MS;
+            source.capture_until(tick_ns);
+            let mut tick = AudioTick::new(n, tick_ns, on_air);
+            tick.shown[0] = Some((InputId(3), source.picture(tick_ns, 20 * MS)));
+            mix.tick(&tick);
+        }
+        let inputs = stats.inputs();
+        assert_eq!(inputs.len(), 1, "{inputs:?}");
+        let i = inputs[0];
+        assert_eq!(i.input, InputId(3));
+        assert_eq!(i.frames, (200 - MIX_DELAY_TICKS) * 960, "{i:?}");
+        assert_eq!((i.overwritten, i.resyncs), (0, 0), "{i:?}");
+        assert!(i.ppm.abs() < 50.0, "{i:?}");
     }
 
     /// Ticks that do not arrive are rebuilt: the samples stay continuous and on time.

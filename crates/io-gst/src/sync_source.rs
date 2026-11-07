@@ -2,7 +2,9 @@
 //! white picture once per second of **its own clock** (for 40 ms at least, so that a slower
 //! master cannot skip it) and starts a 1 kHz beep of 100 ms on the first white picture (or
 //! `audio_lead_ms` earlier), at its own frame rate, sample rate and drift
-//! from the master clock. It takes the real path of an input: two `appsrc` (NV12 pictures,
+//! from the master clock. Its clock is the shared monotonic clock, `drift_ppm` faster, from
+//! its origin: without drift, every sync source flashes on the whole seconds of that clock,
+//! whenever it was started (the C14 soak places its transitions between the flashes). It takes the real path of an input: two `appsrc` (NV12 pictures,
 //! mono `f32` sound) into the same branches as a capture (`videoconvert ! appsink`,
 //! `audioconvert ! audioresample ! appsink`), dated like a capture by their PTS.
 //!
@@ -21,9 +23,8 @@ use vma_core::FrameRate;
 
 use crate::IoError;
 
-/// Size of the pictures: the compositor scales them; white stays white.
-const WIDTH: u32 = 320;
-const HEIGHT: u32 = 180;
+/// Default size of the pictures: the compositor scales them; white stays white.
+pub(crate) const SMALL: (u32, u32) = (320, 180);
 /// Beep: 1 kHz, 100 ms, half scale (the analyser's onset threshold is 0.25).
 const BEEP_HZ: f64 = 1_000.0;
 const BEEP_MS: u64 = 100;
@@ -42,6 +43,8 @@ pub(crate) struct SyncSpec {
     pub(crate) drift_ppm: i32,
     /// The beep starts this much before its flash (negative: after).
     pub(crate) audio_lead_ms: i32,
+    /// Size of the pictures (the soak sends them at the Program size).
+    pub(crate) size: (u32, u32),
 }
 
 impl SyncSpec {
@@ -61,7 +64,12 @@ impl SyncSpec {
 
     /// Master nanoseconds of `seconds` of the source clock.
     fn master_ns(&self, seconds: f64) -> u64 {
-        (seconds * 1e9 / (1.0 + f64::from(self.drift_ppm) * 1e-6)) as u64
+        (seconds * 1e9 / (1.0 + f64::from(self.drift_ppm) * 1e-6)).round() as u64
+    }
+
+    /// Seconds of the source clock at `master_ns` of the shared clock.
+    fn source_seconds(&self, master_ns: u64) -> f64 {
+        master_ns as f64 * 1e-9 * (1.0 + f64::from(self.drift_ppm) * 1e-6)
     }
 
     /// Source time of frame `k`, in seconds.
@@ -96,6 +104,22 @@ impl SyncSpec {
     }
 }
 
+/// The first flash of a sync source at or after `clock_ns` of the shared monotonic clock
+/// ([`crate::clock`]), in nanoseconds of that clock: its picture and its beep (without lead)
+/// start then. Same for every source of this rate and drift, whenever it was started.
+pub fn next_sync_flash_ns(rate: FrameRate, drift_ppm: i32, clock_ns: u64) -> u64 {
+    let spec = SyncSpec {
+        rate,
+        sample_rate: 48_000,
+        drift_ppm,
+        audio_lead_ms: 0,
+        size: SMALL,
+    };
+    let flash_seconds = spec.period() as f64 * f64::from(rate.den()) / f64::from(rate.num());
+    let j = (spec.source_seconds(clock_ns) / flash_seconds).ceil();
+    spec.master_ns(j * flash_seconds)
+}
+
 /// `appsrc ! videoconvert ! appsink` and the sound `appsrc` (linked by the caller).
 pub(crate) fn pipeline(
     spec: &SyncSpec,
@@ -109,9 +133,10 @@ pub(crate) fn pipeline(
     ),
     IoError,
 > {
+    let (width, height) = spec.size;
     let description = format!(
         "appsrc name=vma_video is-live=true format=time \
-           caps=video/x-raw,format=NV12,width={WIDTH},height={HEIGHT},framerate={}/{} \
+           caps=video/x-raw,format=NV12,width={width},height={height},framerate={}/{} \
          ! videoconvert name=vma_convert ! appsink name=vma_sink \
          appsrc name=vma_audio is-live=true format=time \
            caps=audio/x-raw,format=F32LE,rate={},channels=1,layout=interleaved",
@@ -203,36 +228,56 @@ fn run(
         drop(p);
         std::thread::sleep(Duration::from_millis(5));
     };
-    let origin = now().saturating_sub(base) + START_DELAY_NS;
+    // Frames and samples are counted from the origin of the shared clock: the first ones
+    // pushed are those due [`START_DELAY_NS`] from now. Times below are running times.
+    let start = spec.source_seconds(now() + START_DELAY_NS);
+    let fps = f64::from(spec.rate.num()) / f64::from(spec.rate.den());
+    let sample_rate = f64::from(spec.sample_rate);
+    let running = |seconds: f64| spec.master_ns(seconds).saturating_sub(base);
     let block = u64::from(spec.sample_rate / 100).max(1);
-    let (mut frame, mut first_sample) = (0u64, 0u64);
-    let mut picture = vec![0u8; (WIDTH * HEIGHT * 3 / 2) as usize];
+    let mut frame = (start * fps).ceil() as u64;
+    let mut first_sample = (start * sample_rate).ceil() as u64;
+    // The two pictures, made once: each push shares their memory.
+    let (width, height) = spec.size;
+    let picture = |level: u8| {
+        let luma = (width * height) as usize;
+        let mut bytes = vec![128u8; luma * 3 / 2];
+        if let Some(y) = bytes.get_mut(..luma) {
+            y.fill(level);
+        }
+        gst::Buffer::from_mut_slice(bytes)
+    };
+    let (white, black) = (picture(235), picture(16));
     while !stop.load(Ordering::Relaxed) {
-        let frame_at = origin + spec.master_ns(spec.frame_seconds(frame));
+        let frame_at = running(spec.frame_seconds(frame));
         let block_end = first_sample + block;
-        let block_due = origin + spec.master_ns(block_end as f64 / f64::from(spec.sample_rate));
+        let block_due = running(block_end as f64 / sample_rate);
         let due = frame_at.min(block_due);
-        let running = now().saturating_sub(base);
-        if running < due {
-            std::thread::sleep(Duration::from_nanos((due - running).min(5_000_000)));
+        let now_running = now().saturating_sub(base);
+        if now_running < due {
+            std::thread::sleep(Duration::from_nanos((due - now_running).min(5_000_000)));
             continue;
         }
         if frame_at <= block_due {
-            let white = spec.is_flash(frame);
-            let (luma, chroma) = picture.split_at_mut((WIDTH * HEIGHT) as usize);
-            luma.fill(if white { 235 } else { 16 });
-            chroma.fill(128);
-            let next = origin + spec.master_ns(spec.frame_seconds(frame + 1));
-            if push(video, &picture, frame_at, next - frame_at).is_err() {
+            let template = if spec.is_flash(frame) { &white } else { &black };
+            let next = running(spec.frame_seconds(frame + 1));
+            if push(video, template.copy(), frame_at, next - frame_at).is_err() {
                 return;
             }
             frame += 1;
         } else {
-            let pts = origin + spec.master_ns(first_sample as f64 / f64::from(spec.sample_rate));
+            let pts = running(first_sample as f64 / sample_rate);
             let bytes: Vec<u8> = (first_sample..block_end)
                 .flat_map(|s| spec.sample(s as i64).to_le_bytes())
                 .collect();
-            if push(audio, &bytes, pts, block_due - pts).is_err() {
+            if push(
+                audio,
+                gst::Buffer::from_mut_slice(bytes),
+                pts,
+                block_due - pts,
+            )
+            .is_err()
+            {
                 return;
             }
             first_sample = block_end;
@@ -240,8 +285,12 @@ fn run(
     }
 }
 
-fn push(src: &gst_app::AppSrc, data: &[u8], pts: u64, duration: u64) -> Result<(), gst::FlowError> {
-    let mut buffer = gst::Buffer::from_slice(data.to_vec());
+fn push(
+    src: &gst_app::AppSrc,
+    mut buffer: gst::Buffer,
+    pts: u64,
+    duration: u64,
+) -> Result<(), gst::FlowError> {
     if let Some(b) = buffer.get_mut() {
         b.set_pts(gst::ClockTime::from_nseconds(pts));
         b.set_duration(gst::ClockTime::from_nseconds(duration));
@@ -259,6 +308,7 @@ mod tests {
             sample_rate: 44_100,
             drift_ppm: 0,
             audio_lead_ms: lead,
+            size: SMALL,
         }
     }
 
@@ -339,15 +389,22 @@ mod tests {
             };
             let f = feeds.last();
             let f = f.lock().unwrap();
+            // The first white picture of each flash.
             let flashes: Vec<i128> = f
-                .frames
-                .iter()
-                .zip(&f.stream_times)
-                .filter(|(k, _)| **k % 30 == 0)
+                .first_bytes
+                .windows(2)
+                .zip(f.stream_times.iter().skip(1))
+                .filter(|(y, _)| y[0] < 128 && y[1] >= 128)
                 .filter_map(|(_, t)| t.map(i128::from))
                 .collect();
+            assert!(!flashes.is_empty(), "lead {lead}: no flash");
+            let last_picture = f.stream_times.iter().flatten().max().copied().unwrap_or(0);
             for onset in onsets {
                 let beep = time_of(onset);
+                // A beep ahead of its flash, at the end: the flash is not pushed yet.
+                if beep + i128::from(lead) * 1_000_000 + 2_000_000 > i128::from(last_picture) {
+                    continue;
+                }
                 let gap = flashes
                     .iter()
                     .map(|flash| beep - flash)
@@ -361,6 +418,33 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn source_seconds_undo_master_time() {
+        let fast = SyncSpec {
+            drift_ppm: 100,
+            ..spec(0)
+        };
+        let ns = 3_600_000_000_000u64;
+        let back = fast.master_ns(fast.source_seconds(ns));
+        assert!(back.abs_diff(ns) < 1_000, "{back} vs {ns}");
+        // Without drift, the source seconds are those of the shared clock.
+        assert!((spec(0).source_seconds(ns) - 3_600.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn flashes_fall_on_whole_seconds_of_the_clock_without_drift() {
+        let fifty = FrameRate::new(50, 1).unwrap();
+        let s = 1_000_000_000u64;
+        assert_eq!(next_sync_flash_ns(fifty, 0, 7 * s), 7 * s);
+        assert_eq!(next_sync_flash_ns(fifty, 0, 7 * s + 1), 8 * s);
+        // +100 ppm: 100 µs earlier per second of the clock.
+        let at = next_sync_flash_ns(fifty, 100, 1_000 * s - s / 2);
+        assert!((1_000 * s - at).abs_diff(99_990_001) < 1_000, "{at}");
+        // At 29.97p a flash period is 30 pictures: 1.001 s.
+        let ntsc = FrameRate::new(30_000, 1_001).unwrap();
+        assert_eq!(next_sync_flash_ns(ntsc, 0, 1), 1_001_000_000);
     }
 
     #[test]

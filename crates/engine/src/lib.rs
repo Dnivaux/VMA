@@ -26,7 +26,9 @@ mod stats;
 mod timeline;
 mod triple;
 
-pub use audio::{AudioMeters, AudioStatsSnapshot, Level, MIX_DELAY_TICKS};
+pub use audio::{
+    AudioMeters, AudioStats, AudioStatsSnapshot, InputAudioSnapshot, Level, MIX_DELAY_TICKS,
+};
 pub use audio_plan::AudioPlan;
 pub use command::{
     AutoPlay, Command, CommandId, Db, DeviceId, Effect, InputSpec, MAX_AUDIO_DELAY_MS,

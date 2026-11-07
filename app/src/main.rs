@@ -206,10 +206,22 @@ impl<'a> App<'a> {
             )
         };
         for input in inputs {
-            script(vma_engine::InputSpec::Synthetic {
-                rate: input.rate,
-                resolution: input.resolution,
+            script(match input.sync_drift_ppm {
+                Some(drift_ppm) => vma_engine::InputSpec::SyncSource {
+                    rate: input.rate,
+                    sample_rate: 48_000,
+                    drift_ppm,
+                    audio_lead_ms: 0,
+                    resolution: Some(input.resolution),
+                },
+                None => vma_engine::InputSpec::Synthetic {
+                    rate: input.rate,
+                    resolution: input.resolution,
+                },
             })?;
+        }
+        if inputs.iter().any(|i| i.sync_drift_ppm.is_some()) {
+            mix_sync_inputs(&engine, inputs.len())?;
         }
         if soak_options.is_some() && inputs.is_empty() {
             script(vma_engine::InputSpec::TestSource {
@@ -272,6 +284,9 @@ impl<'a> App<'a> {
                 fullscreen: register(&readers.fullscreen),
             }
         };
+        if options.ndi {
+            start_ndi(&engine)?;
+        }
         // `--fullscreen`: the full-screen output present and on from the start.
         if let Some(wanted) = &options.fullscreen {
             start_fullscreen(&engine, wanted, &screens.list())?;
@@ -301,6 +316,7 @@ impl<'a> App<'a> {
                     commands: engine.commands(),
                     // Mix the sources on air while the soak runs (Fade, then Cut, …).
                     transitions: inputs.len() >= 2,
+                    audio: engine.audio_stats(),
                     stream_key: stream_key.clone(),
                 },
             )
@@ -334,6 +350,81 @@ impl<'a> App<'a> {
 
 /// Adds the full-screen output on `wanted` (a screen name, or its number from 1 in `screens`)
 /// and starts it, as script commands.
+/// Waits for the state in which `found` finds something (ids come from `vma-control`).
+fn wait_for<T>(
+    engine: &RenderEngine,
+    what: &str,
+    found: impl Fn(&vma_engine::State) -> Option<T>,
+) -> anyhow::Result<T> {
+    let state = engine.state();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        if let Some(t) = found(&state.load()) {
+            return Ok(t);
+        }
+        if Instant::now() > deadline {
+            anyhow::bail!("{what}: not in the state after 2 s");
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+/// `--sync-inputs`: the mixer at work, as in a show. The Master follows the video (only the
+/// sound on air is heard, and measured); the first half of the inputs is sent to bus A, the
+/// other to bus B, both at −10 dB (their beeps add up).
+fn mix_sync_inputs(engine: &RenderEngine, count: usize) -> anyhow::Result<()> {
+    use vma_engine::{Command, Db};
+    let inputs = wait_for(engine, "--sync-inputs", |s| {
+        (s.inputs.len() >= count).then(|| s.inputs.iter().map(|i| i.id).collect::<Vec<_>>())
+    })?;
+    let mut commands = vec![];
+    for (k, &input) in inputs.iter().enumerate() {
+        let bus = if k < count.div_ceil(2) {
+            vma_core::AudioBus::A
+        } else {
+            vma_core::AudioBus::B
+        };
+        commands.push(Command::SetAudioFollowVideo { input, on: true });
+        commands.push(Command::SetInputBus {
+            input,
+            bus,
+            on: true,
+        });
+    }
+    for bus in [vma_core::AudioBus::A, vma_core::AudioBus::B] {
+        commands.push(Command::SetBusGain {
+            bus,
+            db: Db::new(-10.0).context("bus gain")?,
+        });
+    }
+    for command in commands {
+        engine
+            .commands()
+            .send(vma_engine::Source::Script, command)?;
+    }
+    Ok(())
+}
+
+/// `--ndi`: the NDI® output, on from the start.
+fn start_ndi(engine: &RenderEngine) -> anyhow::Result<()> {
+    let commands = engine.commands();
+    commands.send(
+        vma_engine::Source::Script,
+        vma_engine::Command::AddOutput {
+            spec: vma_engine::OutputSpec::Ndi(vma_engine::NdiSpec::default()),
+            name: None,
+        },
+    )?;
+    let output = wait_for(engine, "--ndi", |s| {
+        s.outputs.iter().find(|o| o.spec.is_ndi()).map(|o| o.id)
+    })?;
+    commands.send(
+        vma_engine::Source::Script,
+        vma_engine::Command::StartOutput { output },
+    )?;
+    Ok(())
+}
+
 fn start_fullscreen(
     engine: &RenderEngine,
     wanted: &str,

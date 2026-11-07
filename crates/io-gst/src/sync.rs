@@ -48,6 +48,9 @@ const PRIMING_MAX_NS: u64 = 40_000_000;
 /// A beep belongs to the flash within this distance.
 const PAIR_WINDOW_NS: u64 = 500_000_000;
 const AUDIO_RATE: u32 = 48_000;
+/// A hole (or overlap) in the sound: far above the millisecond of FLV timestamps, below an
+/// AAC frame (21 ms).
+pub const AUDIO_GAP_NS: u64 = 10_000_000;
 /// Before a live source is opened again.
 const RETRY: Duration = Duration::from_secs(1);
 
@@ -58,6 +61,9 @@ pub struct SyncSnapshot {
     pub video_frames: u64,
     /// Consecutive pictures more than 1.5 periods apart.
     pub video_gaps: u64,
+    /// Blocks of sound that do not start where the previous one ended (more than
+    /// [`AUDIO_GAP_NS`] away: FLV dates them to the millisecond).
+    pub audio_gaps: u64,
     pub flashes: u64,
     pub beeps: u64,
     /// Beep − flash of each pair, in nanoseconds, in order.
@@ -220,6 +226,8 @@ struct Inner {
     /// First picture and first audio sample of this opening.
     first_picture: Option<u64>,
     first_audio: Option<u64>,
+    /// Where the latest block of sound ended.
+    audio_end: Option<u64>,
     period_ns: u64,
     /// From the first audio sample to the cut, half-way between two frames.
     lead_ns: u64,
@@ -236,6 +244,7 @@ impl Inner {
             last_picture: None,
             first_picture: None,
             first_audio: None,
+            audio_end: None,
             period_ns,
             lead_ns: frames * period_ns + period_ns / 2,
         }
@@ -265,6 +274,13 @@ impl Inner {
     }
 
     fn audio(&mut self, pts: u64, samples: &[f32]) {
+        if self
+            .audio_end
+            .is_some_and(|end| end.abs_diff(pts) > AUDIO_GAP_NS)
+        {
+            self.out.audio_gaps += 1;
+        }
+        self.audio_end = Some(pts + samples.len() as u64 * 1_000_000_000 / u64::from(AUDIO_RATE));
         if self.first_audio.is_none() {
             self.first_audio = Some(pts);
             self.pairing
@@ -295,6 +311,7 @@ impl Inner {
         self.last_picture = None;
         self.first_picture = None;
         self.first_audio = None;
+        self.audio_end = None;
     }
 }
 
@@ -661,6 +678,24 @@ mod tests {
             assert_eq!(out.offsets_ns.len() as u64, counted);
             assert_eq!(inner.pairing.flashes.len() + inner.pairing.beeps.len(), 0);
         }
+    }
+
+    #[test]
+    fn a_hole_in_the_sound_is_counted() {
+        let mut inner = Inner::new(20 * MS);
+        let block = vec![0.0f32; 480];
+        // 10 ms blocks, one dated 1 ms late (FLV rounding): no hole.
+        inner.audio(0, &block);
+        inner.audio(10 * MS, &block);
+        inner.audio(21 * MS, &block);
+        assert_eq!(inner.out.audio_gaps, 0);
+        // One block missing (21 ms).
+        inner.audio(52 * MS, &block);
+        assert_eq!(inner.out.audio_gaps, 1);
+        // A new opening starts over.
+        inner.reopen();
+        inner.audio(5_000 * MS, &block);
+        assert_eq!(inner.out.audio_gaps, 1);
     }
 
     #[test]

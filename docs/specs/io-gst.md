@@ -410,7 +410,8 @@ Windows (pas de MediaMTX en CI), ils sont sautés.
 - **Capture** : le son d'une webcam ou d'une carte de capture est un périphérique audio à
   part (ALSA / PipeWire, WASAPI) : il arrive avec les périphériques audio (étape 5).
 - **Source de synchro** (`InputSpec::SyncSource`, `sync_source.rs`) : deux `appsrc` (images
-  NV12 320 × 180, son mono `f32` à sa fréquence) dans les mêmes branches qu'une capture
+  NV12 320 × 180 par défaut, ou `resolution` — Program du soak C14 —, son mono `f32` à sa
+  fréquence) dans les mêmes branches qu'une capture
   (`videoconvert ! appsink`, `audioconvert ! audioresample ! appsink`, sans attente
   d'horloge). Un thread pousse chaque image et chaque bloc de 10 ms quand son temps de source
   est venu, daté par son PTS comme une capture ; son horloge avance de `drift_ppm` sur le
@@ -418,6 +419,12 @@ Windows (pas de MediaMTX en CI), ils sont sautés.
   1 kHz de 100 ms au même instant, `audio_lead_ms` plus tôt. Il attend que le pipeline joue :
   un pipeline live reste `PAUSED` (`PLAYING` en attente) jusqu'au premier tampon de ses sinks,
   son `base_time` est alors fixé.
+  **Depuis l'étape 9** : son horloge part de l'origine de l'horloge monotone commune (`drift_ppm`
+  plus vite), et non plus de son démarrage : sans dérive, toutes les sources synchro flashent
+  sur les secondes entières de cette horloge, quel que soit leur démarrage ;
+  `next_sync_flash_ns(rate, drift, t)` donne le prochain flash. Le soak C14 s'en sert pour
+  placer ses transitions entre les flashs. Les deux images (blanche, noire) sont faites une
+  fois, chaque envoi partage leur mémoire.
 
 ### Critères (étape 2)
 | Critère | Test | Statut |

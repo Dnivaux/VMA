@@ -1560,6 +1560,7 @@ mod tests {
             sample_rate: 48_000,
             drift_ppm: 0,
             audio_lead_ms: 0,
+            resolution: None,
         };
         assert!(sync.has_audio());
         let capture = InputSpec::Capture {

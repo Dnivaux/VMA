@@ -16,8 +16,8 @@ use std::time::{Duration, Instant};
 use vma_clock::ClockStats;
 use vma_core::{InputId, OutputId};
 use vma_engine::{
-    Command, CommandSender, EngineConfig, InputSpec, InputStatsReader, InputStatus, OutputHub,
-    OutputStatus, RenderStats, Source, StateReader,
+    Command, CommandSender, EngineConfig, InputAudioSnapshot, InputSpec, InputStatsReader,
+    InputStatus, OutputHub, OutputStatus, RenderStats, Source, State, StateReader,
 };
 
 /// UI-thread liveness, updated once per UI frame.
@@ -68,6 +68,8 @@ pub struct SoakContext {
     pub commands: CommandSender,
     /// Run transitions between the inputs during the soak.
     pub transitions: bool,
+    /// Counters of `vma-audio` (C14).
+    pub audio: Arc<vma_engine::AudioStats>,
     /// `--stream`: hidden from the command line in the report (B13).
     pub stream_key: vma_engine::Secret,
 }
@@ -152,8 +154,103 @@ const STEP: Duration = Duration::from_millis(50);
 /// Each hostile phase lasts this long; five phases per cycle.
 const PHASE: Duration = Duration::from_secs(3);
 /// With `transitions`: one every this many 50 ms steps (4 s), alternately button 1 (Fade
-/// 0.5 s) and Cut.
+/// 0.5 s) and Cut. With sync sources, the next one is planned once this much time has passed
+/// since the previous one (see [`plan_transition`]).
 const TRANSITION_STEPS: u64 = 80;
+/// A sync source's beep lasts 100 ms after its flash.
+const BEEP_NS: u64 = 100_000_000;
+/// Around the flashes: the latency from a source to the Program (a few pictures), and the
+/// tick a command waits for.
+const FLASH_MARGIN_NS: u64 = 100_000_000;
+/// A cut needs this much room: the analyser hears a beep after 200 ms of quiet.
+const MIN_CUT_ROOM_NS: u64 = 100_000_000;
+/// The preview is set this long before the transition.
+const PREVIEW_LEAD_NS: u64 = 150_000_000;
+
+/// When to switch from sync source `from` to `to` (rate and drift of each), after `now_ns`
+/// of the shared clock, so that no flash nor beep of either is on air while the Program
+/// changes: between two of their flashes, after the beep of the first and the margins. A Fade
+/// of `fade_ns` when it fits there, else a Cut in the middle. Returns the time of the
+/// command and whether it is the Fade.
+fn plan_transition(
+    now_ns: u64,
+    from: (vma_core::FrameRate, i32),
+    to: (vma_core::FrameRate, i32),
+    fade_ns: u64,
+) -> Option<(u64, bool)> {
+    const SPAN_NS: u64 = 4_000_000_000;
+    let mut flashes: Vec<u64> = Vec::new();
+    for (rate, drift) in [from, to] {
+        let mut t = vma_io_gst::next_sync_flash_ns(rate, drift, now_ns.saturating_sub(SPAN_NS / 2));
+        while t <= now_ns + SPAN_NS {
+            flashes.push(t);
+            t = vma_io_gst::next_sync_flash_ns(rate, drift, t + 1);
+        }
+    }
+    flashes.sort_unstable();
+    flashes
+        .iter()
+        .zip(flashes.iter().skip(1))
+        .find_map(|(&first, &second)| {
+            let start = (first + BEEP_NS + FLASH_MARGIN_NS).max(now_ns + PREVIEW_LEAD_NS);
+            let end = second.checked_sub(FLASH_MARGIN_NS)?;
+            let room = end.checked_sub(start)?;
+            if room >= fade_ns {
+                Some((start + (room - fade_ns) / 2, true))
+            } else if room >= MIN_CUT_ROOM_NS {
+                Some((start + room / 2, false))
+            } else {
+                None
+            }
+        })
+}
+
+/// A sync source's rate and drift.
+fn sync_clock(spec: &InputSpec) -> Option<(vma_core::FrameRate, i32)> {
+    match *spec {
+        InputSpec::SyncSource {
+            rate, drift_ppm, ..
+        } => Some((rate, drift_ppm)),
+        _ => None,
+    }
+}
+
+/// The next transition between sync sources: the input after the one on air goes to
+/// Preview now, the transition goes at `at_ns`.
+struct Planned {
+    at_ns: u64,
+    fade: bool,
+}
+
+/// Plans the next transition when every input is a sync source: sets the Preview.
+fn plan_sync_transition(state: &State, commands: &CommandSender, now_ns: u64) -> Option<Planned> {
+    let sources: Vec<_> = state
+        .inputs
+        .iter()
+        .filter_map(|i| Some((i.id, sync_clock(&i.spec)?)))
+        .collect();
+    if sources.len() < 2 {
+        return None;
+    }
+    let on_air = sources
+        .iter()
+        .position(|(id, _)| Some(*id) == state.program)
+        .unwrap_or(0);
+    let (from, next) = (
+        sources.get(on_air)?,
+        sources.get((on_air + 1) % sources.len())?,
+    );
+    let fade = state
+        .buttons
+        .first()
+        .filter(|b| b.effect == vma_engine::Effect::Fade)
+        .map_or(0, |b| u64::from(b.duration_ms) * 1_000_000);
+    let (at_ns, fade) = plan_transition(now_ns, from.1, next.1, fade.max(1))?;
+    commands
+        .send(Source::Script, Command::SetPreview { input: next.0 })
+        .ok()?;
+    Some(Planned { at_ns, fade })
+}
 /// Acceptance A10: arrival → Program within 2 master frames.
 const MAX_LATENCY_FRAMES: f64 = 2.0;
 /// A source's measured rate may differ from its nominal rate by this much (A6).
@@ -222,6 +319,18 @@ fn run(
     let mut sent = [0u64; Action::ALL.len()];
     let mut step = 0u64;
     let mut transitions = 0u64;
+    let mut fades = 0u64;
+    let mut planned: Option<Planned> = None;
+    let mut last_transition = started;
+    let clock = soak.config.stream_clock;
+    let sync_sources = soak
+        .state
+        .load()
+        .inputs
+        .iter()
+        .any(|i| sync_clock(&i.spec).is_some());
+    // C14: the sound read at the end of the warm-up (the start of each source is silent).
+    let mut audio_warm: Option<Vec<InputAudioSnapshot>> = None;
     let mut losses: Vec<(InputId, u64)> = Vec::new();
     let mut lost_now: Vec<InputId> = Vec::new();
     let mut reconnections: Vec<(OutputId, u64)> = Vec::new();
@@ -253,7 +362,35 @@ fn run(
                 *n += 1;
             }
         }
-        if soak.transitions && step > 0 && step.is_multiple_of(TRANSITION_STEPS) {
+        if audio_warm.is_none() && started.elapsed() >= Duration::from_secs(SYNC_WARM_UP_S) {
+            audio_warm = Some(soak.audio.inputs());
+        }
+        if let (true, Some(clock)) = (soak.transitions && sync_sources, clock) {
+            if planned.is_none() && last_transition.elapsed() >= STEP * TRANSITION_STEPS as u32 {
+                planned = plan_sync_transition(&soak.state.load(), &soak.commands, clock.now());
+            }
+            if let Some(p) = planned.as_ref()
+                && clock.at(Instant::now() + STEP) >= p.at_ns
+            {
+                // On time, not on the next step.
+                std::thread::sleep(
+                    clock
+                        .instant(p.at_ns)
+                        .saturating_duration_since(Instant::now()),
+                );
+                let command = if p.fade {
+                    Command::Transition { button: 1 }
+                } else {
+                    Command::Cut
+                };
+                if soak.commands.send(Source::Script, command).is_ok() {
+                    transitions += 1;
+                    fades += u64::from(p.fade);
+                }
+                planned = None;
+                last_transition = Instant::now();
+            }
+        } else if soak.transitions && step > 0 && step.is_multiple_of(TRANSITION_STEPS) {
             let command = if (step / TRANSITION_STEPS) % 2 == 1 {
                 Command::Transition { button: 1 }
             } else {
@@ -321,7 +458,9 @@ fn run(
         end,
         sent: &sent,
         transitions,
+        fades: sync_sources.then_some(fades),
         losses: &losses,
+        audio_warm: audio_warm.as_deref(),
         reconnections: &reconnections,
         sync: sync.as_ref(),
     };
@@ -351,7 +490,11 @@ struct Run<'a> {
     end: End,
     sent: &'a [u64],
     transitions: u64,
+    /// Sync sources: transitions planned between their flashes, of which Fades.
+    fades: Option<u64>,
     losses: &'a [(InputId, u64)],
+    /// The sound read at the end of the warm-up.
+    audio_warm: Option<&'a [InputAudioSnapshot]>,
     /// Lost connections per output.
     reconnections: &'a [(OutputId, u64)],
     /// `--sync-check`: what the analyser saw, or why it did not start.
@@ -370,8 +513,9 @@ fn sync_verdict(
     let expected = elapsed.as_secs().saturating_sub(SYNC_WARM_UP_S);
     SyncVerdict {
         within_a_frame: sync.worst_ns().is_some_and(|w| w <= frame),
+        drift_within_a_frame: sync.drift_ns().is_some_and(|d| d.abs() <= frame),
         enough_pairs: sync.offsets_ns.len() as u64 >= expected,
-        uninterrupted: sync.interruptions == 0 && sync.video_gaps == 0,
+        uninterrupted: sync.interruptions == 0 && sync.video_gaps == 0 && sync.audio_gaps == 0,
         frame_ns: frame,
         expected,
     }
@@ -384,6 +528,8 @@ const SYNC_WARM_UP_S: u64 = 15;
 #[derive(Debug, Clone, Copy)]
 struct SyncVerdict {
     within_a_frame: bool,
+    /// C14: last − first offset within a frame.
+    drift_within_a_frame: bool,
     enough_pairs: bool,
     uninterrupted: bool,
     frame_ns: i64,
@@ -392,8 +538,78 @@ struct SyncVerdict {
 
 impl SyncVerdict {
     fn passed(self) -> bool {
-        self.within_a_frame && self.enough_pairs && self.uninterrupted
+        self.within_a_frame && self.drift_within_a_frame && self.enough_pairs && self.uninterrupted
     }
+}
+
+/// The sound (C14), when inputs have some: its section and whether it had no hole.
+struct AudioReport {
+    text: String,
+    passed: bool,
+}
+
+/// C14 « 0 trou audio »: the mix never late nor rebuilt over a gap, and since the end of the
+/// warm-up, no input read short (silence for want of samples), overwritten or jumped.
+fn audio_report(
+    soak: &SoakContext,
+    run: &Run<'_>,
+    state: &State,
+    audio_late: u64,
+) -> Option<AudioReport> {
+    let now = soak.audio.inputs();
+    if now.is_empty() {
+        return None;
+    }
+    let a = soak.audio.snapshot();
+    let mix_ok = a.queue_full == 0 && a.skipped_samples == 0 && audio_late == 0;
+    let mark = |ok: bool| if ok { "" } else { " ❌" };
+    let mut text = String::new();
+    let _ = writeln!(
+        text,
+        "## Audio (C14)\nMélange (`vma-audio`) : {} blocs, {} ticks reconstruits, {} ticks non transmis (file pleine){}, {} échantillons de silence sur un trou{} ; échantillons envoyés en silence aux sorties faute de mélange à temps : {}{}.\n\n| Input | Lu | Manquant depuis la chauffe | Écrasé | Reprises | Cadence mesurée (avance attendue) |\n|---|---|---|---|---|---|",
+        a.blocks,
+        a.rebuilt,
+        a.queue_full,
+        mark(a.queue_full == 0),
+        a.skipped_samples,
+        mark(a.skipped_samples == 0),
+        audio_late,
+        mark(audio_late == 0),
+    );
+    let mut inputs_ok = true;
+    for i in &now {
+        let warm = run
+            .audio_warm
+            .and_then(|w| w.iter().find(|w| w.input == i.input));
+        // Without a reading at the end of the warm-up (shorter run), the whole run counts.
+        let missing = i.missing - warm.map_or(0, |w| w.missing.min(i.missing));
+        let ok = missing == 0 && i.overwritten == 0 && i.resyncs == 0;
+        inputs_ok &= ok;
+        let input = state.inputs.iter().find(|s| s.id == i.input);
+        let expected = input
+            .and_then(|s| sync_clock(&s.spec))
+            .map_or_else(String::new, |(_, ppm)| format!(" ({ppm:+} ppm)"));
+        let _ = writeln!(
+            text,
+            "| {} | {:.1} s | {missing}{} | {}{} | {}{} | {:+.1} ppm{expected} |",
+            input.map_or_else(|| i.input.to_string(), |s| s.name.clone()),
+            i.frames as f64 / 48_000.0,
+            mark(missing == 0),
+            i.overwritten,
+            mark(i.overwritten == 0),
+            i.resyncs,
+            mark(i.resyncs == 0),
+            i.ppm,
+        );
+    }
+    let _ = writeln!(
+        text,
+        "\nManquant : échantillons de la source pas encore arrivés quand le mélange les lit (lus comme du silence), comptés depuis la fin des {SYNC_WARM_UP_S} s de chauffe ; écrasé : arrivés mais remplacés avant d'être lus ; reprises : sauts de lecture de plus de 10 ms. Cadence : celle de la source mesurée par le lecteur, rapportée à 48 kHz sur l'horloge commune.\n"
+    );
+    Some(AudioReport {
+        text,
+        passed: mix_ok && inputs_ok,
+    })
 }
 
 /// One input at the end of the run, for the report.
@@ -420,7 +636,9 @@ fn input_lines(soak: &SoakContext, run: &Run<'_>) -> Vec<InputLine> {
         .filter_map(|input| {
             let stats = soak.input_stats.get(input.id)?.snapshot();
             let nominal = match input.spec {
-                InputSpec::Synthetic { rate, .. } => Some(rate),
+                InputSpec::Synthetic { rate, .. } | InputSpec::SyncSource { rate, .. } => {
+                    Some(rate)
+                }
                 _ => None,
             };
             let received_per_s = stats.received as f64 / run.elapsed.as_secs_f64().max(1e-9);
@@ -495,13 +713,16 @@ fn report(options: &SoakOptions, soak: &SoakContext, run: &Run<'_>) -> (String, 
         Some(Ok((_, verdict))) => verdict.passed(),
         Some(Err(_)) => false,
     };
+    let audio = audio_report(soak, run, &state, distribution.audio_late);
+    let audio_ok = audio.as_ref().is_none_or(|a| a.passed);
     let passed = end == End::Completed
         && c.missed == 0
         && r.gpu_dropped == 0
         && !r.device_lost
         && inputs_ok
         && outputs_ok
-        && sync_ok;
+        && sync_ok
+        && audio_ok;
     let mode = if options.hostile { "hostile" } else { "calme" };
     let ms = |d: Duration| format!("{:.3} ms", d.as_secs_f64() * 1000.0);
 
@@ -525,6 +746,8 @@ fn report(options: &SoakOptions, soak: &SoakContext, run: &Run<'_>) -> (String, 
                 "❌ ÉCHEC (input perdu, hors cadence, upload en attente du GPU ou latence > 2 images)",
             (false, End::Completed) if !outputs_ok =>
                 "❌ ÉCHEC (sortie en erreur ou reconnectée, ou images perdues par une sortie)",
+            (false, End::Completed) if !audio_ok =>
+                "❌ ÉCHEC (son : trou, retard du mélange ou reprise de la lecture d'un input)",
             (false, End::Completed) if !sync_ok =>
                 "❌ ÉCHEC (synchro : décalage son / image de plus d'une image, flux relu interrompu ou flashs manquants)",
             (false, End::Completed) => "❌ ÉCHEC (images manquées ou répétées)",
@@ -619,11 +842,21 @@ fn report(options: &SoakOptions, soak: &SoakContext, run: &Run<'_>) -> (String, 
 
     if !inputs.is_empty() {
         let period_ms = soak.config.rate.frame_duration().as_secs_f64() * 1000.0;
+        let every = TRANSITION_STEPS * STEP.as_millis() as u64 / 1000;
+        let transitions = match run.fades {
+            Some(fades) => format!(
+                "{} transitions automatiques, une toutes les {every} s environ, de chaque input au suivant (Fade : {fades}, Cut : {}) : placées entre les flashs des deux sources, un Fade quand il y tient, sinon un Cut",
+                run.transitions,
+                run.transitions - fades
+            ),
+            None => format!(
+                "{} transitions automatiques (une toutes les {every} s, Fade 0,5 s puis Cut)",
+                run.transitions
+            ),
+        };
         let _ = writeln!(
             s,
-            "## Inputs\n{} transitions automatiques (une toutes les {} s, Fade 0,5 s puis Cut). Latence : publication de l'image → tick qui la prend ; limite A10 : 2 images ({:.1} ms).\n\n| Input | Format | Reçues / s (nominal) | Sautées | Répétées | Upload occupé | Latence p50 · p99 · max | Pertes de signal |\n|---|---|---|---|---|---|---|---|",
-            run.transitions,
-            TRANSITION_STEPS * STEP.as_millis() as u64 / 1000,
+            "## Inputs\n{transitions}. Latence : publication de l'image → tick qui la prend ; limite A10 : 2 images ({:.1} ms).\n\n| Input | Format | Reçues / s (nominal) | Sautées | Répétées | Upload occupé | Latence p50 · p99 · max | Pertes de signal |\n|---|---|---|---|---|---|---|---|",
             period_ms * MAX_LATENCY_FRAMES,
         );
         for i in &inputs {
@@ -697,10 +930,14 @@ fn report(options: &SoakOptions, soak: &SoakContext, run: &Run<'_>) -> (String, 
         let _ = writeln!(s);
     }
 
+    if let Some(audio) = &audio {
+        s.push_str(&audio.text);
+    }
+
     match &sync {
         None => {}
         Some(Err(e)) => {
-            let _ = writeln!(s, "## Synchro (B1)\n❌ Analyseur non démarré : {e}\n");
+            let _ = writeln!(s, "## Synchro (B1, C14)\n❌ Analyseur non démarré : {e}\n");
         }
         Some(Ok((sync, verdict))) => {
             let ms_of = |ns: Option<i64>| {
@@ -711,7 +948,7 @@ fn report(options: &SoakOptions, soak: &SoakContext, run: &Run<'_>) -> (String, 
                 crate::cli::redacted(options.sync_check.iter().cloned(), soak.stream_key.expose());
             let _ = writeln!(
                 s,
-                "## Synchro (B1)\nFlux relu : `{uri}` (décodeurs logiciels). Décalage = début du bip − première image blanche ; positif : le son est en retard.\n\n| Mesure | Valeur | |\n|---|---|---|"
+                "## Synchro (B1, C14)\nFlux relu : `{uri}` (décodeurs logiciels). Décalage = début du bip − première image blanche ; positif : le son est en retard.\n\n| Mesure | Valeur | |\n|---|---|---|"
             );
             let _ = writeln!(
                 s,
@@ -742,8 +979,9 @@ fn report(options: &SoakOptions, soak: &SoakContext, run: &Run<'_>) -> (String, 
             );
             let _ = writeln!(
                 s,
-                "| Dérive (dernier − premier) | {} | |",
-                ms_of(sync.drift_ns())
+                "| Dérive (dernier − premier) | {} (limite : une image) | {} |",
+                ms_of(sync.drift_ns()),
+                mark(verdict.drift_within_a_frame)
             );
             let _ = writeln!(
                 s,
@@ -751,6 +989,13 @@ fn report(options: &SoakOptions, soak: &SoakContext, run: &Run<'_>) -> (String, 
                 sync.video_frames,
                 sync.video_gaps,
                 mark(sync.video_gaps == 0)
+            );
+            let _ = writeln!(
+                s,
+                "| Trous dans le son relu (> {} ms) | {} | {} |",
+                vma_io_gst::AUDIO_GAP_NS / 1_000_000,
+                sync.audio_gaps,
+                mark(sync.audio_gaps == 0)
             );
             let _ = writeln!(
                 s,
@@ -863,6 +1108,50 @@ mod tests {
         assert_eq!(utc_datetime(at(1_793_028_660)), "2026-10-26 15:31 UTC");
     }
 
+    /// The transition is clear of every flash and beep of both sources, by the margins.
+    #[test]
+    fn transitions_go_between_the_flashes_of_both_sources() {
+        let fifty = vma_core::FrameRate::FPS_50;
+        let s = 1_000_000_000u64;
+        let fade = 500_000_000;
+        let clear = |at: u64, len: u64, drifts: [i32; 2]| {
+            for drift in drifts {
+                let mut f = vma_io_gst::next_sync_flash_ns(fifty, drift, at.saturating_sub(2 * s));
+                while f < at + len + 2 * s {
+                    let (busy_from, busy_to) = (f - FLASH_MARGIN_NS, f + BEEP_NS + FLASH_MARGIN_NS);
+                    assert!(
+                        at + len <= busy_from || at >= busy_to,
+                        "{at} + {len} meets the flash at {f} (drift {drift})"
+                    );
+                    f = vma_io_gst::next_sync_flash_ns(fifty, drift, f + 1);
+                }
+            }
+        };
+        // Same phase: a Fade half-way between two flashes.
+        let now = 1_000 * s + 50_000_000;
+        let (at, is_fade) = plan_transition(now, (fifty, 0), (fifty, 0), fade).unwrap();
+        assert!(is_fade);
+        assert!(at >= now + PREVIEW_LEAD_NS && at < now + 2 * s);
+        clear(at, fade, [0, 0]);
+        // Over an hour, ±100 ppm moves a source by up to 360 ms: a Cut when the Fade does not
+        // fit, never on a flash.
+        let mut cuts = 0;
+        for minute in 0..=60u64 {
+            let now = 100_000 * s + minute * 60 * s + minute * 7_919_000;
+            for drifts in [[0, 100], [100, -100], [-100, 0]] {
+                let (at, is_fade) =
+                    plan_transition(now, (fifty, drifts[0]), (fifty, drifts[1]), fade).unwrap();
+                assert!(
+                    at >= now + PREVIEW_LEAD_NS && at < now + 3 * s,
+                    "{minute} {drifts:?}"
+                );
+                clear(at, if is_fade { fade } else { 1 }, drifts);
+                cuts += u32::from(!is_fade);
+            }
+        }
+        assert!(cuts > 0, "some phases leave no room for a Fade");
+    }
+
     #[test]
     fn hostile_cycle_covers_every_action() {
         let per_cycle = 5 * (PHASE.as_millis() / STEP.as_millis()) as u64;
@@ -899,9 +1188,21 @@ mod tests {
         assert!(!sync_verdict(&few, minute, rate).enough_pairs);
         let cut = vma_io_gst::SyncSnapshot {
             interruptions: 1,
-            ..good
+            ..good.clone()
         };
         assert!(!sync_verdict(&cut, minute, rate).passed());
         assert!(!sync_verdict(&vma_io_gst::SyncSnapshot::default(), minute, rate).passed());
+        // C14: a hole in the sound, or offsets that drift apart by more than a frame.
+        let hole = vma_io_gst::SyncSnapshot {
+            audio_gaps: 1,
+            ..good.clone()
+        };
+        assert!(!sync_verdict(&hole, minute, rate).passed());
+        let mut drifting = good.clone();
+        drifting.offsets_ns[0] = -10_000_000;
+        drifting.offsets_ns[49] = 10_500_000;
+        let verdict = sync_verdict(&drifting, minute, rate);
+        assert!(verdict.within_a_frame && !verdict.drift_within_a_frame);
+        assert!(!verdict.passed());
     }
 }

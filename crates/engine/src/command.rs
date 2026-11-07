@@ -276,6 +276,9 @@ pub enum InputSpec {
         sample_rate: u32,
         drift_ppm: i32,
         audio_lead_ms: i32,
+        /// Size of its pictures; `None`: small (320×180), the compositor scales them.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        resolution: Option<Resolution>,
     },
     /// Sound only: a microphone or line input (`io-gst` audio device, stable identifier).
     AudioDevice {
