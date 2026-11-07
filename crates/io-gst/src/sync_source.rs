@@ -352,7 +352,7 @@ mod tests {
             };
             let mut input = GstInput::start(
                 vma_core::InputId(1),
-                &Recipe::sync_source(spec),
+                &Recipe::sync_source(spec, crate::pipeline::tests::ticks(FrameRate::FPS_50)),
                 feeds.clone(),
             )
             .unwrap();

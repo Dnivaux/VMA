@@ -566,7 +566,7 @@ fn audio_report(
     let mut text = String::new();
     let _ = writeln!(
         text,
-        "## Audio (C14)\nMélange (`vma-audio`) : {} blocs, {} ticks reconstruits, {} ticks non transmis (file pleine){}, {} échantillons de silence sur un trou{} ; échantillons envoyés en silence aux sorties faute de mélange à temps : {}{}.\n\n| Input | Lu | Manquant depuis la chauffe | Écrasé | Reprises | Cadence mesurée (avance attendue) |\n|---|---|---|---|---|---|",
+        "## Audio (C14)\nMélange (`vma-audio`) : {} blocs, {} ticks reconstruits, {} ticks non transmis (file pleine){}, {} échantillons de silence sur un trou{} ; échantillons envoyés en silence aux sorties faute de mélange à temps : {}{}.\n\n| Input | Lu | Manquant depuis la chauffe | Écrasé | Reprises · sauts de latence | Cadence mesurée (avance attendue) |\n|---|---|---|---|---|---|",
         a.blocks,
         a.rebuilt,
         a.queue_full,
@@ -583,7 +583,9 @@ fn audio_report(
             .and_then(|w| w.iter().find(|w| w.input == i.input));
         // Without a reading at the end of the warm-up (shorter run), the whole run counts.
         let missing = i.missing - warm.map_or(0, |w| w.missing.min(i.missing));
-        let ok = missing == 0 && i.overwritten == 0 && i.resyncs == 0;
+        // A jump of the reading is expected with each jump of the latency of the pictures.
+        let resyncs_ok = i.resyncs <= i.latency_jumps;
+        let ok = missing == 0 && i.overwritten == 0 && resyncs_ok;
         inputs_ok &= ok;
         let input = state.inputs.iter().find(|s| s.id == i.input);
         let expected = input
@@ -591,20 +593,21 @@ fn audio_report(
             .map_or_else(String::new, |(_, ppm)| format!(" ({ppm:+} ppm)"));
         let _ = writeln!(
             text,
-            "| {} | {:.1} s | {missing}{} | {}{} | {}{} | {:+.1} ppm{expected} |",
+            "| {} | {:.1} s | {missing}{} | {}{} | {}{} · {} | {:+.1} ppm{expected} |",
             input.map_or_else(|| i.input.to_string(), |s| s.name.clone()),
             i.frames as f64 / 48_000.0,
             mark(missing == 0),
             i.overwritten,
             mark(i.overwritten == 0),
             i.resyncs,
-            mark(i.resyncs == 0),
+            mark(resyncs_ok),
+            i.latency_jumps,
             i.ppm,
         );
     }
     let _ = writeln!(
         text,
-        "\nManquant : échantillons de la source pas encore arrivés quand le mélange les lit (lus comme du silence), comptés depuis la fin des {SYNC_WARM_UP_S} s de chauffe ; écrasé : arrivés mais remplacés avant d'être lus ; reprises : sauts de lecture de plus de 10 ms. Cadence : celle de la source mesurée par le lecteur, rapportée à 48 kHz sur l'horloge commune.\n"
+        "\nManquant : échantillons de la source pas encore arrivés quand le mélange les lit (lus comme du silence), comptés depuis la fin des {SYNC_WARM_UP_S} s de chauffe ; écrasé : arrivés mais remplacés avant d'être lus ; reprises : sauts de lecture de plus de 10 ms, chacun attendu avec un saut de la latence des images que le son suit (une image sautée ou répétée par une source qui dérive, un tampon de gigue recalé), pas au-delà. Cadence : celle de la source mesurée par le lecteur, rapportée à 48 kHz sur l'horloge commune.\n"
     );
     Some(AudioReport {
         text,

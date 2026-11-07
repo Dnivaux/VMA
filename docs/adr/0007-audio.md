@@ -131,7 +131,8 @@ Constatées en mesurant la synchro de bout en bout ; elles ne changent pas la d�
   Pendant ce temps l'écart son − image va jusqu'à une période de source (16,9 ms mesurés à
   50p ← 50p + 100 ppm, une fois en 60 s). **Acceptée** par le mainteneur le 2026-11-03 ; à
   reprendre si le partenaire le remarque (pistes : viser le milieu de la bande de phase,
-  rattrapage plus rapide).
+  rattrapage plus rapide). **Levée à l'étape 9 de la Phase 3** (ci-dessous) : sur 1 h, le
+  soak C14 l'a mesurée à 20,44 ms, au-dessus d'une image.
 
 ## Précision de mise en œuvre (Phase 3, étape 6, 2026-11-07)
 - **Saut de la latence des images** (§ 3) : deux images nouvelles de suite à plus d'une
@@ -141,6 +142,31 @@ Constatées en mesurant la synchro de bout en bout ; elles ne changent pas la d�
   rattrapés en 10 s (mesuré en CI après un délai relevé par le tampon de gigue de l'entrée
   SRT). Une seule image à l'écart (une image en retard) ne change rien ; l'étalement naturel
   des images nouvelles (moins d'une période) reste lissé.
+
+## Précision de mise en œuvre (Phase 3, étape 9, 2026-11-07)
+- **Glissement d'une source qui dérive** (§ 3) : premier soak C14 (1 h, deux sources à
+  ± 100 ppm) en échec, pire écart son − image 20,44 ms. Deux causes : les images d'une source
+  locale en phase avec les ticks, prises « dernière arrivée », basculaient d'un tick à
+  l'autre pendant des secondes à chaque passage de la phase sur un tick (447 sautées et
+  429 répétées en 1 h au lieu d'environ 18) ; et le son ne suivait le saut d'une période qu'à
+  0,5 %. Désormais :
+  - les inputs live locaux (synthétique, source synchro, capture) passent par le tampon calé
+    sur les ticks de l'entrée SRT (`io-gst.md`, « Inputs live calés sur les ticks »), sans la
+    place d'une rafale : une image sautée ou répétée par période de dérive, nette ;
+  - une latence **stable** (25 images nouvelles de suite à moins d'un quart de période de la
+    latence lissée) qui bouge de plus d'une **demi-période** du maître est un glissement : le
+    lissage repart de là **tout de suite**, le son saute avec l'image (fondu de 5 ms, § 4). Une
+    image répétée par une source qui montrait une image nouvelle à chaque tick se voit au tick
+    qui la répète. Si l'image nouvelle suivante revient à l'ancienne latence (une image
+    déplacée seule), la latence y revient. L'étalement d'une source dont la cadence n'est pas
+    une fraction entière du maître (29,97p, 24p dans 50p) dépasse un quart de période : jamais
+    stable, toujours lissé (règle de l'étape 6 inchangée, sauts de plus d'une période et demie).
+  - Coût : un saut de 20 ms du son (fondu) toutes les 200 s à 100 ppm, au lieu d'un rattrapage
+    de 4 s à 0,5 % pendant lequel l'écart allait jusqu'à une image. Chaque saut voulu est
+    compté (`InputAudioSnapshot::latency_jumps`) : le soak accepte autant de reprises du lecteur,
+    pas plus.
+  - Reste : une source plus lente que le maître qui ne montre pas une image nouvelle à chaque
+    tick (25p dans 50p) répète une image de plus ; ce tick-là, le son a une période d'avance.
 
 ## Conséquences
 - `vma-output` ne génère plus l'audio (sauf `--sync-test`) : il assemble l'image *n* et le bloc

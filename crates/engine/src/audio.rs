@@ -144,6 +144,7 @@ struct StripCounters {
     missing: AtomicU64,
     overwritten: AtomicU64,
     resyncs: AtomicU64,
+    latency_jumps: AtomicU64,
     /// `f64` bits.
     ppm: AtomicU64,
 }
@@ -161,6 +162,10 @@ pub struct InputAudioSnapshot {
     pub overwritten: u64,
     /// Jumps of the reading (gap above 10 ms, restart of the source).
     pub resyncs: u64,
+    /// Jumps of the latency of its pictures that the sound followed (a jitter buffer set
+    /// again, a picture skipped or repeated by a drifting source): each one can make a jump
+    /// of the reading.
+    pub latency_jumps: u64,
     /// Rate of the source measured by its DLL, in ppm from 48 kHz.
     pub ppm: f64,
 }
@@ -187,22 +192,25 @@ impl AudioStats {
                     missing: c.missing.load(Ordering::Relaxed),
                     overwritten: c.overwritten.load(Ordering::Relaxed),
                     resyncs: c.resyncs.load(Ordering::Relaxed),
+                    latency_jumps: c.latency_jumps.load(Ordering::Relaxed),
                     ppm: f64::from_bits(c.ppm.load(Ordering::Relaxed)),
                 })
             })
             .collect()
     }
 
-    fn publish(&self, slot: usize, input: Option<(InputId, vma_audio::ReaderStats)>) {
+    /// `input`: its id, the stats of its reader and the jumps of its latency.
+    fn publish(&self, slot: usize, input: Option<(InputId, vma_audio::ReaderStats, u64)>) {
         let Some(c) = self.strips.get(slot) else {
             return;
         };
         match input {
-            Some((id, r)) => {
+            Some((id, r, latency_jumps)) => {
                 c.frames.store(r.frames, Ordering::Relaxed);
                 c.missing.store(r.missing, Ordering::Relaxed);
                 c.overwritten.store(r.overwritten, Ordering::Relaxed);
                 c.resyncs.store(r.resyncs, Ordering::Relaxed);
+                c.latency_jumps.store(latency_jumps, Ordering::Relaxed);
                 c.ppm.store(r.ppm.to_bits(), Ordering::Relaxed);
                 c.input.store(id.0.wrapping_add(1), Ordering::Release);
             }
@@ -266,6 +274,15 @@ struct Latency {
     last_picture: u64,
     /// The latest new picture was more than [`STEP_PERIODS`] away from the smoothed latency.
     stepping: bool,
+    /// New pictures in a row within a quarter of a period of the smoothed latency.
+    steady: u32,
+    /// Ticks in a row with a new picture.
+    fresh: u32,
+    /// The smoothed latency before a slip, while the next new picture tells whether the slip
+    /// was a whole picture skipped or repeated, or one picture out of place.
+    before_slip: Option<f64>,
+    /// Jumps of the smoothed latency (the sound jumps with them).
+    jumps: u64,
 }
 
 /// New pictures this many master periods away from the smoothed latency, twice in a row: the
@@ -275,6 +292,19 @@ struct Latency {
 /// pictures stays under one period.
 const STEP_PERIODS: f64 = 1.5;
 
+/// A steady latency ([`STEADY_PICTURES`] new pictures in a row within a quarter of a period)
+/// that moves by more than half a master period: a source that drifts from the master (at its
+/// rate, or at a whole fraction of it) skipped or repeated a picture, its pictures **slipped**
+/// by a period. The smoothing starts again at once from that picture, so the sound jumps with
+/// it (5 ms cross-fade): a slip comes every 200 s at 100 ppm, and following it at the reader's
+/// 0.5 % left the sound up to a period away from the picture for seconds. If the next new
+/// picture is back where the latency was (one picture out of place), the latency goes back
+/// there. The natural spread of a source whose rate is not a whole fraction of the master's
+/// (29.97p, 24p in 50p) is wider than a quarter of a period: never steady, always smoothed.
+const SLIP_PERIODS: f64 = 0.5;
+/// New pictures in a row for a steady latency: 0.5 s at 50p.
+const STEADY_PICTURES: u32 = 25;
+
 impl Latency {
     /// Reading time of the block of the tick at `tick_ns`, or `None` if the picture is stale;
     /// `period_ns`: one master period.
@@ -282,33 +312,70 @@ impl Latency {
         let lag = tick_ns as f64 - picture_ns as f64;
         let new_picture = picture_ns != self.last_picture;
         self.last_picture = picture_ns;
-        let step = STEP_PERIODS * period_ns as f64;
+        let period = period_ns as f64;
+        let step = STEP_PERIODS * period;
+        let slip = SLIP_PERIODS * period;
+        let steady = self.steady >= STEADY_PICTURES;
+        let fresh = self.fresh;
+        self.fresh = if new_picture {
+            fresh.saturating_add(1)
+        } else {
+            0
+        };
+        let before_slip = if new_picture {
+            self.before_slip.take()
+        } else {
+            None
+        };
         let smoothed = match self.smoothed {
             None => lag,
-            // The same picture again: the latency stays, unless the picture is stale.
-            Some(s) if !new_picture => {
-                if lag - s > STALE_NS {
-                    return None;
-                }
-                s
+            Some(s) if !new_picture && lag - s > STALE_NS => return None,
+            // A source that showed a new picture on every tick, at a steady latency, repeats
+            // one: its pictures slipped by a period (slower than the master).
+            Some(s) if !new_picture && steady && fresh >= STEADY_PICTURES && lag - s > slip => {
+                self.before_slip = Some(s);
+                self.jump(lag)
             }
-            Some(s) if (lag - s).abs() > STALE_NS => lag,
+            // The same picture again: the latency stays.
+            Some(s) if !new_picture => s,
+            Some(s) if (lag - s).abs() > STALE_NS => self.jump(lag),
+            // One picture out of place after a steady latency: back to it.
+            Some(_) if before_slip.is_some_and(|b| (lag - b).abs() <= period / 4.0) => {
+                let back = self.jump(before_slip.unwrap_or(lag));
+                self.steady = STEADY_PICTURES;
+                back
+            }
+            Some(s) if steady && (lag - s).abs() > slip => {
+                self.before_slip = Some(s);
+                self.jump(lag)
+            }
             Some(s) if (lag - s).abs() > step => {
-                let again = std::mem::replace(&mut self.stepping, true);
-                if again {
-                    self.stepping = false;
-                    lag
+                if std::mem::replace(&mut self.stepping, true) {
+                    self.jump(lag)
                 } else {
                     s
                 }
             }
             Some(s) => {
                 self.stepping = false;
+                self.steady = if (lag - s).abs() <= period / 4.0 {
+                    self.steady.saturating_add(1)
+                } else {
+                    0
+                };
                 s + SMOOTHING * (lag - s)
             }
         };
         self.smoothed = Some(smoothed);
         Some((tick_ns as f64 - smoothed).max(0.0) as u64)
+    }
+
+    /// The smoothing starts again at `lag`.
+    fn jump(&mut self, lag: f64) -> f64 {
+        self.stepping = false;
+        self.steady = 0;
+        self.jumps += 1;
+        lag
     }
 
     /// Reading time of a rebuilt tick: the latency as it is (its picture is not known).
@@ -552,8 +619,10 @@ impl AudioMix {
                     if let Some(block) = strip.block.get_mut(..len) {
                         strip.reader.read(at.saturating_sub(delay_ns), block);
                     }
-                    self.stats
-                        .publish(index, Some((strip.input, strip.reader.stats())));
+                    self.stats.publish(
+                        index,
+                        Some((strip.input, strip.reader.stats(), strip.latency.jumps)),
+                    );
                 }
                 None => {
                     strip.unseen += 1;
@@ -1203,6 +1272,68 @@ mod tests {
         t += P;
         let read = latency.reading_time(t, t - 95 * MS, P).unwrap();
         assert!(read > t - 95 * MS && read < t - 80 * MS, "{read}");
+    }
+
+    /// A source at the master's rate, 100 ppm fast or slow, paced on the ticks (each picture
+    /// shown on the first tick at or after its stream time + 13 ms): the latency of its new
+    /// pictures creeps through one period, then slips by one, a picture skipped or repeated,
+    /// twice in 400 s. The sound jumps with each slip (one jump of the latency per slip) and
+    /// stays within 0.2 ms of the picture shown on every tick, the repeated one included.
+    #[test]
+    fn the_sound_jumps_with_the_slips_of_a_drifting_source() {
+        for ppm in [100i64, -100] {
+            let source = (P as i64 - P as i64 * ppm / 1_000_000) as u64;
+            let (start, delay) = (1_007 * MS, 13 * MS);
+            let mut latency = Latency::default();
+            let (mut next, mut shown, mut slips, mut worst) = (0u64, 0u64, 0u64, 0u64);
+            let mut last_lag = None;
+            for n in 0..20_000u64 {
+                let tick = 2_000 * MS + n * P;
+                while start + next * source + delay <= tick {
+                    shown = start + next * source;
+                    next += 1;
+                }
+                let lag = tick - shown;
+                if last_lag.is_some_and(|l: u64| l.abs_diff(lag) > P / 2) {
+                    slips += 1;
+                }
+                last_lag = Some(lag);
+                let read = latency.reading_time(tick, shown, P).unwrap();
+                if n >= 50 {
+                    worst = worst.max(read.abs_diff(shown));
+                }
+            }
+            assert_eq!(slips, 2, "{ppm} ppm");
+            assert_eq!(latency.jumps, 2, "{ppm} ppm");
+            assert!(worst <= MS / 5, "{ppm} ppm: {worst} ns");
+        }
+    }
+
+    /// At a steady latency, one picture out of place (shown a tick late, the next one on
+    /// time): the sound jumps with it, then back; the spread of a 24p source in 50p (wider
+    /// than a quarter of a period) never counts as a slip.
+    #[test]
+    fn one_picture_out_of_place_and_a_wide_spread_are_not_slips() {
+        let mut latency = Latency::default();
+        let mut t = 1_000 * MS;
+        for _ in 0..30 {
+            assert_eq!(latency.reading_time(t, t - 15 * MS, P), Some(t - 15 * MS));
+            t += P;
+        }
+        // Picture k − 1 again, then picture k + 1: back at 15 ms at once.
+        assert_eq!(latency.reading_time(t, t - 35 * MS, P), Some(t - 35 * MS));
+        t += P;
+        assert_eq!(latency.reading_time(t, t - 15 * MS, P), Some(t - 15 * MS));
+        assert_eq!(latency.jumps, 2);
+
+        let mut latency = Latency::default();
+        let source = 1_000 * MS / 24;
+        for n in 0..1_500u64 {
+            let tick = 1_000 * MS + n * P;
+            let shown = (tick - 10 * MS) / source * source;
+            latency.reading_time(tick, shown, P);
+        }
+        assert_eq!(latency.jumps, 0);
     }
 
     #[test]

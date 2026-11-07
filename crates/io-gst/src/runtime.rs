@@ -524,7 +524,7 @@ impl Worker {
             InputSpec::Synthetic { rate, resolution } => {
                 self.pipelines.push(PipelineSlot::new(
                     input,
-                    Recipe::synthetic(*rate, *resolution),
+                    Recipe::synthetic(*rate, *resolution, self.port.ticks),
                     self.port.feeds.clone(),
                     Instant::now(),
                 ));
@@ -538,14 +538,17 @@ impl Worker {
             } => {
                 self.pipelines.push(PipelineSlot::new(
                     input,
-                    Recipe::sync_source(crate::sync_source::SyncSpec {
-                        rate: *rate,
-                        sample_rate: *sample_rate,
-                        drift_ppm: *drift_ppm,
-                        audio_lead_ms: *audio_lead_ms,
-                        size: resolution
-                            .map_or(crate::sync_source::SMALL, |r| (r.width(), r.height())),
-                    }),
+                    Recipe::sync_source(
+                        crate::sync_source::SyncSpec {
+                            rate: *rate,
+                            sample_rate: *sample_rate,
+                            drift_ppm: *drift_ppm,
+                            audio_lead_ms: *audio_lead_ms,
+                            size: resolution
+                                .map_or(crate::sync_source::SMALL, |r| (r.width(), r.height())),
+                        },
+                        self.port.ticks,
+                    ),
                     self.port.feeds.clone(),
                     Instant::now(),
                 ));
@@ -560,7 +563,7 @@ impl Worker {
                 };
                 self.pipelines.push(PipelineSlot::new(
                     input,
-                    Recipe::capture(capture),
+                    Recipe::capture(capture, self.port.ticks),
                     self.port.feeds.clone(),
                     Instant::now(),
                 ));

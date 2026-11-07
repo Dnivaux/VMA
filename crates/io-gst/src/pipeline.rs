@@ -171,9 +171,16 @@ pub(crate) struct Recipe {
     pub(crate) watchdog: bool,
     /// Waits for its first picture without a limit (an SRT listener waits for its caller).
     pub(crate) patient: bool,
-    /// Pictures released just before the master tick they are due on ([`Pacer`]): a network
-    /// source hands them out in bursts.
-    pub(crate) pace: Option<TickGrid>,
+    /// Pictures released just before the master tick they are due on ([`Pacer`]).
+    pub(crate) pace: Option<Pace>,
+}
+
+/// How a live input is paced on the master ticks.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Pace {
+    pub(crate) ticks: TickGrid,
+    /// A network source hands its pictures out in bursts: one source period more of delay.
+    pub(crate) bursts: bool,
 }
 
 impl Recipe {
@@ -189,7 +196,7 @@ impl Recipe {
     }
 
     /// A synthetic live source: `videotestsrc` at `rate` and `resolution`, in NV12.
-    pub(crate) fn synthetic(rate: FrameRate, resolution: Resolution) -> Self {
+    pub(crate) fn synthetic(rate: FrameRate, resolution: Resolution, ticks: TickGrid) -> Self {
         Self {
             media: Media::Launch(format!(
                 "videotestsrc is-live=true pattern=ball \
@@ -202,29 +209,29 @@ impl Recipe {
             sync: false,
             watchdog: true,
             patient: false,
-            pace: None,
+            pace: Some(Pace::local(ticks)),
         }
     }
 
-    /// The sync source: live, pictures and sound taken as they come.
-    pub(crate) fn sync_source(spec: crate::sync_source::SyncSpec) -> Self {
+    /// The sync source: live, pictures paced on the ticks, sound taken as it comes.
+    pub(crate) fn sync_source(spec: crate::sync_source::SyncSpec, ticks: TickGrid) -> Self {
         Self {
             media: Media::Sync(spec),
             sync: false,
             watchdog: true,
             patient: false,
-            pace: None,
+            pace: Some(Pace::local(ticks)),
         }
     }
 
-    /// A capture device: live (lost when silent), pictures taken as they come.
-    pub(crate) fn capture(capture: Capture) -> Self {
+    /// A capture device: live (lost when silent), pictures paced on the ticks.
+    pub(crate) fn capture(capture: Capture, ticks: TickGrid) -> Self {
         Self {
             media: Media::Capture(capture),
             sync: false,
             watchdog: true,
             patient: false,
-            pace: None,
+            pace: Some(Pace::local(ticks)),
         }
     }
 
@@ -236,7 +243,7 @@ impl Recipe {
             media: Media::Srt(source),
             sync: false,
             watchdog: true,
-            pace: Some(ticks),
+            pace: Some(Pace::network(ticks)),
         }
     }
 
@@ -247,12 +254,30 @@ impl Recipe {
             sync: false,
             watchdog: true,
             patient: false,
-            pace: Some(ticks),
+            pace: Some(Pace::network(ticks)),
         }
     }
 
     fn has_timeline(&self) -> bool {
         matches!(self.media, Media::File(_))
+    }
+}
+
+impl Pace {
+    /// A live source on this machine: its pictures come one at a time.
+    fn local(ticks: TickGrid) -> Self {
+        Self {
+            ticks,
+            bursts: false,
+        }
+    }
+
+    /// A network source (SRT, NDI®): its pictures come in bursts.
+    fn network(ticks: TickGrid) -> Self {
+        Self {
+            ticks,
+            bursts: true,
+        }
     }
 }
 
@@ -375,13 +400,13 @@ impl GstInput {
             pacer: None,
             failed: false,
         }));
-        if let Some(ticks) = recipe.pace {
+        if let Some(pace) = recipe.pace {
             let (to_release, released) = crossbeam_channel::bounded(PACE_QUEUE);
             let clock = crate::clock::master_clock();
             spawn_release(input, Arc::downgrade(&stream), released, clock.clone())?;
             if let Ok(mut s) = stream.lock() {
                 s.pacer = Some(Paced {
-                    pacer: Pacer::new(ticks),
+                    pacer: Pacer::new(pace),
                     clock,
                     to_release,
                 });
@@ -936,15 +961,17 @@ struct Release {
 /// appsink callback wait).
 const PACE_QUEUE: usize = 16;
 
-/// The jitter buffer of a network source (SRT, spec `io-gst.md`, « Entrée SRT »): pictures
-/// that arrive in bursts are released one at a time, each **just before the master tick it is
-/// due on**, so the tick that shows a picture follows from its stream time alone, never from
-/// when a thread woke up. Their stream time (and so the sound) does not change.
+/// The jitter buffer of a live source (spec `io-gst.md`, « Entrée SRT » and « Inputs live
+/// calés sur les ticks »): pictures are released one at a time, each **just before the master
+/// tick it is due on**, so the tick that shows a picture follows from its stream time alone,
+/// never from when a thread woke up (nor from a picture that arrives just at a tick). Their
+/// stream time (and so the sound) does not change.
 ///
 /// A picture of stream time `t` is due on the first tick at or after `t + delay`, and released
 /// half a master period before it. The delay covers the latest arrivals (largest arrival −
-/// stream time, over the last [`PACE_WINDOW_NS`] to twice that), plus one source period (room
-/// for a burst of two pictures), half a master period and [`PACE_HEADROOM_NS`]. It then only
+/// stream time, over the last [`PACE_WINDOW_NS`] to twice that), plus, for a network source,
+/// one source period (room for a burst of two pictures), half a master period and
+/// [`PACE_HEADROOM_NS`]. It then only
 /// changes by events, so that the latency of the pictures (and the lip sync) stays put:
 /// - a picture that arrives less than a quarter of a master period before its tick (late) sets
 ///   it again;
@@ -959,6 +986,7 @@ const PACE_QUEUE: usize = 16;
 #[derive(Debug)]
 struct Pacer {
     ticks: TickGrid,
+    bursts: bool,
     /// Presentation delay, in ns (negative: the stream times of the source are ahead of the
     /// arrivals, as with a receiver that dates by presentation).
     delay: Option<i64>,
@@ -1009,9 +1037,10 @@ impl Window {
 }
 
 impl Pacer {
-    fn new(ticks: TickGrid) -> Self {
+    fn new(pace: Pace) -> Self {
         Self {
-            ticks,
+            ticks: pace.ticks,
+            bursts: pace.bursts,
             delay: None,
             arrivals: Window::default(),
             changed_at: 0,
@@ -1019,7 +1048,8 @@ impl Pacer {
     }
 
     /// When to release the picture of stream time `stream_ns` that arrived at `now_ns` (both
-    /// in stream time); `period_ns`: one source period. At or before `now_ns`: at once.
+    /// in stream time); `period_ns`: one source period (room for a burst, network source
+    /// only). At or before `now_ns`: at once.
     fn release_at(&mut self, stream_ns: u64, now_ns: u64, period_ns: u64) -> u64 {
         let master = signed(self.ticks.period_ns().max(1));
         let half = master / 2;
@@ -1031,7 +1061,8 @@ impl Pacer {
             self.arrivals = Window::default();
         }
         self.arrivals.record(now_ns, offset);
-        let wanted = self.arrivals.max(offset) + signed(period_ns) + half + PACE_HEADROOM_NS;
+        let burst = if self.bursts { signed(period_ns) } else { 0 };
+        let wanted = self.arrivals.max(offset) + burst + half + PACE_HEADROOM_NS;
         let mut delay = match self.delay {
             Some(delay) if !jumped => delay,
             _ => self.set(wanted, now_ns),
@@ -1961,12 +1992,20 @@ pub(crate) mod tests {
         "videotestsrc is-live=true ! jpegenc ! capsfilter caps=image/jpeg";
 
     pub(crate) fn capture_recipe(id: &str, devices: &DeviceList, resolution: Resolution) -> Recipe {
-        Recipe::capture(Capture {
-            device: DeviceId(id.into()),
-            devices: devices.clone(),
-            resolution,
-            rate: FrameRate::FPS_25,
-        })
+        Recipe::capture(
+            Capture {
+                device: DeviceId(id.into()),
+                devices: devices.clone(),
+                resolution,
+                rate: FrameRate::FPS_25,
+            },
+            ticks(FrameRate::FPS_25),
+        )
+    }
+
+    /// Master ticks from stream time 0, for a pipeline without an engine.
+    pub(crate) fn ticks(rate: FrameRate) -> TickGrid {
+        TickGrid { origin_ns: 0, rate }
     }
 
     /// The device's mode is chosen from its caps and the master format; MJPEG is decoded
@@ -2056,7 +2095,7 @@ pub(crate) mod tests {
             origin_ns: 1_000_000_000,
             rate: master,
         };
-        let mut pacer = Pacer::new(ticks);
+        let mut pacer = Pacer::new(Pace::network(ticks));
         let period = source.frame_offset_nanos(1) as u64;
         let start = 5_000_000_000;
         let count = u64::from(source.num()) * seconds / u64::from(source.den());
@@ -2127,6 +2166,50 @@ pub(crate) mod tests {
         }
     }
 
+    /// C14: a local live source at the master's rate, 100 ppm fast or slow, whose pictures
+    /// arrive 1 to 1.8 ms after their stream time (wake-ups), in phase with the ticks. Taken
+    /// as the latest arrived, such pictures flipped between two ticks for seconds each time
+    /// the phase crossed a tick (447 skipped and 429 repeated in the hour of C14). Paced
+    /// without the room for a burst, each one is shown on the tick its stream time gives,
+    /// at a constant delay, and the source skips or repeats one picture per period of drift:
+    /// twice in 400 s.
+    #[test]
+    fn a_drifting_local_source_skips_one_picture_per_period_of_drift() {
+        let master = FrameRate::FPS_50;
+        let ticks = TickGrid {
+            origin_ns: 1_000_000_000,
+            rate: master,
+        };
+        let nominal = master.frame_offset_nanos(1) as i64;
+        for ppm in [100i64, -100] {
+            let period = (nominal - nominal * ppm / 1_000_000) as u64;
+            let mut pacer = Pacer::new(Pace::local(ticks));
+            let mut shown = Vec::new();
+            for k in 0..20_000u64 {
+                let t = 5_000_000_000 + k * period;
+                let now = t + 1_000_000 + k * 7_919 % 9 * 100_000;
+                let published = pacer.release_at(t, now, period).max(now) + 1_000_000;
+                let tick = ticks.tick_at_or_after(published);
+                let delay = pacer.delay.unwrap();
+                // The first arrival + half a period + 2 ms; the later ones are not late.
+                assert_eq!(delay, 13_000_000, "{ppm} ppm, {k}");
+                assert_eq!(
+                    tick,
+                    ticks.tick_at_or_after(t + delay as u64),
+                    "{ppm} ppm, {k}"
+                );
+                shown.push(tick);
+            }
+            let skipped = shown.windows(2).filter(|w| w[1] == w[0]).count();
+            let repeated: u64 = shown
+                .windows(2)
+                .map(|w| (w[1] - w[0]).saturating_sub(1))
+                .sum();
+            let expected = if ppm > 0 { (2, 0) } else { (0, 2) };
+            assert_eq!((skipped, repeated), expected, "{ppm} ppm");
+        }
+    }
+
     /// The first picture came late (40 ms more than the others), and a hiccup of the network
     /// makes one picture 100 ms late: that one sets the delay again; once both are forgotten
     /// (two blocks), the delay drops by whole master periods, once, to what the regular
@@ -2183,7 +2266,7 @@ pub(crate) mod tests {
             origin_ns: 1_000_000_000,
             rate: FrameRate::FPS_50,
         };
-        let mut pacer = Pacer::new(ticks);
+        let mut pacer = Pacer::new(Pace::network(ticks));
         let mut shown = Vec::new();
         for k in 0..1_500u64 {
             let t = 5_000_000_000 + k * period;
@@ -2217,7 +2300,7 @@ pub(crate) mod tests {
             origin_ns: 1_000_000_000,
             rate: FrameRate::FPS_50,
         };
-        let mut pacer = Pacer::new(ticks);
+        let mut pacer = Pacer::new(Pace::network(ticks));
         let mut delays = Vec::new();
         for k in 0..2_000u64 {
             let arrival = 5_000_000_000 + k * period + 10_000_000;

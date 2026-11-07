@@ -487,8 +487,8 @@ Windows (pas de MediaMTX en CI), ils sont sautés.
   non cadencé (source live). En **écoute**, l'input attend son appelant sans limite (pas de
   « no picture after 5 s ») ; une fois des images reçues, le silence le perd et il se remet à
   l'écoute.
-- **Tampon de gigue calé sur les ticks** (`Pacer`, entrée SRT seulement ; refait le
-  2026-11-07, voir ci-dessous) : les images d'un flux SRT arrivent par rafales ; avec le choix
+- **Tampon de gigue calé sur les ticks** (`Pacer`, entrée SRT ; refait le 2026-11-07, voir
+  ci-dessous ; étendu aux entrées NDI® et aux inputs live locaux depuis, étapes 7 et 9) : les images d'un flux SRT arrivent par rafales ; avec le choix
   « dernière image arrivée » du rendu, 243 images sur 582 n'étaient jamais montrées (source
   25p dans un maître 50p). Chaque image est due au premier tick à ou après
   `temps de flux + délai`, et relâchée **une demi-période du maître avant ce tick** : le tick
@@ -531,9 +531,9 @@ Windows (pas de MediaMTX en CI), ils sont sautés.
   trois essais) : 20 paires flash / bip sur 20, **décalage entre −0,25 et +0,42 ms** ;
   578 images reçues, 0 sautée, chacune montrée sur deux ticks, latence publication → tick
   fixe (9,93 ms, une demi-période). Avant : −30 à +29 ms, avec des sauts d'une période.
-- Les autres inputs live gardent le choix « dernière image arrivée » (dette de la Phase 1,
-  étape 9) : le même mécanisme pourra leur servir (entrée NDI®, étape 7), au prix de sa
-  latence.
+- Les autres inputs live gardaient le choix « dernière image arrivée » (dette de la Phase 1,
+  étape 9) : le même mécanisme leur sert depuis (entrée NDI®, étape 7 ; inputs live locaux,
+  étape 9, « Inputs live calés sur les ticks »).
 
 ### Critères (étape 6)
 | Critère | Test | Statut |
@@ -597,3 +597,25 @@ NDI® est une marque déposée de Vizrt NDI AB. ADR 0008.
 | Une sortie NDI au plus ; nom vide refusé ; ne change pas de genre | `engine` `state::tests::one_ndi_output_with_a_name` | CI |
 | UI : « + NDI® » ajoute la sortie par défaut ; grisé sans runtime | `vma-ui` `switcher::the_ndi_output_is_added_unless_the_runtime_is_missing` | CI |
 
+## Phase 3 — Inputs live calés sur les ticks (étape 9, 2026-11-07)
+- **Pourquoi** : premier soak C14 (1 h) en échec, pire écart son − image 20,44 ms. Une
+  source synchro 50p à ± 100 ppm, prise « dernière image arrivée », basculait d'un tick à
+  l'autre pendant des secondes chaque fois que sa phase passait sur un tick (images
+  publiées juste au moment du tick) : 447 sautées et 429 répétées en 1 h, pour 18 attendues.
+- **Quoi** : les inputs live locaux (`videotestsrc` synthétique, source synchro, capture)
+  passent par le même `Pacer` que les entrées SRT et NDI®, **sans la place d'une rafale**
+  (`Pace::local` ; réseau : `Pace::network`, une période de source de plus). Délai : arrivées
+  les plus tardives + une demi-période du maître + 2 ms (13 ms mesurés pour une source
+  synchro 50p). Chaque image est montrée sur le tick que donne son temps de flux ; une source
+  qui dérive saute ou répète une image par période de dérive, nette. Les fichiers restent
+  cadencés par l'horloge (`appsink sync=true`).
+- **Coût** : environ une demi-période du maître de latence en plus pour ces inputs (latence
+  publication → tick fixe, comme SRT).
+- **Son** : il saute avec l'image sur ce glissement (ADR 0007, « Précision … étape 9 »).
+
+### Critères (étape 9)
+| Critère | Test | Statut |
+|---|---|---|
+| Source locale 50p à ± 100 ppm, arrivées à 1–1,8 ms de son temps de flux (en phase avec les ticks) : chaque image sur le tick de son temps de flux, délai fixe, 2 images sautées (ou répétées) en 400 s, pas plus | `pipeline::tests::a_drifting_local_source_skips_one_picture_per_period_of_drift` | CI (temps simulé) |
+| Le son saute avec chaque glissement (un saut de latence par glissement), à 0,2 ms de l'image montrée à chaque tick, l'image répétée comprise ; une image déplacée seule : aller et retour ; étalement 24p dans 50p : aucun saut | `engine` `audio::tests::the_sound_jumps_with_the_slips_of_a_drifting_source`, `audio::tests::one_picture_out_of_place_and_a_wide_spread_are_not_slips` | CI |
+| **C14** : soak 1 h (6 sources synchro 1080p50 avec son, dont 2 à ± 100 ppm, mélangeur, enregistrement + stream + NDI®) | `tests/soak/phase3-c14.sh` | manuel (Linux) |
