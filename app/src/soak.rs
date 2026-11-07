@@ -216,10 +216,43 @@ fn sync_clock(spec: &InputSpec) -> Option<(vma_core::FrameRate, i32)> {
 }
 
 /// The next transition between sync sources: the input after the one on air goes to
-/// Preview now, the transition goes at `at_ns`.
+/// Preview now, the transition goes at `at_ns`, then `to` is on air.
 struct Planned {
     at_ns: u64,
     fade: bool,
+    to: (vma_core::FrameRate, i32),
+}
+
+/// The clock of the sync source on air (the first one when none is).
+fn on_air_clock(state: &State) -> Option<(vma_core::FrameRate, i32)> {
+    let mut sources = state
+        .inputs
+        .iter()
+        .filter_map(|i| Some((i.id, sync_clock(&i.spec)?)));
+    let first = sources.clone().next()?.1;
+    Some(
+        sources
+            .find(|(id, _)| Some(*id) == state.program)
+            .map_or(first, |(_, clock)| clock),
+    )
+}
+
+/// Flashes put on air between `from_ns` and `to_ns` of the shared clock, the source of
+/// each `(since_ns, clock)` on air until the next one. At a transition placed after a flash
+/// of the source it leaves and before one of the next, the two come closer than a second;
+/// the other way round, further apart: with transitions every 4 s, an hour can be ±70
+/// flashes off one a second, after the phases of the drifting sources.
+fn on_air_flashes(on_air: &[(u64, (vma_core::FrameRate, i32))], from_ns: u64, to_ns: u64) -> u64 {
+    let mut flashes = 0;
+    for (i, &(since, (rate, drift))) in on_air.iter().enumerate() {
+        let until = on_air.get(i + 1).map_or(to_ns, |next| next.0).min(to_ns);
+        let mut t = vma_io_gst::next_sync_flash_ns(rate, drift, since.max(from_ns));
+        while t < until {
+            flashes += 1;
+            t = vma_io_gst::next_sync_flash_ns(rate, drift, t + 1);
+        }
+    }
+    flashes
 }
 
 /// Plans the next transition when every input is a sync source: sets the Preview.
@@ -249,7 +282,11 @@ fn plan_sync_transition(state: &State, commands: &CommandSender, now_ns: u64) ->
     commands
         .send(Source::Script, Command::SetPreview { input: next.0 })
         .ok()?;
-    Some(Planned { at_ns, fade })
+    Some(Planned {
+        at_ns,
+        fade,
+        to: next.1,
+    })
 }
 /// Acceptance A10: arrival → Program within 2 master frames.
 const MAX_LATENCY_FRAMES: f64 = 2.0;
@@ -323,12 +360,19 @@ fn run(
     let mut planned: Option<Planned> = None;
     let mut last_transition = started;
     let clock = soak.config.stream_clock;
+    let started_ns = clock.map(|c| c.at(started));
     let sync_sources = soak
         .state
         .load()
         .inputs
         .iter()
         .any(|i| sync_clock(&i.spec).is_some());
+    // C14: the sync source on air since each time of the shared clock.
+    let mut on_air: Vec<(u64, (vma_core::FrameRate, i32))> = started_ns
+        .zip(on_air_clock(&soak.state.load()))
+        .filter(|_| soak.transitions)
+        .into_iter()
+        .collect();
     // C14: the sound read at the end of the warm-up (the start of each source is silent).
     let mut audio_warm: Option<Vec<InputAudioSnapshot>> = None;
     let mut losses: Vec<(InputId, u64)> = Vec::new();
@@ -386,6 +430,7 @@ fn run(
                 if soak.commands.send(Source::Script, command).is_ok() {
                     transitions += 1;
                     fades += u64::from(p.fade);
+                    on_air.push((p.at_ns, p.to));
                 }
                 planned = None;
                 last_transition = Instant::now();
@@ -434,6 +479,14 @@ fn run(
         std::thread::sleep(next.saturating_duration_since(Instant::now()));
     };
     let elapsed = started.elapsed();
+    // From the end of the warm-up, as the analyser counts (`None`: one flash a second).
+    let flashes_on_air = started_ns.filter(|_| !on_air.is_empty()).map(|ns| {
+        on_air_flashes(
+            &on_air,
+            ns + SYNC_WARM_UP_S * 1_000_000_000,
+            ns + u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX),
+        )
+    });
     let sync = analyser.map(|a| a.map(vma_io_gst::SyncAnalyser::stop));
     if end == End::DeviceLost {
         // The outputs get black, then are finalised (ADR 0006 § 7): report on what they wrote.
@@ -459,6 +512,7 @@ fn run(
         sent: &sent,
         transitions,
         fades: sync_sources.then_some(fades),
+        flashes_on_air,
         losses: &losses,
         audio_warm: audio_warm.as_deref(),
         reconnections: &reconnections,
@@ -492,6 +546,8 @@ struct Run<'a> {
     transitions: u64,
     /// Sync sources: transitions planned between their flashes, of which Fades.
     fades: Option<u64>,
+    /// Sync sources: flashes put on air since the end of the warm-up.
+    flashes_on_air: Option<u64>,
     losses: &'a [(InputId, u64)],
     /// The sound read at the end of the warm-up.
     audio_warm: Option<&'a [InputAudioSnapshot]>,
@@ -502,15 +558,18 @@ struct Run<'a> {
 }
 
 /// B1 on what the analyser saw over `elapsed`: every |beep − flash| within one frame, one
-/// pair a second (but for the first seconds, while the server gets the stream), the stream
+/// pair a second (but for the first seconds, while the server gets the stream) or, from
+/// sync sources, one for each flash put on air since then (`flashes_on_air`), the stream
 /// never interrupted. `None`: the analyser did not run.
 fn sync_verdict(
     sync: &vma_io_gst::SyncSnapshot,
     elapsed: Duration,
+    flashes_on_air: Option<u64>,
     rate: vma_core::FrameRate,
 ) -> SyncVerdict {
     let frame = i64::try_from(vma_engine::video_pts_ns(rate, 1)).unwrap_or(i64::MAX);
-    let expected = elapsed.as_secs().saturating_sub(SYNC_WARM_UP_S);
+    let expected =
+        flashes_on_air.unwrap_or_else(|| elapsed.as_secs().saturating_sub(SYNC_WARM_UP_S));
     SyncVerdict {
         within_a_frame: sync.worst_ns().is_some_and(|w| w <= frame),
         drift_within_a_frame: sync.drift_ns().is_some_and(|d| d.abs() <= frame),
@@ -708,8 +767,12 @@ fn report(options: &SoakOptions, soak: &SoakContext, run: &Run<'_>) -> (String, 
         && distribution.pool_exhausted == 0;
     let outputs_ok = outputs_ok && run.reconnections.is_empty();
     let sync = run.sync.map(|sync| {
-        sync.as_ref()
-            .map(|s| (s, sync_verdict(s, elapsed, soak.config.rate)))
+        sync.as_ref().map(|s| {
+            (
+                s,
+                sync_verdict(s, elapsed, run.flashes_on_air, soak.config.rate),
+            )
+        })
     });
     let sync_ok = match &sync {
         None => true,
@@ -1015,7 +1078,12 @@ fn report(options: &SoakOptions, soak: &SoakContext, run: &Run<'_>) -> (String, 
             }
             let _ = writeln!(
                 s,
-                "\nLes {SYNC_WARM_UP_S} premières secondes ne comptent pas (démarrage du stream, analyse par le serveur, attente d'une image clé).\n"
+                "\nLes {SYNC_WARM_UP_S} premières secondes ne comptent pas (démarrage du stream, analyse par le serveur, attente d'une image clé).{}\n",
+                if run.flashes_on_air.is_some() {
+                    " Attendu : les flashs mis à l'antenne depuis, d'après l'heure des transitions et l'horloge de chaque source ; une transition placée après un flash de la source quittée et avant un flash de la suivante en montre deux dans la même seconde, une placée dans l'autre ordre aucun."
+                } else {
+                    ""
+                }
             );
         }
     }
@@ -1111,6 +1179,32 @@ mod tests {
         assert_eq!(utc_datetime(at(1_793_028_660)), "2026-10-26 15:31 UTC");
     }
 
+    /// One flash a second of the source on air; at a transition, the flashes of the two
+    /// sources come closer than a second (one more) or further apart (one less).
+    #[test]
+    fn the_flashes_on_air_follow_the_transitions() {
+        let fifty = vma_core::FrameRate::FPS_50;
+        let s = 1_000_000_000;
+        let (on_time, early) = ((fifty, 0), (fifty, 100));
+        // Without transition: one a second, the first at the start.
+        assert_eq!(on_air_flashes(&[(0, on_time)], 0, 10 * s), 10);
+        assert_eq!(on_air_flashes(&[(0, on_time)], 2 * s, 10 * s), 8);
+        // Near 4000 s, the source 100 ppm fast flashes at 3999.6 s and 4000.6 s.
+        let next = vma_io_gst::next_sync_flash_ns(fifty, 100, 4_000 * s);
+        assert!(next.abs_diff(4_000 * s + 600_000_000) < 1_000_000, "{next}");
+        // Twelve seconds, no flash on their edges.
+        let window = (3_989 * s + 700_000_000, 4_001 * s + 700_000_000);
+        assert_eq!(on_air_flashes(&[(0, early)], window.0, window.1), 12);
+        // A cut at 4000.3 s: after the flash at 4000 s of the one left, before the flash at
+        // 4000.6 s of the next one, both on air.
+        let cut = 4_000 * s + 300_000_000;
+        let both = [(0, on_time), (cut, early)];
+        assert_eq!(on_air_flashes(&both, window.0, window.1), 13);
+        // The other way round, neither.
+        let neither = [(0, early), (cut, on_time)];
+        assert_eq!(on_air_flashes(&neither, window.0, window.1), 11);
+    }
+
     /// The transition is clear of every flash and beep of both sources, by the margins.
     #[test]
     fn transitions_go_between_the_flashes_of_both_sources() {
@@ -1176,35 +1270,35 @@ mod tests {
             offsets_ns: vec![400_000; 50],
             ..Default::default()
         };
-        let verdict = sync_verdict(&good, minute, rate);
+        let verdict = sync_verdict(&good, minute, None, rate);
         assert_eq!((verdict.expected, verdict.frame_ns), (45, 20_000_000));
         assert!(verdict.passed());
         let late = vma_io_gst::SyncSnapshot {
             offsets_ns: vec![21_333_333; 50],
             ..Default::default()
         };
-        assert!(!sync_verdict(&late, minute, rate).within_a_frame);
+        assert!(!sync_verdict(&late, minute, None, rate).within_a_frame);
         let few = vma_io_gst::SyncSnapshot {
             offsets_ns: vec![0; 40],
             ..Default::default()
         };
-        assert!(!sync_verdict(&few, minute, rate).enough_pairs);
+        assert!(!sync_verdict(&few, minute, None, rate).enough_pairs);
         let cut = vma_io_gst::SyncSnapshot {
             interruptions: 1,
             ..good.clone()
         };
-        assert!(!sync_verdict(&cut, minute, rate).passed());
-        assert!(!sync_verdict(&vma_io_gst::SyncSnapshot::default(), minute, rate).passed());
+        assert!(!sync_verdict(&cut, minute, None, rate).passed());
+        assert!(!sync_verdict(&vma_io_gst::SyncSnapshot::default(), minute, None, rate).passed());
         // C14: a hole in the sound, or offsets that drift apart by more than a frame.
         let hole = vma_io_gst::SyncSnapshot {
             audio_gaps: 1,
             ..good.clone()
         };
-        assert!(!sync_verdict(&hole, minute, rate).passed());
+        assert!(!sync_verdict(&hole, minute, None, rate).passed());
         let mut drifting = good.clone();
         drifting.offsets_ns[0] = -10_000_000;
         drifting.offsets_ns[49] = 10_500_000;
-        let verdict = sync_verdict(&drifting, minute, rate);
+        let verdict = sync_verdict(&drifting, minute, None, rate);
         assert!(verdict.within_a_frame && !verdict.drift_within_a_frame);
         assert!(!verdict.passed());
     }

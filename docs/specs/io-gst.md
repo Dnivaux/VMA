@@ -423,7 +423,13 @@ Windows (pas de MediaMTX en CI), ils sont sautés.
   plus vite), et non plus de son démarrage : sans dérive, toutes les sources synchro flashent
   sur les secondes entières de cette horloge, quel que soit leur démarrage ;
   `next_sync_flash_ns(rate, drift, t)` donne le prochain flash. Le soak C14 s'en sert pour
-  placer ses transitions entre les flashs. Les deux images (blanche, noire) sont faites une
+  placer ses transitions entre les flashs, et pour compter ceux qu'il met à l'antenne :
+  l'analyseur doit en apparier autant, pas un par seconde. Une transition placée après un
+  flash de la source quittée et avant un flash de la suivante les rapproche (un de plus),
+  dans l'autre ordre les éloigne (un de moins). L'origine étant le démarrage de la machine,
+  la phase des sources qui dérivent est quelconque au départ : sur 1 h, le second soak a
+  apparié 3522 flashs pour 3585 secondes, le premier 3653, sans flash ni bip seul (simulé
+  avec le plan des transitions : −75 à +74 selon la phase). Les deux images (blanche, noire) sont faites une
   fois, chaque envoi partage leur mémoire.
 
 ### Critères (étape 2)
