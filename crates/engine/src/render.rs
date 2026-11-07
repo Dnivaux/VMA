@@ -20,7 +20,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
-use vma_clock::{ClockStats, FrameClock, StreamClock, SystemTime};
+use vma_clock::{ClockStats, FrameClock, StreamClock, SystemTime, TickGrid};
 use vma_compositor::thumbnails::{self, ATLAS_CELLS, ThumbnailPainter};
 use vma_compositor::{
     FramePipelines, Mix, MixSpace, Mixer, OutputLook, OutputStage, RenderTarget, Source,
@@ -166,6 +166,9 @@ pub struct IoPort {
     pub outputs: OutputHub,
     /// What the headphones hear (taken by the player of `vma-io`).
     pub headphones: Option<vma_audio::RingReader>,
+    /// The master ticks in stream time: a network input releases each picture just before
+    /// the tick it is due on.
+    pub ticks: TickGrid,
 }
 
 /// The single consumer of one output's frames (typically the UI).
@@ -231,6 +234,13 @@ impl RenderEngine {
             Some(buses),
         )?;
         let clock = FrameClock::with_spin_margin(config.rate, config.spin_margin);
+        let stream_clock = config
+            .stream_clock
+            .unwrap_or_else(|| StreamClock::new(Instant::now(), 0));
+        let ticks = TickGrid {
+            origin_ns: stream_clock.at(clock.origin_instant()),
+            rate: config.rate,
+        };
         let clock_stats = clock.stats();
         let render_stats = Arc::new(RenderStats::default());
         install_gpu_handlers(&device, &render_stats);
@@ -304,9 +314,7 @@ impl RenderEngine {
             active_outputs,
             sync: config.sync_test.then(|| SyncTest::for_rate(config.rate)),
             audio: audio_ticks,
-            stream_clock: config
-                .stream_clock
-                .unwrap_or_else(|| StreamClock::new(Instant::now(), 0)),
+            stream_clock,
             sequencer: Sequencer::new(plan_reader),
             sources: SourceTable::new(sources_rx, retired_tx),
             feedback: Arc::clone(&feedback),
@@ -374,6 +382,7 @@ impl RenderEngine {
                     },
                     outputs: outputs.clone(),
                     headphones: Some(headphones),
+                    ticks,
                 }),
             },
             Readers {

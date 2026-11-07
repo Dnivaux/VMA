@@ -52,6 +52,8 @@ source plus lente est répétée, une plus rapide voit des images sautées. Stat
 images reçues / s, répétées, sautées (écrasées avant d'être vues), latence arrivée → tick
 (histogramme, p50 / p99 / max). Le rééchantillonnage par PTS avec une image de latence (moins
 de saccades sur une source irrégulière) est une évolution possible, hors Phase 1.
+Exception (Phase 3, étape 6) : l'entrée SRT relâche chaque image juste avant le tick que
+donne son temps de flux (« Entrée SRT », tampon de gigue calé sur les ticks).
 
 ## Signal perdu et reconnexion
 - `SignalLost` si : erreur du pipeline, EOS d'une capture, ou aucune image depuis
@@ -478,26 +480,56 @@ Windows (pas de MediaMTX en CI), ils sont sautés.
   non cadencé (source live). En **écoute**, l'input attend son appelant sans limite (pas de
   « no picture after 5 s ») ; une fois des images reçues, le silence le perd et il se remet à
   l'écoute.
-- **Tampon de gigue d'une image** (`Pacer`, entrée SRT seulement) : mesuré, les images d'un
-  flux SRT arrivent par rafales (deux d'un coup, décodeur matériel ou logiciel) ; avec le
-  choix « dernière image arrivée » du rendu, 243 images sur 582 n'étaient jamais montrées
-  (source 25p dans un maître 50p). Chaque image est relâchée au rythme de son PTS, une
-  période de source après les arrivées les plus précoces (référence qui descend tout de
-  suite, remonte d'au plus 1 ms/s) : **0 image perdue**. Coût : une période de source de
-  latence pour cet input. Le temps de flux de l'image (et donc le son) ne change pas.
+- **Tampon de gigue calé sur les ticks** (`Pacer`, entrée SRT seulement ; refait le
+  2026-11-07, voir ci-dessous) : les images d'un flux SRT arrivent par rafales ; avec le choix
+  « dernière image arrivée » du rendu, 243 images sur 582 n'étaient jamais montrées (source
+  25p dans un maître 50p). Chaque image est due au premier tick à ou après
+  `temps de flux + délai`, et relâchée **une demi-période du maître avant ce tick** : le tick
+  qui la montre découle de son seul temps de flux, jamais de l'instant où un thread se
+  réveille. Le moteur publie la grille de ses ticks en temps de flux (`IoPort::ticks`,
+  `vma_clock::TickGrid`). Le temps de flux de l'image (et donc le son) ne change pas.
+- **Délai** : il couvre les arrivées les plus tardives (arrivée − temps de flux, mémorisées
+  sur 15 à 30 s), plus une période de source (place pour une rafale de deux images), une
+  demi-période du maître et 2 ms. Il ne change que sur événement, pour que la latence des
+  images (et la synchro) reste fixe : une image arrivée à moins d'un quart de période de son
+  tick (en retard) le remet à jour ; une image à plus de 500 ms des arrivées récentes
+  (horodatage qui saute, flux figé) repart de zéro (arrivées oubliées) ; quand les arrivées
+  permettent un délai plus court d'au moins une période du maître, et qu'il n'a pas changé
+  depuis 15 s, il baisse **de périodes entières** (une image sautée, phase des ticks gardée).
+  Il peut être négatif : un récepteur qui date ses images par leur présentation les livre
+  avant leur temps de flux. Coût : une période de source et une demi-période du maître de
+  latence pour cet input, plus la gigue mesurée.
+- **Arrivées réelles** : le rappel de l'`appsink` date l'image et la confie (échantillon
+  GStreamer, sans copie) à un thread de relâche par input (`vma-pace-<input>`, file de 16
+  images), qui la pousse dans le feed à l'heure dite. Une première version attendait dans le
+  thread de streaming : l'image suivante ne pouvait alors pas « arriver » avant que la
+  précédente soit relâchée, les arrivées mesurées dépendaient de l'attente elle-même, et la
+  référence montait en continu (mesuré : décalage son / image qui dérive de −2 ms/s, puis
+  saute d'une période).
+- **`tsdemux` sans correction de dérive** (`skew-corrections=false`, posé au
+  `deep-element-added` ; avertissement si la propriété manque) : par défaut, `tsdemux` corrige
+  en continu la correspondance entre l'horloge de l'émetteur et la nôtre d'après les heures
+  d'arrivée ; mesuré, les temps de flux glissent alors de plus de 30 ms sur les 20 premières
+  secondes (jusqu'à 3 500 ppm), le son avec eux (fréquence estimée jusqu'à −900 ppm), et le
+  lissage de la latence du son suit avec retard. Sans elle, la correspondance est fixée une
+  fois : écart tick − image constant au µs, son à 0 ppm. La dérive réelle d'une horloge
+  d'émetteur est absorbée par le tampon de gigue (une image sautée ou répétée de temps en
+  temps) et la fréquence du son (ADR 0007 § 4).
 - `appsink sync=true` (pacer par l'horloge) essayé et écarté : le pipeline se fige (même avec
   `gst-launch`), les temps du flux ne sont pas alignés sur l'horloge locale.
-- **Synchro (C9) : pas encore < 1 image.** Mesuré sur 40 s (deux moteurs, sortie SRT en
-  mode synchro → entrée SRT → enregistrement relu) : toutes les paires flash / bip sont là,
-  mais le décalage fait des **sauts d'une période du maître** (20 ms à 50p) puis se rattrape
-  lentement (−30 à +6 ms). Une image relâchée près d'un tick est montrée tantôt sur ce tick,
-  tantôt sur le suivant : c'est le choix « dernière image arrivée » du rendu (dette de la
-  Phase 1, étape 9). Correction proposée : choisir l'image par son temps (une image de
-  latence), dans le moteur, pour tous les inputs ; décision du mainteneur à prendre.
+- **Synchro (C9) : < 1 image.** Mesuré le 2026-11-07 (deux moteurs, sortie SRT en mode
+  synchro à 25p → entrée SRT appelante avec phrase de passe → enregistrement 50p relu, 20 s,
+  trois essais) : 20 paires flash / bip sur 20, **décalage entre −0,25 et +0,42 ms** ;
+  578 images reçues, 0 sautée, chacune montrée sur deux ticks, latence publication → tick
+  fixe (9,93 ms, une demi-période). Avant : −30 à +29 ms, avec des sauts d'une période.
+- Les autres inputs live gardent le choix « dernière image arrivée » (dette de la Phase 1,
+  étape 9) : le même mécanisme pourra leur servir (entrée NDI®, étape 7), au prix de sa
+  latence.
 
 ### Critères (étape 6)
 | Critère | Test | Statut |
 |---|---|---|
 | Réglages validés comme la sortie ; phrase de passe jamais écrite (journal, logs, état) | `engine` : `state::tests::srt_inputs_are_checked`, `control::tests::secrets_never_reach_the_journal_the_logs_nor_the_published_state` | CI |
 | **C9** : écoute sans limite ; mauvaise phrase de passe sans image ; la bonne → en marche ; émetteur arrêté → perdu ; revenu → reconnecté (deux moteurs, notre sortie SRT appelante) | `outputs::tests::srt_input_listens_and_reconnects` | CI (si `srtsrc`, comme B8) |
-| **C9** : synchro < 1 image (appelant + phrase de passe vers notre sortie SRT en écoute, mode synchro) | `outputs::tests::srt_input_receives_our_srt_output_in_sync` | **ignoré** : sauts d'une période du maître, en attente du choix de l'image par son temps |
+| **C9** : synchro < 1 image (appelant + phrase de passe vers notre sortie SRT en écoute, mode synchro) | `outputs::tests::srt_input_receives_our_srt_output_in_sync` | CI Linux (si `srtsrc`) ; **ignoré sous Windows** (WARP sur 2 cœurs, comme les autres mesures de synchro) |
+| Tampon de gigue : chaque image sur le tick de son temps de flux, avec un quart de période de marge, aucune écrasée sans être vue, délai fixe (10 min simulées, rafales de deux), images en avance sur leur temps de flux, source plus rapide que le maître, délai raccourci de périodes entières, retard, saut d'horodatage et flux figé | `pipeline::tests` : `paced_pictures_land_on_the_tick_of_their_stream_time`, `pictures_ahead_of_their_stream_time_are_paced_too`, `a_faster_paced_source_is_resampled_by_stream_time`, `the_delay_shortens_by_whole_periods_and_recovers_from_a_late_picture`, `a_jump_of_the_timestamps_or_a_stall_starts_afresh` ; grille : `vma-clock` `tick_grid_finds_the_first_tick_at_or_after_a_time` | CI (temps simulé) |

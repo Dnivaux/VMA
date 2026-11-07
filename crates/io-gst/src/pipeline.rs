@@ -27,6 +27,7 @@ use gstreamer_app as gst_app;
 use gstreamer_video as gst_video;
 use gstreamer_video::prelude::*;
 use vma_audio::RingWriter;
+use vma_clock::TickGrid;
 use vma_compositor::Plane;
 use vma_core::{ColorInfo, FrameRate, InputId, Matrix, PixelFormat, Range, Resolution};
 use vma_engine::{DeviceId, Timeline};
@@ -168,9 +169,9 @@ pub(crate) struct Recipe {
     pub(crate) watchdog: bool,
     /// Waits for its first picture without a limit (an SRT listener waits for its caller).
     pub(crate) patient: bool,
-    /// Pictures released at an even pace ([`Pacer`]): a network source hands them out in
-    /// bursts.
-    pub(crate) pace: bool,
+    /// Pictures released just before the master tick they are due on ([`Pacer`]): a network
+    /// source hands them out in bursts.
+    pub(crate) pace: Option<TickGrid>,
 }
 
 impl Recipe {
@@ -181,7 +182,7 @@ impl Recipe {
             sync: true,
             watchdog: false,
             patient: false,
-            pace: false,
+            pace: None,
         }
     }
 
@@ -199,7 +200,7 @@ impl Recipe {
             sync: false,
             watchdog: true,
             patient: false,
-            pace: false,
+            pace: None,
         }
     }
 
@@ -210,7 +211,7 @@ impl Recipe {
             sync: false,
             watchdog: true,
             patient: false,
-            pace: false,
+            pace: None,
         }
     }
 
@@ -221,19 +222,19 @@ impl Recipe {
             sync: false,
             watchdog: true,
             patient: false,
-            pace: false,
+            pace: None,
         }
     }
 
     /// An SRT input: live, lost when silent; a listener waits for its caller as long as it
     /// takes.
-    pub(crate) fn srt(source: vma_engine::SrtSource) -> Self {
+    pub(crate) fn srt(source: vma_engine::SrtSource, ticks: TickGrid) -> Self {
         Self {
             patient: source.mode == vma_engine::SrtMode::Listener,
             media: Media::Srt(source),
             sync: false,
             watchdog: true,
-            pace: true,
+            pace: Some(ticks),
         }
     }
 
@@ -357,8 +358,21 @@ impl GstInput {
             preroll_pts: None,
             shared: Arc::clone(&shared),
             convert,
-            pacer: recipe.pace.then(Pacer::default),
+            pacer: None,
+            failed: false,
         }));
+        if let Some(ticks) = recipe.pace {
+            let (to_release, released) = crossbeam_channel::bounded(PACE_QUEUE);
+            let clock = crate::clock::master_clock();
+            spawn_release(input, Arc::downgrade(&stream), released, clock.clone())?;
+            if let Ok(mut s) = stream.lock() {
+                s.pacer = Some(Paced {
+                    pacer: Pacer::new(ticks),
+                    clock,
+                    to_release,
+                });
+            }
+        }
         let preroll = Arc::clone(&stream);
         sink.set_callbacks(
             gst_app::AppSinkCallbacks::builder()
@@ -624,6 +638,23 @@ fn srt_pipeline(
         }
         None
     });
+    // `tsdemux` maps the clock of the sender onto ours, and by default keeps correcting that
+    // mapping from the arrival times (skew): the stream times then slide by tens of
+    // milliseconds over the first tens of seconds, and the sound and pictures with them,
+    // while the jitter buffer keeps a fixed delay. Without it, the mapping is set once; a
+    // sender clock that drifts is absorbed by the jitter buffer and the sound's rate.
+    if let Some(bin) = decode.downcast_ref::<gst::Bin>() {
+        bin.connect_deep_element_added(|_, _, element| {
+            if element.has_property("skew-corrections") {
+                element.set_property("skew-corrections", false);
+            } else if element
+                .factory()
+                .is_some_and(|f| f.name().as_str() == "tsdemux")
+            {
+                tracing::warn!("tsdemux without skew-corrections: the SRT stream times may slide");
+            }
+        });
+    }
     let convert = gst::ElementFactory::make("videoconvert")
         .name("vma_convert")
         .build()
@@ -809,9 +840,17 @@ fn on_picture<F: Feeds>(
     sink: &gst_app::AppSink,
     preroll: bool,
 ) -> Result<gst::FlowSuccess, gst::FlowError> {
-    // Uncontended: GStreamer calls the two callbacks of one appsink one after the other.
-    let mut stream = stream.lock().map_err(|_| gst::FlowError::Error)?;
-    stream.on_sample(sink, preroll)
+    // GStreamer calls the two callbacks of one appsink one after the other; the release
+    // thread of a paced input takes the lock too, so a picture for it is queued after the
+    // lock is released (a full queue waits for that thread).
+    let release = stream
+        .lock()
+        .map_err(|_| gst::FlowError::Error)?
+        .on_sample(sink, preroll)?;
+    if let Some((queue, release)) = release {
+        queue.send(release).map_err(|_| gst::FlowError::Flushing)?;
+    }
+    Ok(gst::FlowSuccess::Ok)
 }
 
 /// State of the appsink callback (streaming thread).
@@ -827,59 +866,177 @@ struct Stream<F: Feeds> {
     preroll_pts: Option<gst::ClockTime>,
     shared: Arc<Shared>,
     convert: gst::Element,
-    pacer: Option<Pacer>,
+    pacer: Option<Paced>,
+    /// The release thread could not hand a picture to the feed: the next callback fails.
+    failed: bool,
 }
 
-/// A jitter buffer of one source period for a network source (SRT): pictures that arrive in
-/// bursts are released at the pace of their timestamps, one period after the earliest
-/// arrivals, so that none is overwritten before the render thread sees it. Their stream time
-/// (and so the sound) does not change. Waits on the streaming thread of the input (upstream
-/// queues hold the rest).
+/// The pacing of a network input: arrivals are dated in the appsink callback, which never
+/// waits (so they are the real ones), and the pictures go to a release thread.
+struct Paced {
+    pacer: Pacer,
+    clock: gst::Clock,
+    to_release: Sender<Release>,
+}
+
+/// A picture held until its release time (the sample is reference counted: no copy).
+struct Release {
+    sample: gst::Sample,
+    stream_ns: Option<u64>,
+    at_ns: u64,
+}
+
+/// Pictures held at most by the release thread of a paced input (a full queue makes the
+/// appsink callback wait).
+const PACE_QUEUE: usize = 16;
+
+/// The jitter buffer of a network source (SRT, spec `io-gst.md`, « Entrée SRT »): pictures
+/// that arrive in bursts are released one at a time, each **just before the master tick it is
+/// due on**, so the tick that shows a picture follows from its stream time alone, never from
+/// when a thread woke up. Their stream time (and so the sound) does not change.
 ///
-/// The reference is the smallest arrival − PTS seen: it drops at once to an earlier arrival,
-/// and rises by at most [`PACE_RISE`] per second (a sender clock slower than ours, a stream
-/// that restarted): no step in the release times, so none in the lip sync.
-#[derive(Debug, Default)]
+/// A picture of stream time `t` is due on the first tick at or after `t + delay`, and released
+/// half a master period before it. The delay covers the latest arrivals (largest arrival −
+/// stream time, over the last [`PACE_WINDOW_NS`] to twice that), plus one source period (room
+/// for a burst of two pictures), half a master period and [`PACE_HEADROOM_NS`]. It then only
+/// changes by events, so that the latency of the pictures (and the lip sync) stays put:
+/// - a picture that arrives less than a quarter of a master period before its tick (late) sets
+///   it again;
+/// - a picture more than [`PACE_JUMP_NS`] earlier or later than the latest arrivals
+///   (timestamps jumped, the stream stalled) starts afresh: arrivals forgotten, delay from it;
+/// - when the latest arrivals allow a delay shorter by at least one master period, and it has
+///   not changed for [`PACE_WINDOW_NS`], it drops by whole periods (one picture skipped, the
+///   phase of the ticks kept).
+///
+/// The arrivals are dated in the appsink callback, which never waits (the release thread
+/// does): they are the real ones.
+#[derive(Debug)]
 struct Pacer {
-    start: Option<Instant>,
-    /// Smallest arrival − PTS (ns), and when it was last moved.
-    floor: Option<(f64, Instant)>,
+    ticks: TickGrid,
+    /// Presentation delay, in ns (negative: the stream times of the source are ahead of the
+    /// arrivals, as with a receiver that dates by presentation).
+    delay: Option<i64>,
+    arrivals: Window,
+    /// When the delay last changed.
+    changed_at: u64,
 }
 
-/// How fast the reference of a [`Pacer`] may rise: 1 ms per second (1 000 ppm).
-const PACE_RISE: f64 = 1e-3;
-/// Longest wait for one picture (a timestamp jump is not waited for).
-const PACE_MAX_WAIT: Duration = Duration::from_millis(200);
+/// Longest wait for one picture (safety: a jump of the timestamps starts afresh before).
+const PACE_MAX_WAIT: Duration = Duration::from_secs(1);
+/// A picture this much earlier or later than the latest arrivals: the stream jumped.
+const PACE_JUMP_NS: i64 = 500_000_000;
+/// Length of the blocks over which the arrivals are remembered.
+const PACE_WINDOW_NS: u64 = 15_000_000_000;
+/// Margin of the delay over the latest arrivals (the copy into the feed, a late wake-up).
+const PACE_HEADROOM_NS: i64 = 2_000_000;
 
-impl Pacer {
-    /// Waits until the picture of PTS `pts_ns` is due; `period`: one source period.
-    fn wait(&mut self, pts_ns: u64, period: Duration) {
-        let now = Instant::now();
-        let start = *self.start.get_or_insert(now);
-        let arrival = now.duration_since(start).as_nanos() as f64;
-        let offset = arrival - pts_ns as f64;
-        let floor = match self.floor {
-            Some((floor, at)) => {
-                let risen = floor + PACE_RISE * now.duration_since(at).as_nanos() as f64;
-                risen.min(offset)
+/// Largest value seen in the current block of [`PACE_WINDOW_NS`] and in the one before.
+#[derive(Debug, Default)]
+struct Window {
+    block_start: u64,
+    current: Option<i64>,
+    previous: Option<i64>,
+}
+
+impl Window {
+    fn record(&mut self, now_ns: u64, value: i64) {
+        match self.current {
+            Some(current) if now_ns.saturating_sub(self.block_start) < PACE_WINDOW_NS => {
+                self.current = Some(current.max(value));
             }
-            None => offset,
-        };
-        self.floor = Some((floor, now));
-        let due = pts_ns as f64 + floor + period.as_nanos() as f64;
-        let wait = due - arrival;
-        if wait > 0.0 {
-            std::thread::sleep(Duration::from_nanos(wait as u64).min(PACE_MAX_WAIT));
+            current => {
+                self.previous = current;
+                self.current = Some(value);
+                self.block_start = now_ns;
+            }
+        }
+    }
+
+    /// Largest value remembered (`value` if none).
+    fn max(&self, value: i64) -> i64 {
+        match (self.current, self.previous) {
+            (Some(c), Some(p)) => c.max(p),
+            (Some(v), None) | (None, Some(v)) => v,
+            (None, None) => value,
         }
     }
 }
 
+impl Pacer {
+    fn new(ticks: TickGrid) -> Self {
+        Self {
+            ticks,
+            delay: None,
+            arrivals: Window::default(),
+            changed_at: 0,
+        }
+    }
+
+    /// When to release the picture of stream time `stream_ns` that arrived at `now_ns` (both
+    /// in stream time); `period_ns`: one source period. At or before `now_ns`: at once.
+    fn release_at(&mut self, stream_ns: u64, now_ns: u64, period_ns: u64) -> u64 {
+        let master = signed(self.ticks.period_ns().max(1));
+        let half = master / 2;
+        let offset = signed(now_ns) - signed(stream_ns);
+        let jumped = self
+            .delay
+            .is_some_and(|_| (offset - self.arrivals.max(offset)).abs() > PACE_JUMP_NS);
+        if jumped {
+            self.arrivals = Window::default();
+        }
+        self.arrivals.record(now_ns, offset);
+        let wanted = self.arrivals.max(offset) + signed(period_ns) + half + PACE_HEADROOM_NS;
+        let mut delay = match self.delay {
+            Some(delay) if !jumped => delay,
+            _ => self.set(wanted, now_ns),
+        };
+        if delay >= wanted + master && now_ns.saturating_sub(self.changed_at) >= PACE_WINDOW_NS {
+            delay = self.set(delay - (delay - wanted) / master * master, now_ns);
+            tracing::debug!(
+                delay_ms = delay as f64 / 1e6,
+                "paced input: delay shortened"
+            );
+        }
+        let mut due = self.due(stream_ns, delay);
+        if signed(now_ns) + half / 2 > signed(due) {
+            delay = self.set(wanted, now_ns);
+            due = self.due(stream_ns, delay);
+            tracing::debug!(
+                delay_ms = delay as f64 / 1e6,
+                "paced input: late, delay set again"
+            );
+        }
+        due.saturating_sub(unsigned(half))
+    }
+
+    fn set(&mut self, delay: i64, now_ns: u64) -> i64 {
+        self.delay = Some(delay);
+        self.changed_at = now_ns;
+        delay
+    }
+
+    /// Stream time of the tick the picture of stream time `stream_ns` is shown on.
+    fn due(&self, stream_ns: u64, delay: i64) -> u64 {
+        let ticks = self.ticks;
+        ticks.tick_ns(ticks.tick_at_or_after(unsigned(signed(stream_ns) + delay)))
+    }
+}
+
+fn signed(ns: u64) -> i64 {
+    i64::try_from(ns).unwrap_or(i64::MAX)
+}
+
+fn unsigned(ns: i64) -> u64 {
+    u64::try_from(ns).unwrap_or(0)
+}
+
 impl<F: Feeds> Stream<F> {
+    /// Handles a picture, or returns it with the queue of the release thread (paced input).
     fn on_sample(
         &mut self,
         sink: &gst_app::AppSink,
         preroll: bool,
-    ) -> Result<gst::FlowSuccess, gst::FlowError> {
+    ) -> Result<Option<(Sender<Release>, Release)>, gst::FlowError> {
         let sample = if preroll {
             sink.pull_preroll()
         } else {
@@ -887,30 +1044,62 @@ impl<F: Feeds> Stream<F> {
         }
         .map_err(|_| gst::FlowError::Eos)?;
         let (Some(buffer), Some(caps)) = (sample.buffer(), sample.caps()) else {
-            return Ok(gst::FlowSuccess::Ok);
+            return Ok(None);
         };
         let pts = buffer.pts();
         if preroll {
             if pts.is_some() && pts == self.preroll_pts {
                 // Prerolled again on the picture already shown (seek to where it was).
-                return Ok(gst::FlowSuccess::Ok);
+                return Ok(None);
             }
             self.preroll_pts = pts;
         } else if let Some(prerolled) = self.preroll_pts.take()
             && pts == Some(prerolled)
         {
-            return Ok(gst::FlowSuccess::Ok);
+            return Ok(None);
         }
+        if self.failed {
+            return Err(gst::FlowError::Error);
+        }
+        // The preroll picture of a file is not played yet: no stream time (a live source
+        // hands its first picture as a preroll, while playing).
+        let stream_ns = (!preroll || !self.timeline)
+            .then(|| stream_time(&sample, sink, pts))
+            .flatten();
+        if let Some(paced) = &mut self.pacer {
+            let now = paced.clock.time().nseconds();
+            let at_ns = match stream_ns {
+                Some(t) => {
+                    let period = caps_period_ns(caps).unwrap_or(40_000_000);
+                    paced.pacer.release_at(t, now, period)
+                }
+                None => now,
+            };
+            let release = Release {
+                sample: sample.clone(),
+                stream_ns,
+                at_ns,
+            };
+            return Ok(Some((paced.to_release.clone(), release)));
+        }
+        self.deliver(&sample, stream_ns)?;
+        Ok(None)
+    }
+
+    /// Hands a picture to the feed (from the appsink callback, or the release thread of a
+    /// paced input).
+    fn deliver(
+        &mut self,
+        sample: &gst::Sample,
+        stream_ns: Option<u64>,
+    ) -> Result<(), gst::FlowError> {
+        let (Some(buffer), Some(caps)) = (sample.buffer(), sample.caps()) else {
+            return Ok(());
+        };
+        let pts = buffer.pts();
         let info =
             gst_video::VideoInfo::from_caps(caps).map_err(|_| gst::FlowError::NotNegotiated)?;
         let format = video_format(&info).ok_or(gst::FlowError::NotNegotiated)?;
-        if let (Some(pacer), Some(pts)) = (&mut self.pacer, pts) {
-            let period = format
-                .rate
-                .and_then(|r| u64::try_from(r.frame_offset_nanos(1)).ok())
-                .map_or(Duration::from_millis(40), Duration::from_nanos);
-            pacer.wait(pts.nseconds(), period);
-        }
         if self.out.as_ref().is_none_or(|(f, _)| *f != format) {
             self.on_new_format(format)?;
         }
@@ -934,14 +1123,9 @@ impl<F: Feeds> Stream<F> {
         }
         let source_frame = self
             .timeline
-            .then(|| stream_frame(&sample, pts, format.rate))
+            .then(|| stream_frame(sample, pts, format.rate))
             .flatten()
             .unwrap_or(self.next_frame);
-        // The preroll picture of a file is not played yet: no stream time (a live source
-        // hands its first picture as a preroll, while playing).
-        let stream_ns = (!preroll || !self.timeline)
-            .then(|| stream_time(&sample, sink, pts))
-            .flatten();
         if let Some((_, out)) = &mut self.out
             && let Err(e) = out.push(
                 planes.get(..count).unwrap_or_default(),
@@ -956,7 +1140,7 @@ impl<F: Feeds> Stream<F> {
         self.shared
             .last_picture
             .store(self.shared.since_start() + 1, Ordering::Release);
-        Ok(gst::FlowSuccess::Ok)
+        Ok(())
     }
 
     fn on_new_format(&mut self, format: VideoFormat) -> Result<(), gst::FlowError> {
@@ -983,6 +1167,49 @@ impl<F: Feeds> Stream<F> {
             }
         }
     }
+}
+
+/// One source period from the frame rate in `caps`, if it has one.
+fn caps_period_ns(caps: &gst::CapsRef) -> Option<u64> {
+    let info = gst_video::VideoInfo::from_caps(caps).ok()?;
+    let rate = info.fps();
+    let (num, den) = (
+        u64::try_from(rate.numer()).ok()?,
+        u64::try_from(rate.denom()).ok()?,
+    );
+    (num > 0).then(|| den * 1_000_000_000 / num)
+}
+
+/// The release thread of a paced input: hands each picture to the feed at its release time.
+/// Ends with the stream (its sender goes with it).
+fn spawn_release<F: Feeds>(
+    input: InputId,
+    stream: std::sync::Weak<std::sync::Mutex<Stream<F>>>,
+    released: Receiver<Release>,
+    clock: gst::Clock,
+) -> Result<(), IoError> {
+    std::thread::Builder::new()
+        .name(format!("vma-pace-{input}"))
+        .spawn(move || {
+            while let Ok(picture) = released.recv() {
+                let wait = picture.at_ns.saturating_sub(clock.time().nseconds());
+                if wait > 0 {
+                    std::thread::sleep(Duration::from_nanos(wait).min(PACE_MAX_WAIT));
+                }
+                let Some(stream) = stream.upgrade() else {
+                    return;
+                };
+                let Ok(mut stream) = stream.lock() else {
+                    return;
+                };
+                if let Err(e) = stream.deliver(&picture.sample, picture.stream_ns) {
+                    tracing::warn!(%input, error = ?e, "paced picture refused");
+                    stream.failed = true;
+                }
+            }
+        })
+        .map(|_| ())
+        .map_err(|e| IoError::Pipeline(format!("cannot start the release thread: {e}")))
 }
 
 /// Stream time of a buffer in the master clock's time (ADR 0007 § 1): `base_time` of the
@@ -1103,7 +1330,7 @@ pub(crate) mod tests {
             sync: false,
             watchdog: true,
             patient: false,
-            pace: false,
+            pace: None,
         }
     }
 
@@ -1758,5 +1985,209 @@ pub(crate) mod tests {
             GstInput::start(InputId(1), &live("nosuchelement"), FakeFeeds::default()),
             Err(IoError::Pipeline(_))
         ));
+    }
+
+    /// A paced source in simulated time: picture `k` of stream time `t_k` arrives
+    /// `arrival(k)` after it (the appsink callback never waits) and is published 1 ms after
+    /// its release (copy). Returns, per picture: stream time, publication, tick it is shown
+    /// on, and the delay after it.
+    fn pace(
+        source: FrameRate,
+        master: FrameRate,
+        seconds: u64,
+        arrival: impl Fn(u64) -> u64,
+    ) -> Vec<(u64, u64, u64, i64)> {
+        let ticks = TickGrid {
+            origin_ns: 1_000_000_000,
+            rate: master,
+        };
+        let mut pacer = Pacer::new(ticks);
+        let period = source.frame_offset_nanos(1) as u64;
+        let start = 5_000_000_000;
+        let count = u64::from(source.num()) * seconds / u64::from(source.den());
+        (0..count)
+            .map(|k| {
+                let t = start + source.frame_offset_nanos(k) as u64;
+                let now = t + arrival(k);
+                let published = pacer.release_at(t, now, period).max(now) + 1_000_000;
+                let shown = ticks.tick_at_or_after(published);
+                (t, published, shown, pacer.delay.unwrap())
+            })
+            .collect()
+    }
+
+    /// C9: pictures that come in pairs (an SRT receiver) are each shown on the tick their
+    /// stream time gives, with a quarter of a master period of margin at least, none
+    /// overwritten unseen, at a constant latency: the delay never moves after the start
+    /// (10 min, no creeping from the waits themselves).
+    #[test]
+    fn paced_pictures_land_on_the_tick_of_their_stream_time() {
+        for (source, master) in [
+            (FrameRate::FPS_25, FrameRate::FPS_50),
+            (FrameRate::FPS_50, FrameRate::FPS_50),
+            (FrameRate::FPS_29_97, FrameRate::FPS_29_97),
+            (FrameRate::FPS_25, FrameRate::FPS_25),
+            (FrameRate::FPS_59_94, FrameRate::FPS_59_94),
+        ] {
+            let period = source.frame_offset_nanos(1) as u64;
+            // Decoded 30 ms after its stream time, the odd pictures with the next one.
+            let paced = pace(source, master, 600, |k| 30_000_000 + (k % 2) * period);
+            let half = master.frame_offset_nanos(1) as u64 / 2;
+            let ticks = TickGrid {
+                origin_ns: 1_000_000_000,
+                rate: master,
+            };
+            let delay = paced[0].3;
+            let latency = |&(t, _, shown, _): &(u64, u64, u64, i64)| ticks.tick_ns(shown) - t;
+            for (k, picture) in paced.iter().enumerate().skip(1) {
+                let (t, published, shown, d) = *picture;
+                assert_eq!(d, delay, "{source:?} → {master:?}: delay moved at {k}");
+                assert_eq!(shown, ticks.tick_at_or_after(t + delay as u64), "{k}");
+                assert!(
+                    published + half / 2 <= ticks.tick_ns(shown),
+                    "{k}: no margin"
+                );
+                assert!(shown > paced[k - 1].2, "{k}: overwritten unseen");
+                assert!(
+                    latency(picture).abs_diff(latency(&paced[1])) <= 1,
+                    "{k}: latency moved"
+                );
+            }
+        }
+    }
+
+    /// A source faster than the master: two pictures due on the same tick, the later one is
+    /// shown (resampling); the tick of each still follows from its stream time.
+    #[test]
+    fn a_faster_paced_source_is_resampled_by_stream_time() {
+        let paced = pace(FrameRate::FPS_50, FrameRate::FPS_25, 60, |_| 10_000_000);
+        let ticks = TickGrid {
+            origin_ns: 1_000_000_000,
+            rate: FrameRate::FPS_25,
+        };
+        let delay = paced[0].3;
+        for &(t, _, shown, d) in &paced {
+            assert_eq!(d, delay);
+            assert_eq!(shown, ticks.tick_at_or_after(t + delay as u64));
+        }
+    }
+
+    /// The first picture came late (40 ms more than the others), and a hiccup of the network
+    /// makes one picture 100 ms late: that one sets the delay again; once both are forgotten
+    /// (two blocks), the delay drops by whole master periods, once, to what the regular
+    /// arrivals need. The pictures keep their margin.
+    #[test]
+    fn the_delay_shortens_by_whole_periods_and_recovers_from_a_late_picture() {
+        let master = FrameRate::FPS_50;
+        let paced = pace(FrameRate::FPS_50, master, 70, |k| match k {
+            0 => 50_000_000,
+            500 => 110_000_000,
+            _ => 10_000_000,
+        });
+        let ticks = TickGrid {
+            origin_ns: 1_000_000_000,
+            rate: master,
+        };
+        let period = master.frame_offset_nanos(1) as u64;
+        let delays: Vec<i64> = paced.iter().map(|p| p.3).collect();
+        let changes: Vec<(usize, i64)> = delays
+            .windows(2)
+            .enumerate()
+            .filter(|(_, w)| w[0] != w[1])
+            .map(|(k, w)| (k + 1, w[1]))
+            .collect();
+        // Start: 50 ms + one source period + half a master period + 2 ms. At 500: 110 ms
+        // + 32 ms. Both forgotten 30 s after the first arrival: 10 ms + 32 ms.
+        assert_eq!(delays[0], 82_000_000);
+        assert_eq!(changes, [(500, 142_000_000), (1502, 42_000_000)]);
+        assert_eq!(
+            (142_000_000 - 42_000_000) % period as i64,
+            0,
+            "whole periods"
+        );
+        for (k, &(t, published, shown, d)) in paced.iter().enumerate() {
+            if k != 500 {
+                assert!(published + period / 4 <= ticks.tick_ns(shown), "{k}");
+            }
+            assert_eq!(
+                shown,
+                ticks.tick_at_or_after(t + d as u64).max(shown),
+                "{k}"
+            );
+        }
+    }
+
+    /// A receiver that dates its pictures by presentation: they arrive up to 100 ms before
+    /// their stream time, in bursts of four. The delay is negative, constant, and each
+    /// picture still lands on the tick of its stream time, none overwritten unseen.
+    #[test]
+    fn pictures_ahead_of_their_stream_time_are_paced_too() {
+        let source = FrameRate::FPS_25;
+        let period = source.frame_offset_nanos(1) as u64;
+        let ticks = TickGrid {
+            origin_ns: 1_000_000_000,
+            rate: FrameRate::FPS_50,
+        };
+        let mut pacer = Pacer::new(ticks);
+        let mut shown = Vec::new();
+        for k in 0..1_500u64 {
+            let t = 5_000_000_000 + k * period;
+            // Four pictures together, the first one 100 ms ahead of its stream time.
+            let now = 5_000_000_000 + (k / 4 * 4 + 3) * period - 100_000_000 - 3 * period;
+            let published = pacer.release_at(t, now, period).max(now) + 1_000_000;
+            let tick = ticks.tick_at_or_after(published);
+            let delay = pacer.delay.unwrap();
+            if k > 0 {
+                assert_eq!(
+                    tick,
+                    ticks.tick_at_or_after(t.saturating_add_signed(delay)),
+                    "{k}"
+                );
+            }
+            shown.push((tick, delay));
+        }
+        assert!(shown[1].1 < 0, "{:?}", shown[1]);
+        assert!(shown.iter().skip(1).all(|s| s.1 == shown[1].1));
+        assert!(shown.windows(2).skip(1).all(|w| w[1].0 > w[0].0));
+    }
+
+    /// The timestamps jump 2 s ahead, later the stream stalls 1 s: each time the pacer starts
+    /// afresh from the next picture, without waiting for the jump nor keeping the stall in its
+    /// delay; the pictures land on the tick of their (new) stream time.
+    #[test]
+    fn a_jump_of_the_timestamps_or_a_stall_starts_afresh() {
+        let source = FrameRate::FPS_50;
+        let period = source.frame_offset_nanos(1) as u64;
+        let ticks = TickGrid {
+            origin_ns: 1_000_000_000,
+            rate: FrameRate::FPS_50,
+        };
+        let mut pacer = Pacer::new(ticks);
+        let mut delays = Vec::new();
+        for k in 0..2_000u64 {
+            let arrival = 5_000_000_000 + k * period + 10_000_000;
+            let t = 5_000_000_000 + k * period + if k >= 500 { 2_000_000_000 } else { 0 };
+            let now = if k == 1_200 {
+                arrival + 1_000_000_000
+            } else {
+                arrival
+            };
+            let release = pacer.release_at(t, now, period);
+            assert!(
+                release.saturating_sub(now) < 100_000_000,
+                "{k}: waits too long"
+            );
+            delays.push(pacer.delay.unwrap());
+        }
+        let before = delays[499];
+        assert_eq!(delays[500], before - 2_000_000_000);
+        assert_eq!(delays[1_199], delays[500]);
+        assert_eq!(
+            delays[1_200],
+            delays[500] + 1_000_000_000,
+            "the stalled picture"
+        );
+        assert_eq!(delays[1_201], delays[500], "afresh after the stall");
+        assert_eq!(delays[1_999], delays[500]);
     }
 }

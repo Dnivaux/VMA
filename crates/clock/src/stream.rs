@@ -5,6 +5,8 @@
 
 use std::time::Instant;
 
+use vma_core::FrameRate;
+
 /// Converts instants into stream time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StreamClock {
@@ -52,6 +54,41 @@ impl StreamClock {
     }
 }
 
+/// The master ticks in stream time: tick `n` starts at `origin_ns + n / rate`, computed from
+/// `n` as by [`crate::FrameClock`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TickGrid {
+    /// Stream time of tick 0.
+    pub origin_ns: u64,
+    pub rate: FrameRate,
+}
+
+impl TickGrid {
+    /// Stream time of tick `n`.
+    pub fn tick_ns(&self, n: u64) -> u64 {
+        self.origin_ns
+            .saturating_add(nanos(self.rate.frame_offset_nanos(n)))
+    }
+
+    /// The first tick that starts at or after stream time `ns` (tick 0 before the origin).
+    pub fn tick_at_or_after(&self, ns: u64) -> u64 {
+        let Some(elapsed) = ns.checked_sub(self.origin_ns) else {
+            return 0;
+        };
+        let n = self.rate.frame_at_nanos(u128::from(elapsed));
+        if self.rate.frame_offset_nanos(n) < u128::from(elapsed) {
+            n.saturating_add(1)
+        } else {
+            n
+        }
+    }
+
+    /// One master period, rounded up to the nanosecond.
+    pub fn period_ns(&self) -> u64 {
+        nanos(self.rate.frame_offset_nanos(1))
+    }
+}
+
 fn nanos(n: u128) -> u64 {
     u64::try_from(n).unwrap_or(u64::MAX)
 }
@@ -72,6 +109,25 @@ mod tests {
         if let Some(before) = epoch.checked_sub(Duration::from_millis(3)) {
             assert_eq!(clock.at(before), 4_997_000_000);
             assert_eq!(clock.instant(4_997_000_000), before);
+        }
+    }
+
+    #[test]
+    fn tick_grid_finds_the_first_tick_at_or_after_a_time() {
+        for rate in FrameRate::MASTER_RATES {
+            let grid = TickGrid {
+                origin_ns: 7_000_000_000,
+                rate,
+            };
+            assert_eq!(grid.tick_at_or_after(0), 0);
+            assert_eq!(grid.tick_at_or_after(grid.origin_ns), 0);
+            for n in [1, 2, 999, 1000, 1001, 30_000, 179_999] {
+                let at = grid.tick_ns(n);
+                assert_eq!(grid.tick_at_or_after(at), n, "{rate:?} {n}");
+                assert_eq!(grid.tick_at_or_after(at - 1), n, "{rate:?} {n}");
+                assert_eq!(grid.tick_at_or_after(at + 1), n + 1, "{rate:?} {n}");
+                assert!(grid.tick_ns(n + 1) - at <= grid.period_ns());
+            }
         }
     }
 }

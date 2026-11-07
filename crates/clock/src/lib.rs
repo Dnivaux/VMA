@@ -18,7 +18,7 @@ mod time;
 
 pub use histogram::{LatencyHistogram, LatencySummary};
 pub use stats::{ClockStats, ClockStatsSnapshot};
-pub use stream::StreamClock;
+pub use stream::{StreamClock, TickGrid};
 pub use time::{ManualTime, SystemTime, TimeSource};
 
 use std::sync::Arc;
@@ -64,6 +64,11 @@ impl FrameClock<SystemTime> {
     /// Clock on the system monotonic time with an explicit spin margin (see [`SystemTime`]).
     pub fn with_spin_margin(rate: FrameRate, spin_margin: Duration) -> Self {
         Self::with_source(rate, SystemTime::with_spin_margin(spin_margin))
+    }
+
+    /// The instant slot 0 starts at.
+    pub fn origin_instant(&self) -> std::time::Instant {
+        self.source.epoch() + self.origin
     }
 }
 

@@ -535,7 +535,7 @@ impl Worker {
                 tracing::info!(%input, uri = %source.uri(), mode = ?source.mode, "opening SRT input");
                 self.pipelines.push(PipelineSlot::new(
                     input,
-                    Recipe::srt(source.clone()),
+                    Recipe::srt(source.clone(), self.port.ticks),
                     self.port.feeds.clone(),
                     Instant::now(),
                 ));

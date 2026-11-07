@@ -27,6 +27,11 @@ impl SystemTime {
             spin_margin,
         }
     }
+
+    /// The instant `now()` counts from.
+    pub fn epoch(&self) -> Instant {
+        self.epoch
+    }
 }
 
 impl Default for SystemTime {

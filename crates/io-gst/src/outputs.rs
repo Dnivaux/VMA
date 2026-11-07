@@ -1259,15 +1259,13 @@ mod tests {
     /// C9: an SRT input (caller, with a passphrase) receives the SRT output of another engine
     /// (listener, sync test): its pictures and sound reach a recording of the receiving
     /// engine in sync, to a frame. The sender runs at 25p: its one-frame flash lasts two
-    /// frames of the receiver (a single 50p frame can be skipped by the resampling).
-    ///
-    /// Ignored: measured 2026-11-03 (40 s), every pair of flash and beep is there and no
-    /// picture is lost (jitter buffer), but the offset moves by steps of one master period
-    /// (−30 to +6 ms): a picture released near a tick is shown on one tick or the next, the
-    /// « latest picture » choice of the render thread (debt of Phase 1, step 9). Fixed by a
-    /// choice of the picture by its time, to be decided (ROADMAP).
+    /// frames of the receiver. Every picture is shown, on the tick its stream time gives
+    /// (jitter buffer on the tick grid).
     #[test]
-    #[ignore = "C9 sync: steps of one master period, waits for the choice of the picture by its time"]
+    #[cfg_attr(
+        windows,
+        ignore = "Windows CI (WARP, 2 cores) repeats every other tick with an input feed: gaps in the recording"
+    )]
     fn srt_input_receives_our_srt_output_in_sync() {
         if srt_available().is_none() {
             return;
