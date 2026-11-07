@@ -1369,3 +1369,27 @@ fn without_the_ndi_runtime_ndi_is_greyed() {
     h.get_by_label("NDI® is a registered trademark of Vizrt NDI AB.");
     h.get_by_label_contains("MPL-2.0");
 }
+
+/// Step 8: « + NDI® » adds the NDI output with its default name (once); without the runtime
+/// it is greyed and adds nothing.
+#[test]
+fn the_ndi_output_is_added_unless_the_runtime_is_missing() {
+    let mut h = harness(state());
+    open_outputs(&mut h);
+    h.get_by_label("+ NDI®").click();
+    h.run();
+    assert_eq!(
+        h.state().sent(),
+        [Command::AddOutput {
+            spec: OutputSpec::Ndi(vma_engine::NdiSpec::default()),
+            name: None,
+        }]
+    );
+
+    let mut h = harness(state());
+    h.state_mut().ndi_unavailable = Some("NDI® runtime not found".into());
+    open_outputs(&mut h);
+    h.get_by_label("+ NDI®").click();
+    h.run();
+    assert!(h.state().sent().is_empty(), "disabled without the runtime");
+}

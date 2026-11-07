@@ -98,6 +98,23 @@ pub enum OutputSpec {
     /// The Program, full screen on a screen of this computer (Phase 2 step 8). Shown by the
     /// UI, not by `io-gst`.
     Fullscreen(FullscreenSpec),
+    /// The Program and a bus as an NDI® source on the network, uncompressed (Phase 3 step 8).
+    Ndi(NdiSpec),
+}
+
+/// The NDI® output (one at most).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NdiSpec {
+    /// Name announced on the network (NDI adds the machine's: `MACHINE (VMA Program)`).
+    pub name: String,
+}
+
+impl Default for NdiSpec {
+    fn default() -> Self {
+        Self {
+            name: "VMA Program".into(),
+        }
+    }
 }
 
 /// The full-screen output.
@@ -196,7 +213,7 @@ pub enum InvalidSpec {
     SrtPassphrase,
     #[error("the screen name is empty")]
     Screen,
-    #[error("the NDI® source name is empty")]
+    #[error("the NDI® name is empty")]
     NdiName,
 }
 
@@ -211,11 +228,16 @@ impl OutputSpec {
         matches!(self, Self::Fullscreen(_))
     }
 
-    /// Recording, stream and full screen cannot turn into one another.
+    pub fn is_ndi(&self) -> bool {
+        matches!(self, Self::Ndi(_))
+    }
+
+    /// Recording, stream, full screen and NDI® cannot turn into one another.
     pub(crate) fn same_kind(&self, other: &Self) -> bool {
         self.is_recording() == other.is_recording()
             && self.is_stream() == other.is_stream()
             && self.is_fullscreen() == other.is_fullscreen()
+            && self.is_ndi() == other.is_ndi()
     }
 
     pub fn is_recording(&self) -> bool {
@@ -225,7 +247,7 @@ impl OutputSpec {
     /// The secret of the spec is not known (read back from a journal).
     pub fn secret_missing(&self) -> bool {
         match self {
-            Self::Record(_) | Self::Fullscreen(_) => false,
+            Self::Record(_) | Self::Fullscreen(_) | Self::Ndi(_) => false,
             Self::Rtmp(rtmp) => rtmp.key.expose().is_none(),
             Self::Srt(srt) => srt.passphrase.expose().is_none(),
         }
@@ -236,6 +258,7 @@ impl OutputSpec {
         match (self, slot) {
             (Self::Record(_), _) => "Enregistrement".into(),
             (Self::Fullscreen(_), _) => "Plein écran".into(),
+            (Self::Ndi(_), _) => "NDI®".into(),
             (_, Some(slot)) => format!("Stream {slot}"),
             (_, None) => "Stream".into(),
         }
@@ -246,7 +269,7 @@ impl OutputSpec {
             Self::Record(r) => r.video_kbps,
             Self::Rtmp(r) => r.video_kbps,
             Self::Srt(s) => s.video_kbps,
-            Self::Fullscreen(_) => None,
+            Self::Fullscreen(_) | Self::Ndi(_) => None,
         };
         if let Some(kbps) = kbps
             && !VIDEO_KBPS_RANGE.contains(&kbps)
@@ -255,6 +278,8 @@ impl OutputSpec {
         }
         match self {
             Self::Record(_) => Ok(()),
+            Self::Ndi(ndi) if ndi.name.trim().is_empty() => Err(InvalidSpec::NdiName),
+            Self::Ndi(_) => Ok(()),
             Self::Fullscreen(f) => match &f.screen {
                 Some(name) if name.trim().is_empty() => Err(InvalidSpec::Screen),
                 _ => Ok(()),

@@ -568,4 +568,25 @@ NDI® est une marque déposée de Vizrt NDI AB. ADR 0008.
 | **C10** : runtime absent → input NDI perdu avec sa raison, jamais réessayé ; l'input voisin en marche ; aucune source listée | `runtime::tests::without_the_ndi_runtime_an_ndi_input_is_refused_with_its_reason` | CI |
 | **C10** (UI) : « NDI®… » grisé sans runtime, le reste du menu marche ; « À propos » porte la mention de marque et la licence MPL-2.0 | `vma-ui` `switcher::without_the_ndi_runtime_ndi_is_greyed` | CI |
 | Ajout d'un input NDI : source découverte choisie, ou nom saisi (épuré) ; rien avant « Ajouter » ; nom par défaut, validation | `vma-ui` `switcher::an_ndi_input_is_added_from_the_sources_seen` ; `engine` `command::tests::ndi_inputs_are_named_after_their_source` | CI |
-| **C11** (entrée) : découverte d'une source, image et son, perte et reconnexion | — | **à faire** : exige le runtime NDI sur la machine de dev (et la sortie NDI de l'étape 8 pour la boucle locale) |
+| **C11** (entrée) : une source NDI locale découverte ; input en marche, nommé d'après elle, à sa cadence (45 à 55 images en 2 s à 25p), avec son ; émetteur arrêté → perdu ; relancé → en marche | `outputs::tests::an_ndi_source_is_found_received_lost_and_found_again` | conditionnel (runtime NDI ; exigé par `VMA_REQUIRE_NDI`) : machine de dev |
+
+## Phase 3 — Sortie NDI® (étape 8, 2026-11-07)
+- **Réglages** (`OutputSpec::Ndi(NdiSpec { name })`) : le nom annoncé, « VMA Program » par
+  défaut (NDI y ajoute celui de la machine : `MACHINE (VMA Program)`) ; une sortie NDI au plus
+  (`Rejection::NdiExists`) ; bus au choix comme les autres sorties (Master par défaut).
+- **Pipeline** : `appsrc` NV12 (étage de sortie, BT.709 limitée) et `appsrc` F32 48 kHz du
+  bus → `ndisinkcombiner` → `ndisink ndi-name=…`, **sans encodage ni conteneur** ; le NV12 et le
+  son entrelacé sont acceptés tels quels. Même cadencement par le moteur que les autres
+  sorties (pipeline sans horloge, PTS dérivés de *n*).
+- **En marche dès le départ**, comme une sortie SRT en écoute : des récepteurs vont et
+  viennent, aucun n'est attendu ; une erreur du pipeline → reconnexion par la politique
+  commune. Runtime absent → refus avec la raison (sortie « en échec ») ; l'UI grise
+  « + NDI® » avec l'explication.
+
+### Critères (étape 8)
+| Critère | Test | Statut |
+|---|---|---|
+| **C11** : la sortie NDI d'un moteur (mode synchro, 25p) reçue par l'entrée NDI d'un autre (50p) et enregistrée : toutes les paires flash / bip, aucun trou, **synchro < 1 image** (mesuré : 20 / 20, −4,6 ms au premier flash puis ≤ 0,5 ms) | `outputs::tests::our_ndi_output_reaches_an_ndi_input_in_sync` | conditionnel (runtime NDI) : machine de dev |
+| Une sortie NDI au plus ; nom vide refusé ; ne change pas de genre | `engine` `state::tests::one_ndi_output_with_a_name` | CI |
+| UI : « + NDI® » ajoute la sortie par défaut ; grisé sans runtime | `vma-ui` `switcher::the_ndi_output_is_added_unless_the_runtime_is_missing` | CI |
+

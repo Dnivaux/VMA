@@ -39,8 +39,8 @@ pub use control::{
 pub use feed::{FeedError, FeedRegistry, FeedStats, FeedStatsSnapshot, FrameSink};
 pub use journal::{Journal, JournalLine, JournalStats, Origin, Outcome, ReplayError, replay};
 pub use output_spec::{
-    FullscreenSpec, InvalidSpec, MAX_OUTPUTS, OutputSpec, RecordSpec, RtmpSpec, SRT_LATENCY_RANGE,
-    STREAM_SLOTS, Secret, SrtMode, SrtSpec, VIDEO_KBPS_RANGE,
+    FullscreenSpec, InvalidSpec, MAX_OUTPUTS, NdiSpec, OutputSpec, RecordSpec, RtmpSpec,
+    SRT_LATENCY_RANGE, STREAM_SLOTS, Secret, SrtMode, SrtSpec, VIDEO_KBPS_RANGE,
 };
 pub use outputs::{
     AUDIO_CHANNELS, AUDIO_RATE, BEEP_HZ, BEEP_SAMPLES, CONSUMER_QUEUE, DistributionSnapshot,

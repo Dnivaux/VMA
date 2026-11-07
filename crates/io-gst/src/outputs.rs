@@ -104,6 +104,8 @@ enum Recipe {
 enum Target {
     Rtmp(StreamSettings),
     Srt(SrtSettings),
+    /// The NDI® output, by the name it announces.
+    Ndi(String),
 }
 
 impl Target {
@@ -111,6 +113,7 @@ impl Target {
         match self {
             Self::Rtmp(settings) => GstOutput::stream(format, settings),
             Self::Srt(settings) => GstOutput::srt(format, settings),
+            Self::Ndi(name) => GstOutput::ndi(format, name),
         }
     }
 
@@ -122,19 +125,21 @@ impl Target {
                 SrtMode::Caller => settings.uri(),
                 SrtMode::Listener => format!("{} (listening)", settings.uri()),
             },
+            Self::Ndi(name) => format!("NDI® {name}"),
         }
     }
 
-    /// An SRT listener waits for its receivers: on air as soon as it listens, never « lost »
-    /// for want of one.
+    /// An SRT listener or the NDI® output waits for its receivers: on air as soon as it
+    /// listens, never « lost » for want of one.
     fn listens(&self) -> bool {
-        matches!(self, Self::Srt(s) if s.mode == SrtMode::Listener)
+        matches!(self, Self::Srt(s) if s.mode == SrtMode::Listener) || matches!(self, Self::Ndi(_))
     }
 
     fn kbps(&self) -> u32 {
         match self {
             Self::Rtmp(settings) => settings.video_kbps,
             Self::Srt(settings) => settings.video_kbps,
+            Self::Ndi(_) => 0,
         }
     }
 }
@@ -225,6 +230,12 @@ impl Outputs {
             OutputSpec::Srt(srt) => self
                 .srt_settings(srt)
                 .map(|s| Recipe::Stream(Target::Srt(s))),
+            OutputSpec::Ndi(ndi) => match vma_io_ndi::status() {
+                vma_io_ndi::NdiStatus::Available => {
+                    Ok(Recipe::Stream(Target::Ndi(ndi.name.trim().to_owned())))
+                }
+                vma_io_ndi::NdiStatus::Unavailable { reason } => Err(reason),
+            },
             // Shown by the UI: `vma-control` never asks for it.
             OutputSpec::Fullscreen(_) => Err("the full screen has no pipeline".to_owned()),
         };
@@ -1346,6 +1357,213 @@ mod tests {
         drop(io);
     }
 
+    /// An NDI® sender on this machine: a test picture (25p) and a 440 Hz tone, named
+    /// `VMA test <pid>`. Stopped (and gone from the network) when dropped.
+    struct NdiSender(gstreamer::Element);
+
+    impl NdiSender {
+        fn start(name: &str) -> Self {
+            use gstreamer::prelude::*;
+            let pipeline = gstreamer::parse::launch(&format!(
+                "ndisinkcombiner name=c ! ndisink ndi-name=\"{name}\" \
+                 videotestsrc is-live=true pattern=ball \
+                   ! video/x-raw,format=UYVY,width=320,height=180,framerate=25/1 ! c.video \
+                 audiotestsrc is-live=true freq=440 volume=0.3 \
+                   ! audio/x-raw,rate=48000,channels=2 ! audioconvert ! c.audio"
+            ))
+            .unwrap();
+            pipeline.set_state(gstreamer::State::Playing).unwrap();
+            Self(pipeline)
+        }
+    }
+
+    impl Drop for NdiSender {
+        fn drop(&mut self) {
+            use gstreamer::prelude::*;
+            let _ = self.0.set_state(gstreamer::State::Null);
+        }
+    }
+
+    /// C11 (input side, needs the NDI® runtime: `VMA_REQUIRE_NDI`): a local NDI sender is
+    /// discovered; the NDI input made from it is live with pictures and sound; the sender
+    /// stops → signal lost; it comes back → live again, by its name.
+    #[test]
+    fn an_ndi_source_is_found_received_lost_and_found_again() {
+        if !vma_io_ndi::status().is_available() {
+            assert!(
+                std::env::var_os("VMA_REQUIRE_NDI").is_none(),
+                "VMA_REQUIRE_NDI set but {:?}",
+                vma_io_ndi::status()
+            );
+            return;
+        }
+        let source = format!("VMA test {}", std::process::id());
+        let sender = NdiSender::start(&source);
+        let (mut engine, _device) = spawn_engine_with(EngineConfig {
+            rate: FrameRate::FPS_50,
+            stream_clock: Some(crate::stream_clock()),
+            ..EngineConfig::default()
+        });
+        let io = IoRuntime::start(engine.take_io_port().unwrap()).unwrap();
+        let state = engine.state();
+        let until = |what: &str, secs: u64, done: &dyn Fn() -> bool| {
+            let end = Instant::now() + Duration::from_secs(secs);
+            while !done() {
+                assert!(Instant::now() < end, "{what}: {:?}", state.load().inputs);
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        };
+        let suffix = format!("({source})");
+        until("discovered", 20, &|| {
+            io.ndi_sources().iter().any(|n| n.ends_with(&suffix))
+        });
+        let name = io
+            .ndi_sources()
+            .into_iter()
+            .find(|n| n.ends_with(&suffix))
+            .unwrap();
+        let spec = vma_engine::InputSpec::Ndi { name };
+        send(
+            &engine,
+            Command::AddInput {
+                spec: spec.clone(),
+                name: None,
+            },
+        );
+        let input = || state.load().inputs.iter().find(|i| i.spec == spec).cloned();
+        let live =
+            || input().is_some_and(|i| matches!(i.status, vma_engine::InputStatus::Live { .. }));
+        until("live", 20, &live);
+        let id = input().unwrap().id;
+        assert_eq!(input().unwrap().name, source, "named after its source");
+        // Pictures at the rate of the sender, and its sound.
+        let stats = || {
+            engine
+                .input_stats()
+                .load()
+                .iter()
+                .find(|(i, _)| *i == id)
+                .map(|(_, s)| s.snapshot())
+                .unwrap()
+        };
+        let before = stats().received;
+        std::thread::sleep(Duration::from_secs(2));
+        let received = stats().received - before;
+        assert!(
+            (45..=55).contains(&received),
+            "{received} pictures in 2 s at 25p"
+        );
+        let meters = engine.audio_meters();
+        until("sound", 5, &|| {
+            meters
+                .read(vma_engine::Level::Input(id))
+                .is_some_and(|[_, post]| post.peak[0] > 0.1)
+        });
+
+        drop(sender);
+        until("lost", 20, &|| {
+            input().is_some_and(|i| matches!(i.status, vma_engine::InputStatus::SignalLost { .. }))
+        });
+        let _back = NdiSender::start(&source);
+        until("live again", 40, &live);
+        drop(io);
+    }
+
+    /// An engine in sync-test mode at `rate` whose NDI® output announces `name`, started.
+    struct NdiOutputSender {
+        // Kept running, dropped before the engine.
+        _io: IoRuntime,
+        _engine: RenderEngine,
+        _device: wgpu::Device,
+    }
+
+    impl NdiOutputSender {
+        fn start(rate: FrameRate, name: &str) -> Self {
+            let (mut engine, device) = spawn_engine_with(EngineConfig {
+                rate,
+                sync_test: true,
+                ..EngineConfig::default()
+            });
+            let io = IoRuntime::start(engine.take_io_port().unwrap()).unwrap();
+            send(
+                &engine,
+                Command::AddOutput {
+                    spec: OutputSpec::Ndi(vma_engine::NdiSpec { name: name.into() }),
+                    name: None,
+                },
+            );
+            let state = engine.state();
+            let end = Instant::now() + Duration::from_secs(5);
+            let output = loop {
+                let ndi = state
+                    .load()
+                    .outputs
+                    .iter()
+                    .find(|o| o.spec.is_ndi())
+                    .map(|o| o.id);
+                match ndi {
+                    Some(id) => break id,
+                    None if Instant::now() > end => panic!("NDI output not added"),
+                    None => std::thread::sleep(Duration::from_millis(5)),
+                }
+            };
+            send(&engine, Command::StartOutput { output });
+            wait_status(&state, output, |s| {
+                matches!(s, OutputStatus::Running { .. })
+            });
+            Self {
+                _io: io,
+                _engine: engine,
+                _device: device,
+            }
+        }
+    }
+
+    /// The full NDI® name (`MACHINE (name)`) of a source seen on the network.
+    fn find_ndi_source(name: &str) -> String {
+        let list = crate::ndi::NdiSourceList::default();
+        let monitor = crate::ndi::NdiMonitor::start(list.clone()).unwrap();
+        let suffix = format!("({name})");
+        let end = Instant::now() + Duration::from_secs(20);
+        loop {
+            monitor.refresh();
+            if let Some(found) = list.names().into_iter().find(|n| n.ends_with(&suffix)) {
+                return found;
+            }
+            assert!(Instant::now() < end, "{name} not seen: {:?}", list.names());
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+
+    /// C11 (needs the NDI® runtime): the NDI output of an engine (sync test, 25p) reaches the
+    /// NDI input of another one (50p): its pictures and sound in sync, to a frame, in the
+    /// recording of the receiver.
+    #[test]
+    fn our_ndi_output_reaches_an_ndi_input_in_sync() {
+        if !vma_io_ndi::status().is_available() {
+            assert!(std::env::var_os("VMA_REQUIRE_NDI").is_none());
+            return;
+        }
+        let master = FrameRate::FPS_50;
+        let name = format!("VMA C11 {}", std::process::id());
+        let sender = NdiOutputSender::start(FrameRate::FPS_25, &name);
+        let source = find_ndi_source(&name);
+        let sync = sync_source_recording(
+            "c11",
+            master,
+            vma_engine::InputSpec::Ndi { name: source },
+            20,
+        );
+        eprintln!("{sync:?}");
+        drop(sender);
+        assert!(sync.flashes >= 18, "{sync:?}");
+        assert_eq!(sync.video_gaps, 0, "{sync:?}");
+        assert!(
+            sync.worst_ns().unwrap() < video_pts_ns(master, 1) as i64,
+            "{sync:?}"
+        );
+    }
+
     /// C3 (real time): sources at +100 and −100 ppm for 60 s: the sound stays on its pictures
     /// to a frame, without a gap.
     #[test]
@@ -1532,7 +1750,7 @@ mod tests {
                     })
                     .build(),
             );
-            pipeline.set_state(gst::State::Playing).unwrap();
+            pipeline.set_state(gstreamer::State::Playing).unwrap();
             std::thread::sleep(window);
             let _ = pipeline.set_state(gst::State::Null);
             let n = count.load(Ordering::Relaxed);
@@ -1811,7 +2029,7 @@ mod tests {
         fn start(uri: &str, passphrase: &str) -> Self {
             use gstreamer as gst;
             use gstreamer::prelude::*;
-            let pipeline = gst::parse::launch(&format!(
+            let pipeline = gstreamer::parse::launch(&format!(
                 "srtsrc name=src uri={uri} ! tsdemux ! video/x-h264 ! queue ! \
                  appsink name=v sync=false"
             ))

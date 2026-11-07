@@ -276,6 +276,8 @@ pub(crate) enum Mux {
     Flv,
     /// MPEG-TS (SRT).
     Ts,
+    /// `ndisinkcombiner`: pictures and sound into one NDI® stream, no container.
+    Ndi,
 }
 
 impl From<Container> for Mux {
@@ -296,6 +298,8 @@ pub(crate) enum Video {
     /// I420 as is (MKV only): PTS tests independent of the encoders.
     #[cfg(test)]
     Raw,
+    /// NV12 as the engine gives it (NDI®, uncompressed).
+    Nv12,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -303,8 +307,7 @@ pub(crate) enum Audio {
     Aac {
         kbps: u32,
     },
-    /// F32 as is (MKV only).
-    #[cfg(test)]
+    /// F32 as is (NDI®; MKV in tests).
     Raw,
 }
 
@@ -315,6 +318,8 @@ pub(crate) enum Sink {
     Rtmp(String),
     /// `srtsink`.
     Srt(SrtSettings),
+    /// `ndisink`, announced under this name.
+    Ndi(String),
     /// `gst-launch` description of the sink bin (tests: a slow or failing sink).
     #[cfg(test)]
     Launch(String),
@@ -326,6 +331,7 @@ impl std::fmt::Debug for Sink {
             Self::File(path) => f.debug_tuple("File").field(path).finish(),
             Self::Rtmp(_) => f.write_str("Rtmp(***)"),
             Self::Srt(srt) => f.debug_tuple("Srt").field(srt).finish(),
+            Self::Ndi(name) => f.debug_tuple("Ndi").field(name).finish(),
             #[cfg(test)]
             Self::Launch(d) => f.debug_tuple("Launch").field(d).finish(),
         }
@@ -355,6 +361,16 @@ impl Plan {
                     .collect(),
             ),
             sink: Sink::Rtmp(location),
+        }
+    }
+
+    fn ndi(name: &str) -> Self {
+        Self {
+            video: Video::Nv12,
+            audio: Audio::Raw,
+            mux: Mux::Ndi,
+            sink: Sink::Ndi(name.to_owned()),
+            secrets: Secrets::default(),
         }
     }
 
@@ -461,6 +477,15 @@ impl GstOutput {
         Self::start(format, &Plan::srt(settings), &mut encoder::probe_element)
     }
 
+    /// Starts the NDI® output: the Program and its sound, uncompressed, announced as `name`
+    /// (receivers come and go; none is waited for). Fails if the NDI runtime is missing.
+    pub fn ndi(format: OutputFormat, name: &str) -> Result<(Self, OutputFeed), IoError> {
+        if let vma_io_ndi::NdiStatus::Unavailable { reason } = vma_io_ndi::status() {
+            return Err(IoError::Pipeline(reason));
+        }
+        Self::start(format, &Plan::ndi(name), &mut encoder::probe_element)
+    }
+
     pub(crate) fn start(
         format: OutputFormat,
         plan: &Plan,
@@ -504,6 +529,7 @@ impl GstOutput {
                 mux.set_property("writing-app", "VMA");
                 mux
             }
+            Mux::Ndi => element("ndisinkcombiner")?,
             Mux::Mp4 => {
                 let mux = element("mp4mux")?;
                 // Fragments of 1 s: readable up to the last one after a crash.
@@ -540,6 +566,12 @@ impl GstOutput {
                 sink.set_property("sync", false);
                 sink
             }
+            Sink::Ndi(name) => {
+                let sink = element("ndisink")?;
+                sink.set_property("ndi-name", name.as_str());
+                sink.set_property("sync", false);
+                sink
+            }
             #[cfg(test)]
             Sink::Launch(description) => gst::parse::bin_from_description(description, true)
                 .map_err(|e| IoError::Pipeline(e.to_string()))?
@@ -548,7 +580,7 @@ impl GstOutput {
         add(&pipeline, &[&mux, &sink])?;
         // `flvmux` has one pad of each kind, the others numbered request pads.
         let (video_pad, audio_pad) = match plan.mux {
-            Mux::Flv => ("video", "audio"),
+            Mux::Flv | Mux::Ndi => ("video", "audio"),
             Mux::Ts => ("sink_%d", "sink_%d"),
             Mux::Mkv | Mux::Mp4 => ("video_%u", "audio_%u"),
         };
@@ -597,6 +629,7 @@ impl GstOutput {
         }
         let counted_sink = match plan.sink {
             Sink::File(_) | Sink::Rtmp(_) | Sink::Srt(_) => Some(sink.clone()),
+            Sink::Ndi(_) => None,
             #[cfg(test)]
             Sink::Launch(_) => None,
         };
@@ -983,6 +1016,7 @@ fn video_branch(
             chain.push(filter);
             None
         }
+        Video::Nv12 => None,
     };
     chain.push(element("queue")?);
     let refs: Vec<&gst::Element> = chain.iter().collect();
@@ -1021,7 +1055,6 @@ fn audio_branch(
             chain.push(element("aacparse")?);
             Some(choice)
         }
-        #[cfg(test)]
         Audio::Raw => None,
     };
     chain.push(element("queue")?);
@@ -1078,8 +1111,11 @@ fn add(pipeline: &gst::Pipeline, elements: &[&gst::Element]) -> Result<(), IoErr
 /// Links `from` to a new request pad of `mux` (by template, not by caps: they are not known
 /// yet behind the queue).
 fn link_pad(from: &gst::Element, mux: &gst::Element, template: &str) -> Result<(), IoError> {
+    // `ndisinkcombiner` has an always `video` pad, the muxers request pads.
     let sink = mux
-        .request_pad_simple(template)
+        .static_pad(template)
+        .filter(|p| !p.is_linked())
+        .or_else(|| mux.request_pad_simple(template))
         .ok_or_else(|| IoError::Pipeline(format!("muxer has no {template} pad")))?;
     let src = from
         .static_pad("src")

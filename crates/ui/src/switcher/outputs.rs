@@ -379,6 +379,32 @@ impl Switcher {
                     },
                 );
             }
+            let has_ndi = state.outputs.iter().any(|o| o.spec.is_ndi());
+            if !has_ndi {
+                let add = ui
+                    .add_enabled(
+                        !full && view.io.ndi_unavailable.is_none(),
+                        egui::Button::new("+ NDI®"),
+                    )
+                    .on_hover_text("Le Program et son son, non compressés, sur le réseau");
+                let add = match view.io.ndi_unavailable {
+                    Some(reason) => add.on_disabled_hover_text(format!(
+                        "Runtime NDI® introuvable : installer le runtime NDI (NDI Tools), \
+                         puis redémarrer VMA.\n{reason}"
+                    )),
+                    None => add,
+                };
+                if add.clicked() {
+                    self.send(
+                        ui,
+                        view,
+                        Command::AddOutput {
+                            spec: OutputSpec::Ndi(vma_engine::NdiSpec::default()),
+                            name: None,
+                        },
+                    );
+                }
+            }
             let has_recording = state.outputs.iter().any(|o| o.spec.is_recording());
             if !has_recording
                 && ui
@@ -421,6 +447,7 @@ fn summary(spec: &OutputSpec) -> String {
             "Program après FTB · écran {}",
             f.screen.as_deref().unwrap_or("par défaut")
         ),
+        OutputSpec::Ndi(n) => format!("Program non compressé · nom « {} »", n.name),
     }
 }
 
@@ -502,6 +529,16 @@ fn spec_editor(
         .num_columns(2)
         .spacing([8.0, 4.0])
         .show(ui, |ui| match spec {
+            OutputSpec::Ndi(ndi) => {
+                let label = ui.label("Nom NDI®");
+                ui.add(
+                    egui::TextEdit::singleline(&mut ndi.name)
+                        .hint_text("VMA Program")
+                        .desired_width(220.0),
+                )
+                .labelled_by(label.id);
+                ui.end_row();
+            }
             OutputSpec::Fullscreen(fullscreen) => {
                 let label = ui.label("Écran");
                 let shown = match screen_index(screens, fullscreen.screen.as_deref()) {
@@ -629,7 +666,7 @@ fn spec_editor(
                         secret(ui, "Phrase de passe", &mut srt.passphrase);
                         bitrate(ui, &mut srt.video_kbps);
                     }
-                    OutputSpec::Record(_) | OutputSpec::Fullscreen(_) => {}
+                    OutputSpec::Record(_) | OutputSpec::Fullscreen(_) | OutputSpec::Ndi(_) => {}
                 }
             }
         });
@@ -641,7 +678,7 @@ fn kbps_of(spec: &OutputSpec) -> Option<u32> {
         OutputSpec::Record(r) => r.video_kbps,
         OutputSpec::Rtmp(r) => r.video_kbps,
         OutputSpec::Srt(s) => s.video_kbps,
-        OutputSpec::Fullscreen(_) => None,
+        OutputSpec::Fullscreen(_) | OutputSpec::Ndi(_) => None,
     }
 }
 

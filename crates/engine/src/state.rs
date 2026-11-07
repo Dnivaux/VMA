@@ -324,10 +324,12 @@ pub enum Rejection {
     OutputActive(OutputId),
     #[error("{0} is still stopping")]
     OutputStopping(OutputId),
-    #[error("an output cannot change kind (recording, stream, full screen)")]
+    #[error("an output cannot change kind (recording, stream, full screen, NDI®)")]
     OutputKindChanged,
     #[error("there is already a full-screen output")]
     FullscreenExists,
+    #[error("there is already an NDI® output")]
+    NdiExists,
     #[error("the GPU is lost: no output can start (restart the application)")]
     DeviceLost,
     #[error("the secret of {0} is missing (read back from a journal): enter it again")]
@@ -1024,6 +1026,10 @@ impl State {
         // One Program picture for the screen (one reader of its triple buffer).
         if spec.is_fullscreen() && self.outputs.iter().any(|o| o.spec.is_fullscreen()) {
             return Err(Rejection::FullscreenExists);
+        }
+        // One NDI® output in Phase 3 (`phase-3.md` § 6).
+        if spec.is_ndi() && self.outputs.iter().any(|o| o.spec.is_ndi()) {
+            return Err(Rejection::NdiExists);
         }
         let slot = if spec.is_stream() {
             let free = (1..=STREAM_SLOTS).find(|s| self.stream(*s).is_none());
@@ -2577,6 +2583,49 @@ mod tests {
             encoder: "nvh264enc + avenc_aac".into(),
             target: None,
         });
+    }
+
+    #[test]
+    fn one_ndi_output_with_a_name() {
+        use crate::output_spec::NdiSpec;
+        let mut s = state();
+        let ndi = add_output(&mut s, OutputSpec::Ndi(NdiSpec::default()));
+        assert_eq!(s.output(ndi).unwrap().name, "NDI®");
+        assert_eq!(
+            s.output(ndi).unwrap().slot,
+            None,
+            "not a stream destination"
+        );
+        assert_eq!(
+            s.apply(&Command::AddOutput {
+                spec: OutputSpec::Ndi(NdiSpec {
+                    name: "Autre".into()
+                }),
+                name: None,
+            }),
+            Err(Rejection::NdiExists)
+        );
+        assert_eq!(
+            s.apply(&Command::UpdateOutput {
+                output: ndi,
+                spec: OutputSpec::Ndi(NdiSpec { name: "  ".into() }),
+            }),
+            Err(Rejection::InvalidOutput(InvalidSpec::NdiName))
+        );
+        assert_eq!(
+            s.apply(&Command::UpdateOutput {
+                output: ndi,
+                spec: OutputSpec::Record(RecordSpec::default()),
+            }),
+            Err(Rejection::OutputKindChanged)
+        );
+        // Started like the others: through `io-gst`, with its bus.
+        let io = s.apply(&Command::StartOutput { output: ndi }).unwrap();
+        assert!(matches!(
+            io[..],
+            [IoRequest::StartOutput { output, ref spec, .. }]
+                if output == ndi && spec.is_ndi()
+        ));
     }
 
     #[test]
