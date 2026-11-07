@@ -506,15 +506,17 @@ Windows (pas de MediaMTX en CI), ils sont sautés.
   précédente soit relâchée, les arrivées mesurées dépendaient de l'attente elle-même, et la
   référence montait en continu (mesuré : décalage son / image qui dérive de −2 ms/s, puis
   saute d'une période).
-- **`tsdemux` sans correction de dérive** (`skew-corrections=false`, posé au
-  `deep-element-added` ; avertissement si la propriété manque) : par défaut, `tsdemux` corrige
-  en continu la correspondance entre l'horloge de l'émetteur et la nôtre d'après les heures
-  d'arrivée ; mesuré, les temps de flux glissent alors de plus de 30 ms sur les 20 premières
-  secondes (jusqu'à 3 500 ppm), le son avec eux (fréquence estimée jusqu'à −900 ppm), et le
-  lissage de la latence du son suit avec retard. Sans elle, la correspondance est fixée une
-  fois : écart tick − image constant au µs, son à 0 ppm. La dérive réelle d'une horloge
-  d'émetteur est absorbée par le tampon de gigue (une image sautée ou répétée de temps en
-  temps) et la fréquence du son (ADR 0007 § 4).
+- **`tsdemux` sans correction de dérive** (`ignore-pcr=true`, posé au `deep-element-added` ;
+  avertissement si la propriété manque) : par défaut, `tsdemux` établit la correspondance
+  entre l'horloge de l'émetteur et la nôtre d'après les PCR, et la corrige en continu d'après
+  les heures d'arrivée ; mesuré, les temps de flux glissent alors de plus de 30 ms sur les
+  20 premières secondes (jusqu'à 3 500 ppm, −52 ms au départ en CI), le son avec eux
+  (fréquence estimée jusqu'à −900 ppm), et le lissage de la latence du son suit avec retard.
+  Avec `ignore-pcr`, les temps viennent des PTS, établis une fois : écart tick − image
+  constant au µs, son à 0 ppm. `skew-corrections=false` donne le même résultat mais n'existe
+  qu'à partir de GStreamer 1.28 (Ubuntu 24.04 : 1.24) : un seul chemin pour toutes les
+  versions. La dérive réelle d'une horloge d'émetteur est absorbée par le tampon de gigue
+  (une image sautée ou répétée de temps en temps) et la fréquence du son (ADR 0007 § 4).
 - `appsink sync=true` (pacer par l'horloge) essayé et écarté : le pipeline se fige (même avec
   `gst-launch`), les temps du flux ne sont pas alignés sur l'horloge locale.
 - **Synchro (C9) : < 1 image.** Mesuré le 2026-11-07 (deux moteurs, sortie SRT en mode

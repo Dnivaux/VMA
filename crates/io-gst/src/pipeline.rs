@@ -638,20 +638,23 @@ fn srt_pipeline(
         }
         None
     });
-    // `tsdemux` maps the clock of the sender onto ours, and by default keeps correcting that
-    // mapping from the arrival times (skew): the stream times then slide by tens of
-    // milliseconds over the first tens of seconds, and the sound and pictures with them,
-    // while the jitter buffer keeps a fixed delay. Without it, the mapping is set once; a
-    // sender clock that drifts is absorbed by the jitter buffer and the sound's rate.
+    // By default `tsdemux` maps the clock of the sender onto ours from the PCR and keeps
+    // correcting that mapping from the arrival times (skew): the stream times then slide by
+    // tens of milliseconds over the first seconds, and the sound and pictures with them,
+    // while the jitter buffer keeps a fixed delay. With `ignore-pcr` (GStreamer ≥ 1.18; the
+    // `skew-corrections` switch only exists from 1.28), the times come from the PTS, mapped
+    // once: a sender clock that drifts is absorbed by the jitter buffer and the sound's rate.
     if let Some(bin) = decode.downcast_ref::<gst::Bin>() {
         bin.connect_deep_element_added(|_, _, element| {
-            if element.has_property("skew-corrections") {
-                element.set_property("skew-corrections", false);
-            } else if element
+            if element
                 .factory()
                 .is_some_and(|f| f.name().as_str() == "tsdemux")
             {
-                tracing::warn!("tsdemux without skew-corrections: the SRT stream times may slide");
+                if element.has_property("ignore-pcr") {
+                    element.set_property("ignore-pcr", true);
+                } else {
+                    tracing::warn!("tsdemux without ignore-pcr: the SRT stream times may slide");
+                }
             }
         });
     }
