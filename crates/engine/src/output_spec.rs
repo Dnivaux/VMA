@@ -196,6 +196,8 @@ pub enum InvalidSpec {
     SrtPassphrase,
     #[error("the screen name is empty")]
     Screen,
+    #[error("the NDI® source name is empty")]
+    NdiName,
 }
 
 impl OutputSpec {

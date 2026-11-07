@@ -65,6 +65,14 @@ pub trait IoStatus: std::fmt::Debug {
     fn headphones(&self) -> Option<HeadphonesActivity> {
         None
     }
+    /// Why NDI® inputs and outputs are unavailable (runtime missing), if they are.
+    fn ndi_unavailable(&self) -> Option<String> {
+        Some("NDI® non pris en charge".into())
+    }
+    /// NDI® sources seen on the network now.
+    fn ndi_sources(&self) -> Vec<String> {
+        Vec::new()
+    }
 }
 
 /// What `vma-io` reports about a running output (no GStreamer type in the UI).
@@ -207,6 +215,8 @@ impl MainUi {
         let record_folder = io.default_record_folder();
         let (audio_sources, audio_sinks) = io.audio_devices();
         let headphones = io.headphones();
+        let ndi_unavailable = io.ndi_unavailable();
+        let ndi_sources = io.ndi_sources();
         let meters = self.engine.audio_meters();
         let levels = |level| meters.read(level);
         let view = View {
@@ -228,6 +238,8 @@ impl MainUi {
                 audio_sources: &audio_sources,
                 audio_sinks: &audio_sinks,
                 headphones: headphones.as_ref(),
+                ndi_unavailable: ndi_unavailable.as_deref(),
+                ndi_sources: &ndi_sources,
             },
             screens: &screens,
             frame: self.engine.feedback().last_frame(),

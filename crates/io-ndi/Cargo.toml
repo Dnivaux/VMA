@@ -9,3 +9,9 @@ publish.workspace = true
 
 [lints]
 workspace = true
+
+[dependencies]
+gst-plugin-ndi.workspace = true
+gstreamer.workspace = true
+thiserror.workspace = true
+tracing.workspace = true

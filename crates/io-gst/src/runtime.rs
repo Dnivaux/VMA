@@ -19,11 +19,13 @@ use crate::devices::{CaptureDevice, DeviceList, Monitor};
 use crate::feeds::{Feeds, VideoFormat};
 use crate::headphones::{Headphones, HeadphonesStatus};
 use crate::mode::CaptureMode;
+use crate::ndi::{NdiMonitor, NdiSourceList};
 use crate::output::OutputFormat;
 use crate::outputs::{Activities, OutputActivity, Outputs};
 use crate::pipeline::{Capture, GstInput, Recipe};
 use crate::still::{self, StillImage};
 use crate::supervisor::retry_delay;
+use vma_io_ndi::NdiStatus;
 
 /// How often `vma-io` checks its pipelines (bus, watchdog, retries) without requests.
 const POLL: Duration = Duration::from_millis(20);
@@ -161,6 +163,8 @@ pub struct IoRuntime {
     gstreamer: Result<(), String>,
     devices: DeviceList,
     audio_devices: AudioDeviceList,
+    ndi: NdiStatus,
+    ndi_sources: NdiSourceList,
     headphones: Arc<ArcSwap<HeadphonesStatus>>,
     infos: Infos,
     activities: Activities,
@@ -195,6 +199,14 @@ impl IoRuntime {
         if let Err(e) = &gstreamer {
             tracing::error!(error = %e, "GStreamer unavailable: capture and file inputs disabled");
         }
+        // Loads the NDI runtime once, before the device monitors start (ADR 0008 § 3).
+        let ndi = match &gstreamer {
+            Ok(()) => vma_io_ndi::status(),
+            Err(e) => NdiStatus::Unavailable {
+                reason: format!("GStreamer unavailable: {e}"),
+            },
+        };
+        let ndi_sources = NdiSourceList::default();
         let stop = Arc::new(AtomicBool::new(false));
         let devices = DeviceList::default();
         let infos = Infos::default();
@@ -230,6 +242,9 @@ impl IoRuntime {
             audio_devices: audio_devices.clone(),
             audio_monitor: None,
             monitor_audio,
+            ndi: ndi.clone(),
+            ndi_sources: ndi_sources.clone(),
+            ndi_monitor: None,
             headphones,
             devices_at: Instant::now(),
             infos: Arc::clone(&infos),
@@ -244,6 +259,8 @@ impl IoRuntime {
             gstreamer,
             devices,
             audio_devices,
+            ndi,
+            ndi_sources,
             headphones: headphones_status,
             infos,
             activities,
@@ -265,6 +282,17 @@ impl IoRuntime {
     /// speakers (empty without GStreamer).
     pub fn audio_devices(&self) -> AudioDevices {
         self.audio_devices.infos()
+    }
+
+    /// Whether NDI® inputs and outputs can be used (found once, at start: restart VMA after
+    /// installing the runtime).
+    pub fn ndi(&self) -> &NdiStatus {
+        &self.ndi
+    }
+
+    /// The NDI® names of the sources seen on the network now (empty without the runtime).
+    pub fn ndi_sources(&self) -> Vec<String> {
+        self.ndi_sources.names()
     }
 
     /// What the headphones are doing (default status when they are off).
@@ -317,6 +345,9 @@ struct Worker {
     audio_monitor: Option<AudioMonitor>,
     /// `false` in tests that set the audio devices themselves.
     monitor_audio: bool,
+    ndi: NdiStatus,
+    ndi_sources: NdiSourceList,
+    ndi_monitor: Option<NdiMonitor>,
     headphones: Option<Headphones>,
     devices_at: Instant,
     infos: Infos,
@@ -333,6 +364,12 @@ impl Worker {
                 match AudioMonitor::start(self.audio_devices.clone()) {
                     Ok(monitor) => self.audio_monitor = Some(monitor),
                     Err(e) => tracing::error!(error = %e, "no audio device monitor"),
+                }
+            }
+            if self.ndi.is_available() {
+                match NdiMonitor::start(self.ndi_sources.clone()) {
+                    Ok(monitor) => self.ndi_monitor = Some(monitor),
+                    Err(e) => tracing::error!(error = %e, "no NDI® source monitor"),
                 }
             }
         }
@@ -367,6 +404,9 @@ impl Worker {
                 if let Some(monitor) = &self.audio_monitor {
                     monitor.refresh();
                 }
+                if let Some(monitor) = &self.ndi_monitor {
+                    monitor.refresh();
+                }
             }
         }
         // Pipelines and the monitor stop here, on `vma-io`; recordings are finalised first.
@@ -376,6 +416,7 @@ impl Worker {
         self.headphones = None;
         self.monitor = None;
         self.audio_monitor = None;
+        self.ndi_monitor = None;
         tracing::info!("io thread stopped");
     }
 
@@ -540,6 +581,19 @@ impl Worker {
                     Instant::now(),
                 ));
             }
+            InputSpec::Ndi { name } => match &self.ndi {
+                NdiStatus::Available => {
+                    tracing::info!(%input, %name, "opening NDI® input");
+                    self.pipelines.push(PipelineSlot::new(
+                        input,
+                        Recipe::ndi(name.clone(), self.port.ticks),
+                        self.port.feeds.clone(),
+                        Instant::now(),
+                    ));
+                }
+                // Refused with its reason, no new attempt (ADR 0008 § 3).
+                NdiStatus::Unavailable { reason } => lost(reason.clone()),
+            },
             InputSpec::Color { .. } | InputSpec::TestSource { .. } => {}
         }
     }
@@ -738,6 +792,61 @@ mod tests {
         }
         assert!(done(&state.load()), "{:?}", state.load().inputs);
         let _ = std::fs::remove_file(png);
+    }
+
+    /// C10: without the NDI® runtime, an NDI input is lost with the reason at once and never
+    /// tried again; the other inputs are not affected; no source is listed.
+    #[test]
+    fn without_the_ndi_runtime_an_ndi_input_is_refused_with_its_reason() {
+        use vma_engine::{Command, EngineConfig, InputStatus, Journal, RenderEngine, Source};
+        if vma_io_ndi::status().is_available() {
+            return;
+        }
+        let gpu = pollster::block_on(vma_compositor::headless::request_gpu())
+            .expect("GPU adapter required");
+        let config = EngineConfig {
+            resolution: vma_core::Resolution::new(320, 180).unwrap(),
+            ..EngineConfig::default()
+        };
+        let (mut engine, _readers) =
+            RenderEngine::spawn(gpu.device, gpu.queue, config, Journal::Disabled).unwrap();
+        let io = IoRuntime::start(engine.take_io_port().unwrap()).unwrap();
+        let NdiStatus::Unavailable { reason } = io.ndi().clone() else {
+            unreachable!()
+        };
+        assert!(reason.contains("NDI® runtime not found"), "{reason}");
+        let commands = engine.commands();
+        for spec in [
+            InputSpec::Ndi {
+                name: "STUDIO (Caméra 1)".into(),
+            },
+            InputSpec::Synthetic {
+                rate: vma_core::FrameRate::FPS_25,
+                resolution: vma_core::Resolution::new(320, 180).unwrap(),
+            },
+        ] {
+            commands
+                .send(Source::Script, Command::AddInput { spec, name: None })
+                .unwrap();
+        }
+        let state = engine.state();
+        let end = Instant::now() + Duration::from_secs(10);
+        let done = |s: &vma_engine::State| {
+            s.inputs.len() == 2
+                && matches!(
+                    s.inputs[0].status,
+                    InputStatus::SignalLost { attempts: 0, .. }
+                )
+                && matches!(s.inputs[1].status, InputStatus::Live { .. })
+        };
+        while !done(&state.load()) && Instant::now() < end {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(done(&state.load()), "{:?}", state.load().inputs);
+        // No new attempt: still lost, still 0 attempts, 3 s later (the policy retries at 1 s).
+        std::thread::sleep(Duration::from_secs(3));
+        assert!(done(&state.load()), "{:?}", state.load().inputs);
+        assert!(io.ndi_sources().is_empty());
     }
 
     /// C12 (CI side, fake devices): a microphone chosen by its identifier goes live; the

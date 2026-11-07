@@ -18,7 +18,9 @@ use vma_engine::{
 use crate::tally::{TALLY_PREVIEW, TALLY_PROGRAM, Tally};
 use crate::{HeadphonesActivity, OutputActivity};
 
+mod about;
 mod mixer;
+mod ndi_input;
 mod outputs;
 mod srt_input;
 
@@ -108,6 +110,10 @@ pub struct IoView<'a> {
     pub audio_sinks: &'a [CaptureChoice],
     /// What the headphones are doing (`None`: off in this session).
     pub headphones: Option<&'a HeadphonesActivity>,
+    /// Why NDI® is unavailable (runtime missing), if it is.
+    pub ndi_unavailable: Option<&'a str>,
+    /// NDI® sources seen on the network now.
+    pub ndi_sources: &'a [String],
 }
 
 impl IoView<'static> {
@@ -132,6 +138,8 @@ impl IoView<'static> {
             audio_sources: &[],
             audio_sinks: &[],
             headphones: None,
+            ndi_unavailable: None,
+            ndi_sources: &[],
         }
     }
 }
@@ -218,6 +226,9 @@ pub struct Switcher {
     mixer: mixer::MixerUi,
     /// The SRT input being added (« Ajouter → SRT… »).
     new_srt: Option<vma_engine::SrtSource>,
+    /// The NDI® source name being chosen (« Ajouter → NDI®… »).
+    new_ndi: Option<String>,
+    about_open: bool,
 }
 
 impl Default for Switcher {
@@ -236,6 +247,8 @@ impl Default for Switcher {
             outputs: outputs::OutputsUi::default(),
             mixer: mixer::MixerUi::default(),
             new_srt: None,
+            new_ndi: None,
+            about_open: false,
         }
     }
 }
@@ -264,6 +277,9 @@ impl Switcher {
                 }
                 ui.toggle_value(&mut self.show_stats, "Statistiques");
                 ui.toggle_value(&mut self.mixer.open, "Mélangeur");
+                if ui.button("À propos").clicked() {
+                    self.about_open = true;
+                }
                 ui.separator();
                 self.output_buttons(ui, view);
                 if let Some(reason) = view.io.unavailable {
@@ -325,6 +341,8 @@ impl Switcher {
         self.settings_window(ui, view);
         self.outputs_window(ui, view);
         self.srt_input_window(ui, view);
+        self.ndi_input_window(ui, view);
+        self.about_window(ui);
     }
 
     fn send(&mut self, ui: &egui::Ui, view: &View<'_>, command: Command) {
@@ -686,6 +704,19 @@ impl Switcher {
             }
             if ui.button("SRT…").clicked() {
                 self.new_srt = Some(vma_engine::SrtSource::default());
+                ui.close();
+            }
+            let ndi = ui.add_enabled(
+                view.io.ndi_unavailable.is_none(),
+                egui::Button::new("NDI®…"),
+            );
+            if let Some(reason) = view.io.ndi_unavailable {
+                ndi.on_disabled_hover_text(format!(
+                    "Runtime NDI® introuvable : installer le runtime NDI (NDI Tools), \
+                     puis redémarrer VMA.\n{reason}"
+                ));
+            } else if ndi.clicked() {
+                self.new_ndi = Some(String::new());
                 ui.close();
             }
         });

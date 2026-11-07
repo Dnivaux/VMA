@@ -58,7 +58,8 @@ fn generated_source(spec: &InputSpec) -> Option<SourceKey> {
         | InputSpec::Synthetic { .. }
         | InputSpec::SyncSource { .. }
         | InputSpec::AudioDevice { .. }
-        | InputSpec::Srt(_) => None,
+        | InputSpec::Srt(_)
+        | InputSpec::Ndi { .. } => None,
     }
 }
 

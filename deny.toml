@@ -37,6 +37,9 @@ exceptions = [
     # egui's embedded default fonts (Ubuntu-Light, Hack, emoji). Font licences that allow
     # bundling with software of any licence; not copyleft on the program itself.
     { crate = "epaint_default_fonts", allow = ["OFL-1.1", "Ubuntu-font-1.0"] },
+    # NDI® plugin of gst-plugins-rs (ADR 0008 § 5): MPL-2.0, copyleft limited to its own files,
+    # used unmodified from crates.io. This crate only.
+    { crate = "gst-plugin-ndi", allow = ["MPL-2.0"] },
 ]
 
 [bans]

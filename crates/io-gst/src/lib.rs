@@ -21,6 +21,7 @@ mod devices;
 mod feeds;
 mod headphones;
 mod mode;
+mod ndi;
 mod output;
 mod outputs;
 mod pipeline;
@@ -42,6 +43,7 @@ pub use output::{
 pub use outputs::{OutputActivity, default_record_folder};
 pub use runtime::{IoOptions, IoRuntime, PipelineInfo};
 pub use sync::{SyncAnalyser, SyncSnapshot};
+pub use vma_io_ndi::NdiStatus;
 
 /// Errors of `io-gst`.
 #[derive(Debug, thiserror::Error)]

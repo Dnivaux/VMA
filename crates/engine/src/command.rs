@@ -283,6 +283,10 @@ pub enum InputSpec {
     },
     /// An SRT stream (MPEG-TS, pictures and sound) received as caller or listener.
     Srt(SrtSource),
+    /// An NDI® source, by its name on the network (`MACHINE (Source)`), pictures and sound.
+    Ndi {
+        name: String,
+    },
 }
 
 /// An SRT input (`phase-3.md` § 5; same fields as an SRT output).
@@ -334,6 +338,7 @@ impl InputSpec {
             }
             Self::AudioDevice { .. } => InputKind::AudioDevice,
             Self::Srt(_) => InputKind::Srt,
+            Self::Ndi { .. } => InputKind::Ndi,
         }
     }
 
@@ -347,6 +352,7 @@ impl InputSpec {
                 | Self::SyncSource { .. }
                 | Self::AudioDevice { .. }
                 | Self::Srt(_)
+                | Self::Ndi { .. }
         )
     }
 
@@ -354,6 +360,7 @@ impl InputSpec {
     pub(crate) fn validate(&self) -> Result<(), InvalidSpec> {
         match self {
             Self::Srt(s) => validate_srt(s.mode, &s.host, s.port, s.latency_ms, &s.passphrase),
+            Self::Ndi { name } if name.trim().is_empty() => Err(InvalidSpec::NdiName),
             _ => Ok(()),
         }
     }
@@ -380,6 +387,13 @@ impl InputSpec {
             Self::SyncSource { rate, .. } => format!("Synchro {rate}"),
             Self::AudioDevice { .. } => "Son".into(),
             Self::Srt(srt) => format!("SRT {}", srt.uri().trim_start_matches("srt://")),
+            // `MACHINE (Source)` → `Source`.
+            Self::Ndi { name } => name
+                .split_once(" (")
+                .and_then(|(_, source)| source.strip_suffix(')'))
+                .filter(|s| !s.is_empty())
+                .unwrap_or(name)
+                .to_owned(),
         }
     }
 }
@@ -550,5 +564,20 @@ mod tests {
         assert_eq!(file.kind(), InputKind::File);
         let color = InputSpec::Color { color: Rgb8::BLACK };
         assert_eq!(color.default_name(), "Couleur");
+    }
+
+    #[test]
+    fn ndi_inputs_are_named_after_their_source() {
+        let ndi = |name: &str| InputSpec::Ndi { name: name.into() };
+        assert_eq!(ndi("STUDIO (Caméra 1)").default_name(), "Caméra 1");
+        assert_eq!(ndi("STUDIO (A (B))").default_name(), "A (B)");
+        assert_eq!(ndi("Sans parenthèses").default_name(), "Sans parenthèses");
+        assert_eq!(ndi("X").kind(), InputKind::Ndi);
+        assert!(ndi("X").has_audio());
+        assert!(ndi("X").validate().is_ok());
+        assert_eq!(
+            ndi("  ").validate(),
+            Err(crate::output_spec::InvalidSpec::NdiName)
+        );
     }
 }

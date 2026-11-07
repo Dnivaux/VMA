@@ -535,3 +535,37 @@ Windows (pas de MediaMTX en CI), ils sont sautés.
 | **C9** : écoute sans limite ; mauvaise phrase de passe sans image ; la bonne → en marche ; émetteur arrêté → perdu ; revenu → reconnecté (deux moteurs, notre sortie SRT appelante) | `outputs::tests::srt_input_listens_and_reconnects` | CI (si `srtsrc`, comme B8) |
 | **C9** : synchro < 1 image (appelant + phrase de passe vers notre sortie SRT en écoute, mode synchro) | `outputs::tests::srt_input_receives_our_srt_output_in_sync` | CI Linux (si `srtsrc`) ; **ignoré sous Windows** (WARP sur 2 cœurs, comme les autres mesures de synchro) |
 | Tampon de gigue : chaque image sur le tick de son temps de flux, avec un quart de période de marge, aucune écrasée sans être vue, délai fixe (10 min simulées, rafales de deux), images en avance sur leur temps de flux, source plus rapide que le maître, délai raccourci de périodes entières, retard, saut d'horodatage et flux figé | `pipeline::tests` : `paced_pictures_land_on_the_tick_of_their_stream_time`, `pictures_ahead_of_their_stream_time_are_paced_too`, `a_faster_paced_source_is_resampled_by_stream_time`, `the_delay_shortens_by_whole_periods_and_recovers_from_a_late_picture`, `a_jump_of_the_timestamps_or_a_stall_starts_afresh` ; grille : `vma-clock` `tick_grid_finds_the_first_tick_at_or_after_a_time` | CI (temps simulé) |
+
+## Phase 3 — Entrée NDI® (étape 7, 2026-11-07)
+NDI® est une marque déposée de Vizrt NDI AB. ADR 0008.
+- **Plugin et runtime** (`vma-io-ndi`) : `gst-plugin-ndi` 0.15.4 (MPL-2.0) enregistré comme
+  plugin statique ; le runtime est chargé une fois, au démarrage de `vma-io` (avant les
+  moniteurs de périphériques), en amenant un `ndisrc` à READY : `IoRuntime::ndi()` =
+  `Available` ou `Unavailable { reason }`. Pas de nouvel essai pendant l'exécution.
+  **Écart à l'ADR 0008 § 3** : pas de version du runtime (`Available { version }`) — le
+  plugin ne l'expose pas, et l'obtenir demanderait de charger nous-mêmes la bibliothèque
+  (`unsafe`) ; la fenêtre « À propos » donne la version du plugin.
+- **Découverte** : un `gst::DeviceMonitor` sur la classe `Source/Network` (fournisseur
+  `ndideviceprovider`), sur `vma-io`, seulement si le runtime est là ; liste des noms NDI
+  (`MACHINE (Source)`) relue toutes les secondes, publiée sans verrou
+  (`IoRuntime::ndi_sources()`). Les sources NDI que voit aussi le moniteur des caméras
+  (classe `Video/Source`) y sont écartées par le filtre d'API (`device.api`).
+- **Input** (`InputSpec::Ndi { name }`, nom par défaut : la partie entre parenthèses) :
+  `ndisrc ndi-name=… connect-timeout=5000 ! ndisrcdemux`, mêmes branches que les autres
+  inputs (première vidéo vers `videoconvert ! appsink`, premier son vers l'anneau). Source
+  réseau : **même tampon de gigue calé sur les ticks que l'entrée SRT**. Source absente du
+  réseau → erreur après 5 s → signal perdu → politique commune 1 / 2 / 5 / 10 s, par son nom.
+  Mode d'horodatage de `ndisrc` laissé par défaut (`auto`) : à vérifier avec le runtime
+  (C11), pour que les temps de flux soient dans le domaine maître.
+- **Runtime absent** (C10) : l'input NDI passe aussitôt en « signal perdu » avec la raison,
+  **sans nouvel essai** ; l'UI grise « Ajouter → NDI®… » et dit comment installer le runtime
+  (survol) ; rien d'autre ne change.
+
+### Critères (étape 7)
+| Critère | Test | Statut |
+|---|---|---|
+| **C10** : runtime détecté une fois ; absent → raison qui dit quoi faire | `vma-io-ndi` `tests::the_runtime_is_detected_once` (exige le runtime avec `VMA_REQUIRE_NDI`) | CI |
+| **C10** : runtime absent → input NDI perdu avec sa raison, jamais réessayé ; l'input voisin en marche ; aucune source listée | `runtime::tests::without_the_ndi_runtime_an_ndi_input_is_refused_with_its_reason` | CI |
+| **C10** (UI) : « NDI®… » grisé sans runtime, le reste du menu marche ; « À propos » porte la mention de marque et la licence MPL-2.0 | `vma-ui` `switcher::without_the_ndi_runtime_ndi_is_greyed` | CI |
+| Ajout d'un input NDI : source découverte choisie, ou nom saisi (épuré) ; rien avant « Ajouter » ; nom par défaut, validation | `vma-ui` `switcher::an_ndi_input_is_added_from_the_sources_seen` ; `engine` `command::tests::ndi_inputs_are_named_after_their_source` | CI |
+| **C11** (entrée) : découverte d'une source, image et son, perte et reconnexion | — | **à faire** : exige le runtime NDI sur la machine de dev (et la sortie NDI de l'étape 8 pour la boucle locale) |

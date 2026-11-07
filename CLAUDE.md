@@ -69,7 +69,8 @@ Variables wgpu utiles : `WGPU_BACKEND=vulkan|dx12` ; `WGPU_ADAPTER_NAME=Intel` (
 | `app/` | Binaire : assemble fenêtre eframe (sur sa propre boucle winit, pour lister les écrans : `screens.rs`), moteur, UI. |
 | `crates/io-gst` | `vma-io` : pipelines d'entrée (capture, fichiers, images fixes), et de sortie (`GstOutput` + `OutputFeed` : échelle d'encodeurs, MKV / MP4), démarrées / arrêtées sur requête de `vma-control` (`outputs`). |
 | `crates/audio` | Audio temps réel sans GStreamer (ADR 0007) : anneau horodaté par input, DLL (fréquence de la source), lecture au temps de flux rééchantillonnée, `Mixer` (faders, mutes, envois Master / A / B, solo AFL / PFL au casque, audio-follow-video), vumètres. |
-| `crates/{io-ndi,io-html,replay,api}` | Squelettes vides pour les phases suivantes. |
+| `crates/io-ndi` | NDI® (ADR 0008) : plugin `gst-plugin-ndi` enregistré statiquement, détection du runtime (`status()`), jamais embarqué. |
+| `crates/{io-html,replay,api}` | Squelettes vides pour les phases suivantes. |
 | `docs/adr/` | Décisions d'architecture (une par fichier, à faire valider). 0001 archi (acceptée avec amendements), 0002 décisions produit. |
 | `docs/specs/` | Une spec par module, avec critères d'acceptation. |
 | `docs/manual-tests/` | Checklists de tests sur matériel réel. |

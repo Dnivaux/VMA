@@ -423,6 +423,18 @@ impl vma_ui::IoStatus for Io {
         Some(vma_io_gst::default_record_folder())
     }
 
+    fn ndi_unavailable(&self) -> Option<String> {
+        match self.0.as_ref().map(vma_io_gst::IoRuntime::ndi) {
+            None => Some("le thread d'entrées n'a pas démarré".into()),
+            Some(vma_io_gst::NdiStatus::Available) => None,
+            Some(vma_io_gst::NdiStatus::Unavailable { reason }) => Some(reason.clone()),
+        }
+    }
+
+    fn ndi_sources(&self) -> Vec<String> {
+        self.0.iter().flat_map(|io| io.ndi_sources()).collect()
+    }
+
     fn audio_devices(&self) -> (Vec<vma_ui::CaptureChoice>, Vec<vma_ui::CaptureChoice>) {
         let Some(io) = &self.0 else {
             return (Vec::new(), Vec::new());

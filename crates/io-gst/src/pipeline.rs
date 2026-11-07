@@ -148,6 +148,8 @@ pub(crate) enum Media {
     Sync(crate::sync_source::SyncSpec),
     /// An SRT stream (MPEG-TS): `uridecodebin` on `srt://`, live.
     Srt(vma_engine::SrtSource),
+    /// An NDI® source, by its name: `ndisrc ! ndisrcdemux`, live.
+    Ndi(String),
 }
 
 /// A capture device to open in the mode closest to the master format.
@@ -238,6 +240,17 @@ impl Recipe {
         }
     }
 
+    /// An NDI® input: live, lost when silent; a network source, paced like SRT.
+    pub(crate) fn ndi(name: String, ticks: TickGrid) -> Self {
+        Self {
+            media: Media::Ndi(name),
+            sync: false,
+            watchdog: true,
+            patient: false,
+            pace: Some(ticks),
+        }
+    }
+
     fn has_timeline(&self) -> bool {
         matches!(self.media, Media::File(_))
     }
@@ -307,6 +320,7 @@ impl GstInput {
             Media::Launch(source) => launch_pipeline(source)?,
             Media::File(path) => file_pipeline(path, feeds.audio(input))?,
             Media::Srt(source) => srt_pipeline(source, feeds.audio(input))?,
+            Media::Ndi(name) => ndi_pipeline(name, feeds.audio(input))?,
             Media::Capture(capture) => {
                 let (source, chosen) = open_device(capture)?;
                 let parts = capture_pipeline(source, &chosen)?;
@@ -669,6 +683,35 @@ fn srt_pipeline(
         .map_err(|e| pipeline_error(&e))?;
     convert.link(&sink).map_err(|e| pipeline_error(&e))?;
     route_decoded(&decode, &pipeline, &convert, audio, false);
+    Ok((pipeline, convert, sink))
+}
+
+/// An NDI® source through `ndisrc ! ndisrcdemux` (spec `io-gst.md`, « Entrée NDI® »): the
+/// plugin is registered and the runtime loaded by `vma_io_ndi` before any NDI input opens.
+/// A source that is not on the network fails after `connect-timeout`: lost, then the common
+/// policy (1, 2, 5, 10 s) tries again by its name.
+fn ndi_pipeline(name: &str, audio: Option<RingWriter>) -> Result<Parts, IoError> {
+    let pipeline_error = |e: &dyn std::fmt::Display| IoError::Pipeline(e.to_string());
+    let source = gst::ElementFactory::make("ndisrc")
+        .property("ndi-name", name)
+        .property("connect-timeout", 5_000u32)
+        .build()
+        .map_err(|e| pipeline_error(&e))?;
+    let demux = gst::ElementFactory::make("ndisrcdemux")
+        .build()
+        .map_err(|e| pipeline_error(&e))?;
+    let convert = gst::ElementFactory::make("videoconvert")
+        .name("vma_convert")
+        .build()
+        .map_err(|e| pipeline_error(&e))?;
+    let sink = gst_app::AppSink::builder().name("vma_sink").build();
+    let pipeline = gst::Pipeline::new();
+    pipeline
+        .add_many([&source, &demux, &convert, sink.upcast_ref()])
+        .map_err(|e| pipeline_error(&e))?;
+    source.link(&demux).map_err(|e| pipeline_error(&e))?;
+    convert.link(&sink).map_err(|e| pipeline_error(&e))?;
+    route_decoded(&demux, &pipeline, &convert, audio, false);
     Ok((pipeline, convert, sink))
 }
 

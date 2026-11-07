@@ -49,6 +49,9 @@ struct Rig {
     audio_sources: Vec<CaptureChoice>,
     audio_sinks: Vec<CaptureChoice>,
     headphones: Option<HeadphonesActivity>,
+    /// NDI®: why it is unavailable, and the sources seen.
+    ndi_unavailable: Option<String>,
+    ndi_sources: Vec<String>,
 }
 
 impl Rig {
@@ -119,6 +122,8 @@ fn harness(state: State) -> Harness<'static, Rig> {
             playing: true,
             ..HeadphonesActivity::default()
         }),
+        ndi_unavailable: None,
+        ndi_sources: vec!["STUDIO (Caméra 1)".into(), "STUDIO (Titres)".into()],
     };
     let mut harness = Harness::builder()
         // A 1080p screen: the inputs and the mixer side by side.
@@ -152,6 +157,8 @@ fn harness(state: State) -> Harness<'static, Rig> {
                         audio_sources: &rig.audio_sources,
                         audio_sinks: &rig.audio_sinks,
                         headphones: rig.headphones.as_ref(),
+                        ndi_unavailable: rig.ndi_unavailable.as_deref(),
+                        ndi_sources: &rig.ndi_sources,
                     },
                     screens: &rig.screens,
                     frame: 0,
@@ -1288,4 +1295,77 @@ fn an_srt_input_is_added_with_its_passphrase_hidden() {
         }]
     );
     assert!(h.query_by_label("Nouvel input SRT").is_none(), "closed");
+}
+
+/// C10 (UI) and step 7: a source seen on the network is chosen and added by its NDI® name;
+/// a name typed in is added as typed (trimmed); nothing is sent before « Ajouter ».
+#[test]
+fn an_ndi_input_is_added_from_the_sources_seen() {
+    let mut h = harness(state());
+    h.get_by_label("+ Ajouter").click();
+    h.run();
+    h.get_by_label("NDI®…").click();
+    h.run();
+    h.get_by_label("STUDIO (Titres)").click();
+    h.run();
+    assert!(h.state().sent().is_empty(), "nothing before « Ajouter »");
+    h.get_by_label("Ajouter").click();
+    h.run();
+    assert_eq!(
+        h.state().sent(),
+        [Command::AddInput {
+            spec: InputSpec::Ndi {
+                name: "STUDIO (Titres)".into()
+            },
+            name: None,
+        }]
+    );
+    assert!(h.query_by_label("Nouvel input NDI®").is_none(), "closed");
+
+    h.get_by_label("+ Ajouter").click();
+    h.run();
+    h.get_by_label("NDI®…").click();
+    h.run();
+    h.get_by_label("Nom").click();
+    h.run();
+    h.get_by_label("Nom").type_text(" RÉGIE (Program) ");
+    h.run();
+    h.get_by_label("Ajouter").click();
+    h.run();
+    assert_eq!(
+        h.state().sent(),
+        [Command::AddInput {
+            spec: InputSpec::Ndi {
+                name: "RÉGIE (Program)".into()
+            },
+            name: None,
+        }]
+    );
+}
+
+/// C10 (UI): without the NDI® runtime, « NDI®… » is greyed and opens nothing; the rest of
+/// the menu works. « À propos » carries the trademark notice.
+#[test]
+fn without_the_ndi_runtime_ndi_is_greyed() {
+    let mut h = harness(state());
+    h.state_mut().ndi_unavailable = Some("NDI® runtime not found".into());
+    h.run();
+    h.get_by_label("+ Ajouter").click();
+    h.run();
+    h.get_by_label("NDI®…").click();
+    h.run();
+    assert!(h.query_by_label("Nouvel input NDI®").is_none(), "disabled");
+    assert!(h.state().sent().is_empty());
+    if h.query_by_label("Mire").is_none() {
+        h.get_by_label("+ Ajouter").click();
+        h.run();
+    }
+    h.get_by_label("Mire").click();
+    h.run();
+    assert_eq!(h.state().sent().len(), 1, "the rest of the menu works");
+
+    h.get_by_label("À propos").click();
+    h.run();
+    h.get_by_label("NDI® is a registered trademark of Vizrt NDI AB.");
+    h.get_by_label_contains("MPL-2.0");
 }
