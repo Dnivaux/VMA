@@ -21,6 +21,20 @@ pub enum PixelFormat {
     Bgra,
 }
 
+/// What the alpha of a picture means (ADR 0010). The compositor keeps every layer
+/// premultiplied; this tells it how to get there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AlphaMode {
+    /// No alpha: the picture covers what is below it (α = 1, whatever the format carries).
+    #[default]
+    Opaque,
+    /// Colour values independent of α (PNG, ProRes 4444, WebM alpha).
+    Straight,
+    /// Colour values already multiplied by α.
+    Premultiplied,
+}
+
 /// Size of one plane, in texels of `bytes_per_texel` bytes, tightly packed.
 ///
 /// A texel is what one texture sample reads: one pixel, except for packed 4:2:2 where a
@@ -145,6 +159,15 @@ mod tests {
         assert_eq!(
             (packed.width, packed.height, packed.row_bytes()),
             (3, 3, 12)
+        );
+    }
+
+    #[test]
+    fn alpha_mode_defaults_to_opaque() {
+        assert_eq!(AlphaMode::default(), AlphaMode::Opaque);
+        assert_eq!(
+            serde_json::to_string(&AlphaMode::Premultiplied).unwrap(),
+            r#""premultiplied""#
         );
     }
 

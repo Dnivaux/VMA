@@ -21,6 +21,8 @@ pub enum InputKind {
     Srt,
     /// Microphone or line input: sound only.
     AudioDevice,
+    /// Web page rendered off screen, with alpha (ADR 0009).
+    Html,
 }
 
 impl InputKind {
@@ -41,7 +43,7 @@ impl InputKind {
 mod tests {
     use super::*;
 
-    const ALL: [InputKind; 8] = [
+    const ALL: [InputKind; 9] = [
         InputKind::Capture,
         InputKind::File,
         InputKind::Image,
@@ -50,6 +52,7 @@ mod tests {
         InputKind::Ndi,
         InputKind::Srt,
         InputKind::AudioDevice,
+        InputKind::Html,
     ];
 
     #[test]
@@ -75,6 +78,10 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&InputKind::AudioDevice).unwrap(),
             r#""audio_device""#
+        );
+        assert_eq!(
+            serde_json::to_string(&InputKind::Html).unwrap(),
+            r#""html""#
         );
     }
 }
