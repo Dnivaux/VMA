@@ -1,6 +1,6 @@
 # ADR 0010 — Alpha, overlays et stinger
 
-- **Statut** : **proposé** (à valider avec la spec de la Phase 4)
+- **Statut** : **accepté** le 2026-11-09 par le mainteneur (avec la spec de la Phase 4)
 - **Date** : 2026-11-09
 - **Contexte** : BRIEF §4 (Phase 4 : 4 overlay channels, stinger, golden-frame sur l'alpha),
   §5 (rendu cadencé par le maître, dernière image de chaque input) ; ADR 0001 (calques

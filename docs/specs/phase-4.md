@@ -1,10 +1,11 @@
 # Phase 4 — Habillage : spec d'ensemble et plan
 
-- **Statut** : **à valider** par le mainteneur (questions Q1–Q10 du § 7)
+- **Statut** : **validé** le 2026-11-09 par le mainteneur (« je valide tes recommandations ») :
+  les recommandations des questions Q1–Q10 du § 7 sont retenues
 - **Date** : 2026-11-09
 - **Références** : BRIEF §2, §4 (Phase 4), §5, §6, §8 ; ADR 0002 (titres HTML **et** natifs),
   ADR 0004 (entrées), ADR 0005 (couleur), ADR 0007 (audio) ;
-  **ADR 0009 (input HTML) et ADR 0010 (alpha, overlays, stinger), à valider**
+  **ADR 0009 (input HTML) et ADR 0010 (alpha, overlays, stinger), acceptés**
 - **Entrée en phase** : Phase 3 close le 2026-11-09 sous Linux (C14 : 4ᵉ soak d'1 h réussi) ;
   soaks Windows et checklists manuelles reportés (voir `ROADMAP.md`)
 
@@ -135,12 +136,12 @@ SetStinger { slot: StingerSlot, file: Option<PathBuf>, cut_point_ms: u32 },
 | Ordre des couches | Program ▸ stinger ▸ overlays 1–4 ▸ FTB (Q7) |
 | Sauvegarde | aucune (projet en Phase 5) |
 
-## 7. Questions au mainteneur
+## 7. Questions au mainteneur (tranchées le 2026-11-09 : recommandations retenues)
 | # | Question | Recommandation |
 |---|---|---|
 | Q1 | Input HTML par **CEF** (crate `cef`, Apache-2.0 OR MIT, CEF sous BSD-3-Clause) **dans un processus auxiliaire `vma-html`** plutôt que lié au binaire (ADR 0009) ? | **Oui** : le binaire démarre sans CEF, un plantage de Chromium ne fait pas tomber le Program |
 | Q2 | Cadence de la page **pilotée par le tick du maître** (`SendExternalBeginFrame`) plutôt que par la minuterie propre de CEF ? | **Oui** : seule façon d'avoir exactement une image de la page par tick (D5) ; vérifié à l'étape 4 |
-| Q3 | Données : événement DOM `vma-data` (JSON), script JS libre, rechargement, URL. **Comment tes overlays existants (app Electron / React) reçoivent-ils leurs données aujourd'hui** (WebSocket vers ton app, paramètres d'URL, autre) ? Peux-tu fournir une page d'exemple pour les tests ? | Le format ci-dessus ; une page réelle pour D4 à D6 |
+| Q3 | Données : événement DOM `vma-data` (JSON), script JS libre, rechargement, URL. **Comment tes overlays existants (app Electron / React) reçoivent-ils leurs données aujourd'hui** (WebSocket vers ton app, paramètres d'URL, autre) ? Peux-tu fournir une page d'exemple pour les tests ? | Le format ci-dessus ; une page réelle pour D4 à D6 (**en attente** : comment les overlays existants reçoivent leurs données, et une page d'exemple, à fournir avant l'étape 7) |
 | Q4 | Composition de l'alpha **sur les valeurs encodées (gamma), prémultiplié**, sans option linéaire en Phase 4 (ADR 0010) ? | **Oui** : comportement d'un keyer, conforme à ce que les pages web produisent |
 | Q5 | Overlays **sur le Program seulement** (sorties, vue Program, plein écran), pas sur la Preview, FTB par-dessus ? | **Oui**, à confirmer sur la référence (checklist) |
 | Q6 | Transitions d'overlay : **Cut et Fade** seulement en Phase 4 (glissé, zoom plus tard) ? | **Oui** |

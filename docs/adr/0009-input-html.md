@@ -1,6 +1,6 @@
 # ADR 0009 — Input HTML : CEF hors écran dans un processus auxiliaire
 
-- **Statut** : **proposé** (à valider avec la spec de la Phase 4)
+- **Statut** : **accepté** le 2026-11-09 par le mainteneur (avec la spec de la Phase 4)
 - **Date** : 2026-11-09
 - **Contexte** : BRIEF §2.4 (une entrée qui tombe ne fait jamais tomber le programme), §2.6
   (licences), §4 (Phase 4 : page web hors écran avec alpha, 50 fps, données sans rechargement),
