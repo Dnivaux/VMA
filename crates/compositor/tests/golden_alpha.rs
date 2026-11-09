@@ -2,8 +2,9 @@
 //! ADR 0010): RGBA frames with straight or premultiplied alpha, keyed over a known Program as
 //! the stinger or an overlay channel, with their opacity, in their order.
 //!
-//! Expected values are analytic: `key + (1 − α) · program` on the encoded values, compared to
-//! the nearest code (the `Rgba16Float` chain loses less than 0.1 code). Needs a GPU adapter
+//! Expected values are analytic: `key + (1 − α) · program` on the encoded values, within one
+//! code. The `Rgba16Float` chain alone loses less than 0.1 code; the blend unit's precision is
+//! the GPU's (WARP, CI Windows: 0.62 code off for 191 at α 128 over 128). Needs a GPU adapter
 //! (software is enough); fails without one.
 
 // Test code: panicking on failure is the intended behaviour.
@@ -24,8 +25,8 @@ use vma_core::{AlphaMode, ColorInfo, PixelFormat, Resolution, Rgb8};
 const W: u32 = 320;
 const H: u32 = 180;
 
-/// Within this of the exact value: the nearest code, or either code at a tie.
-const EXACT: f64 = 0.6;
+/// Within this of the exact value: one of the two nearest codes (blend unit precision).
+const EXACT: f64 = 1.0;
 /// Through the scale pass (display light and back): one code.
 const SCALED: f64 = 1.0;
 

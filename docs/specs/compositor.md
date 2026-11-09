@@ -188,7 +188,7 @@ Restent pour B10 et B11 : la colorimétrie signalée dans les caps et le contene
 ### Critères d'acceptation (Phase 4, côté `compositor`)
 | Critère | Test | Où |
 |---|---|---|
-| **D2** Alpha droit, α = 0, ¼, ½, ¾, 1, 4 couleurs × 3 fonds, sur chaque channel et le stinger : code le plus proche | `golden_alpha::straight_alpha_is_keyed_over_the_program` | CI |
+| **D2** Alpha droit, α = 0, ¼, ½, ¾, 1, 4 couleurs × 3 fonds, sur chaque channel et le stinger : à un code près (précision de l’unité de mélange : 0,62 code sous WARP) | `golden_alpha::straight_alpha_is_keyed_over_the_program` | CI |
 | **D2** Alpha prémultiplié pris tel quel | `golden_alpha::premultiplied_alpha_is_taken_as_is` | CI |
 | **D2** Source opaque : octet alpha ignoré, golden des Phases 1–3 inchangés | `golden_alpha::opaque_frames_ignore_their_alpha_byte` ; `golden_frame`, `golden_mix`, `golden_output` | CI |
 | **D2** Opacité d'un overlay (Fade à 25 / 50 / 75 %), bornes, NaN | `golden_alpha::the_opacity_of_a_channel_scales_its_key` | CI |
