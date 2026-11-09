@@ -97,4 +97,6 @@ Variables wgpu utiles : `WGPU_BACKEND=vulkan|dx12` ; `WGPU_ADAPTER_NAME=Intel` (
 - Toute décision structurante (dépendance lourde, archi, format de fichier) → ADR à valider.
 - Une ambiguïté de comportement → poser la question au mainteneur plutôt que deviner.
 - Pas de fonctionnalité hors de la phase courante, pas de refactor massif non demandé.
+- Soaks d'acceptation : **20 min** par phase ; le soak d'**1 h** (budget BRIEF §8) seulement avant
+  une version, ou quand une phase touche l'horloge, l'audio ou les sorties (décision du 2026-11-09).
 - Parallélisation : une fois les types de `core` figés, un agent par crate dans des git worktrees.

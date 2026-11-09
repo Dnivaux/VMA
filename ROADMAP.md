@@ -202,6 +202,11 @@ attente du mainteneur avant l'étape 7 : comment ses overlays existants reçoive
 et une page d'exemple (Q3). Checklist pour le partenaire :
 [`docs/manual-tests/observation-reference-phase4.md`](docs/manual-tests/observation-reference-phase4.md).
 
+**Durée des soaks (décision du mainteneur, 2026-11-09)** : 20 min pour le soak d'acceptation
+d'une phase ; le soak d'1 h du budget BRIEF §8 seulement avant une version, ou quand une phase
+touche l'horloge, l'audio ou les sorties ([`phase-4.md`](docs/specs/phase-4.md), § 3). Risque
+accepté : un défaut rare peut n'apparaître qu'au soak d'1 h.
+
 | Étape | État | Preuve |
 |---|---|---|
 | 1. `core` (`InputKind::Html`, `OverlayChannel`, `AlphaMode`) ; `compositor` : alpha, overlays, stinger ; D2, D1 (compositeur) | ✅ | `core` : `AlphaMode` (`Opaque` / `Straight` / `Premultiplied`), `OverlayChannel` (1–4, vérifié à la désérialisation), `InputKind::Html`. `compositor` ([`compositor.md`](docs/specs/compositor.md), « Phase 4 ») : alpha prémultiplié dans la conversion et la mise à l'échelle (pas de franges), letterbox transparent des couches incrustées, `Mixer::with_keys` + `Keys` (stinger puis overlays 1–4, unité de mélange, opacité par couche), Preview sans couches. 10 golden `golden_alpha` (**D2** ; **D1** côté compositeur : ordre, Fade du Program dessous, Preview) à un code près ; golden des Phases 1–3 inchangés ; 44 tests du compositeur verts sur RTX 5090 et Intel ARL. Premier run CI (42682336129) : WARP mélange à 0,62 code de la valeur exacte (tolérance 0,6) → tolérance d'un code, précision de l'unité de mélange ; Ubuntu tombé sur un téléchargement (`curl` 92). CI verte Ubuntu + Windows, sans reprise ([run 42683502580](https://github.com/Dnivaux/VMA/actions/runs/42683502580)) |
@@ -213,7 +218,7 @@ et une page d'exemple (Q3). Checklist pour le partenaire :
 | 7. Données vers la page ; D6 | ⬜ | — |
 | 8. Stinger ; D8 | ⬜ | — |
 | 9. Audio HTML, « À propos » ; D12 | ⬜ | — |
-| 10. Soak d'acceptation D11 (1 h), arrêt pour revue | ⬜ | — |
+| 10. Soak d'acceptation D11 (20 min), arrêt pour revue | ⬜ | — |
 
 ## Chantier demandé — Interface familière à l'opératrice de la référence · ⬜ *(à placer)*
 Demande du mainteneur (2026-11-09) : l'interface doit **ressembler** à celle de la référence pour

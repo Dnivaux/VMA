@@ -81,9 +81,15 @@ d'overlay autres que Cut et Fade (glissé, zoom : Q6), incrustation chroma, sort
 | D8 | **Stinger** : image *k* du fichier au tick *t₀ + k* (aucune sautée ni répétée sur un disque local), bascule A → B **au tick de l'image de bascule**, Program = B à la fin ; audio du stinger au Master (Q7) ; golden aux images de bascule ; stinger pas encore préchargé → transition refusée avec raison | `io-gst` + `compositor` + `engine` | CI |
 | D9 | **Commandes, journal, UI** : overlays, HTML, stinger passent par `Command`, journalisés ; rejeu → même état ; boutons 1–4 par input, réglages des channels, ajout d'un input HTML, envoi de données, réglages du stinger (A11 : chaque contrôle émet la bonne `Command`) | `engine` + `ui` (sans fenêtre) | CI |
 | D10 | **Temps réel** : rendu sans allocation ni verrou bloquant avec 4 overlays et un stinger ; page HTML lente ou figée → images répétées comptées, **0 tick manqué** ; coût des 4 overlays mesuré dans le rapport de soak | `engine` | CI + soak |
-| D11 | **Soak d'acceptation** (budget BRIEF §8) : 1 h, 6 inputs 1080p50 + **4 overlays** (dont 2 HTML animés et 1 qui reçoit des données toutes les secondes), stingers et transitions automatiques, 1 stream + 1 enregistrement : 0 image manquée, 0 perdue par sortie, input HTML sans saccade (D5 sur 1 h), synchro < 1 image (C14 inchangé) | soak + rapport | manuel (Linux) |
+| D11 | **Soak d'acceptation** : **20 min** (décision du 2026-11-09, ci-dessous), 6 inputs 1080p50 + **4 overlays** (dont 2 HTML animés et 1 qui reçoit des données toutes les secondes), stingers et transitions automatiques, 1 stream + 1 enregistrement : 0 image manquée, 0 perdue par sortie, input HTML sans saccade (D5 sur toute la durée), synchro < 1 image (C14 inchangé) | soak + rapport | manuel (Linux) |
 | D12 | **Licences** : CEF et Chromium dans « À propos » (avis de Chromium joints au paquet) ; `cargo deny` vert avec `vma-html` | `ui` + CI | CI |
 | D13 | CI verte Ubuntu + Windows, job CEF compris | workflow | CI |
+
+**Durée des soaks** (décision du mainteneur, 2026-11-09 : les soaks d'1 h bloquaient trop la
+machine de dev) : le soak d'acceptation d'une phase dure **20 min**. Le soak d'**1 h** du budget
+BRIEF §8 (6 inputs, 4 overlays, 1 stream + 1 enregistrement) n'est fait qu'**avant une version**,
+ou quand une phase touche l'horloge, l'audio ou les sorties. Risque accepté : un défaut rare
+(une paire à 20,10 ms en 1 h au 3ᵉ soak C14) peut n'apparaître qu'au soak d'1 h.
 
 ## 4. Changements dans `core` (à signaler, BRIEF §10)
 Ajouts uniquement :
@@ -196,7 +202,7 @@ SetStinger { slot: StingerSlot, file: Option<PathBuf>, cut_point_ms: u32 },
 8. Stinger : préchargement, images dans l'ordre, bascule à l'image près, audio ; UI des
    réglages ; **D8**, D9 (stinger).
 9. Audio de l'input HTML (Q9) ; « À propos » : licences CEF / Chromium ; **D12**.
-10. Soak d'acceptation **D11** (1 h), rapport, `ROADMAP.md`, arrêt pour revue.
+10. Soak d'acceptation **D11** (20 min), rapport, `ROADMAP.md`, arrêt pour revue.
 
 Parallélisation possible après l'étape 1 (types de `core` figés) : `io-gst` (2, 8),
 `io-html` (4) et `engine` / `ui` (3) en worktrees séparés.
