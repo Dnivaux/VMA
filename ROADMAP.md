@@ -190,14 +190,30 @@ le binaire, runtime externe). Checklist pour le partenaire :
 
 NDI® est une marque déposée de Vizrt NDI AB.
 
-## Phase 4 — Habillage · *spec en relecture (2026-11-09)*
+## Phase 4 — Habillage · *en cours (spec validée le 2026-11-09)*
 4 overlay channels avec transitions d'entrée / sortie, chaîne alpha de bout en bout, input HTML
 (CEF, hors écran, alpha, données sans rechargement), transition Stinger.
 
-**À valider** : [`docs/specs/phase-4.md`](docs/specs/phase-4.md) (critères D1–D13, questions
-Q1–Q10, plan en 10 étapes), ADR 0009 (input HTML : CEF dans un processus auxiliaire), ADR 0010
-(alpha, overlays, stinger). Checklist pour le partenaire :
+**Validés le 2026-11-09** (recommandations Q1–Q10 retenues) :
+[`docs/specs/phase-4.md`](docs/specs/phase-4.md) (critères D1–D13, plan en 10 étapes), ADR 0009
+(input HTML : CEF dans un processus auxiliaire `vma-html`), ADR 0010 (alpha prémultiplié,
+overlays, stinger). Moteur de titres natif reporté après la revue de la Phase 4 (Q8). En
+attente du mainteneur avant l'étape 7 : comment ses overlays existants reçoivent leurs données,
+et une page d'exemple (Q3). Checklist pour le partenaire :
 [`docs/manual-tests/observation-reference-phase4.md`](docs/manual-tests/observation-reference-phase4.md).
+
+| Étape | État | Preuve |
+|---|---|---|
+| 1. `core` (`InputKind::Html`, `OverlayChannel`, `AlphaMode`) ; `compositor` : alpha, overlays, stinger ; D2, D1 (compositeur) | 🟡 (CI à vérifier) | `core` : `AlphaMode` (`Opaque` / `Straight` / `Premultiplied`), `OverlayChannel` (1–4, vérifié à la désérialisation), `InputKind::Html`. `compositor` ([`compositor.md`](docs/specs/compositor.md), « Phase 4 ») : alpha prémultiplié dans la conversion et la mise à l'échelle (pas de franges), letterbox transparent des couches incrustées, `Mixer::with_keys` + `Keys` (stinger puis overlays 1–4, unité de mélange, opacité par couche), Preview sans couches. 10 golden `golden_alpha` (**D2** ; **D1** côté compositeur : ordre, Fade du Program dessous, Preview) au code près ; golden des Phases 1–3 inchangés ; 44 tests du compositeur verts sur RTX 5090 et Intel ARL, 399 tests du workspace verts |
+| 2. `io-gst` : sources avec alpha (PNG, vidéo, NDI®) ; D3 | ⬜ | — |
+| 3. `engine` + `ui` : overlay channels ; D1, D9, D10 | ⬜ | — |
+| 4. Essai CEF (`vma-html`, CI 2 OS), point d'arrêt | ⬜ | — |
+| 5. Input HTML (IPC, mémoire partagée, pannes) ; D4, D7 | ⬜ | — |
+| 6. Cadence pilotée par le tick ; D5 | ⬜ | — |
+| 7. Données vers la page ; D6 | ⬜ | — |
+| 8. Stinger ; D8 | ⬜ | — |
+| 9. Audio HTML, « À propos » ; D12 | ⬜ | — |
+| 10. Soak d'acceptation D11 (1 h), arrêt pour revue | ⬜ | — |
 
 ## Phase 5 — Contrôle et monitoring · ⬜
 ## Phase 6 — Sport · ⬜

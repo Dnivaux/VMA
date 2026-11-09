@@ -16,10 +16,17 @@
 //!
 //! Drawing into a target of the frame's size converts straight to R'G'B' (no round trip
 //! through linear light). Any other size converts to display light at the native size, then
-//! samples it bilinearly into the [`fit_rect`] of the target and re-encodes; the caller
-//! leaves the letterbox black.
+//! samples it bilinearly into the [`fit_rect`] of the target and re-encodes; the letterbox is
+//! the caller's colour (black in the Program, transparent in an overlay).
+//!
+//! # Alpha (ADR 0010)
+//! Every pass writes **premultiplied** values: R'G'B' × α for a layer, display light × α for
+//! the scale pass (filtering premultiplied values leaves no fringe). The frame's
+//! [`AlphaMode`] says how to read its alpha: ignored ([`AlphaMode::Opaque`], α = 1, the
+//! pictures of Phases 1–3 are unchanged), straight, or already premultiplied. Only RGBA /
+//! BGRA carry alpha; a Y'CbCr frame is always opaque.
 
-use vma_core::{ColorInfo, PixelFormat, PlaneSize, Resolution};
+use vma_core::{AlphaMode, ColorInfo, PixelFormat, PlaneSize, Resolution};
 
 use crate::{INTERNAL_FORMAT, PROGRAM_FORMAT, RenderTarget};
 
@@ -76,7 +83,19 @@ pub enum FrameError {
 struct FrameUniforms {
     matrix: [[f32; 4]; 3],
     layout: u32,
-    _pad: [u32; 3],
+    alpha: u32,
+    _pad: [u32; 2],
+}
+
+impl FrameUniforms {
+    fn new(format: PixelFormat, color: ColorInfo, alpha: AlphaMode) -> Self {
+        Self {
+            matrix: color.ycbcr_to_rgb(),
+            layout: layout_code(format),
+            alpha: alpha_code(format, alpha),
+            _pad: [0; 2],
+        }
+    }
 }
 
 /// Pipelines and layouts shared by every [`InputFrame`] and every pass drawing one
@@ -92,7 +111,7 @@ pub struct FramePipelines {
     linearize: wgpu::RenderPipeline,
     /// Display light → R'G'B', into an [`INTERNAL_FORMAT`] layer.
     scale_internal: wgpu::RenderPipeline,
-    /// Display light → R'G'B', into a [`PROGRAM_FORMAT`] thumbnail atlas.
+    /// Display light → R'G'B' over black, into an opaque [`PROGRAM_FORMAT`] thumbnail atlas.
     scale_program: wgpu::RenderPipeline,
 }
 
@@ -177,14 +196,14 @@ impl FramePipelines {
                 &scale,
                 &scale_layout,
                 INTERNAL_FORMAT,
-                &[],
+                &[("OVER_BLACK", 0.0)],
             ),
             scale_program: pipeline(
                 "frame.scale.program",
                 &scale,
                 &scale_layout,
                 PROGRAM_FORMAT,
-                &[],
+                &[("OVER_BLACK", 1.0)],
             ),
             convert_layout,
             scale_layout,
@@ -247,6 +266,16 @@ fn layout_code(format: PixelFormat) -> u32 {
     }
 }
 
+/// Shader code of how a frame's alpha is read (`frame.wgsl`): 0 ignored, 1 straight,
+/// 2 premultiplied. Formats without an alpha channel are opaque whatever the mode.
+fn alpha_code(format: PixelFormat, alpha: AlphaMode) -> u32 {
+    match (format, alpha) {
+        (PixelFormat::Rgba | PixelFormat::Bgra, AlphaMode::Straight) => 1,
+        (PixelFormat::Rgba | PixelFormat::Bgra, AlphaMode::Premultiplied) => 2,
+        _ => 0,
+    }
+}
+
 fn plane_format(format: PixelFormat, bytes_per_texel: u32) -> wgpu::TextureFormat {
     match (format, bytes_per_texel) {
         (_, 1) => wgpu::TextureFormat::R8Unorm,
@@ -271,6 +300,7 @@ struct FramePlane {
 pub struct InputFrame {
     format: PixelFormat,
     resolution: Resolution,
+    alpha: AlphaMode,
     planes: Vec<FramePlane>,
     /// `MAP_WRITE | COPY_SRC`, mapped while the CPU owns it (module documentation).
     staging: wgpu::Buffer,
@@ -284,8 +314,8 @@ pub struct InputFrame {
 
 impl InputFrame {
     /// Creates the textures and the (mapped) transfer buffer of a `format` frame of
-    /// `resolution`. RGB formats ignore `color` (always full-range R'G'B'). Content is
-    /// undefined until the first upload.
+    /// `resolution`. RGB formats ignore `color` (always full-range R'G'B'); Y'CbCr formats
+    /// ignore `alpha` (always opaque). Content is undefined until the first upload.
     pub fn new(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
@@ -293,6 +323,7 @@ impl InputFrame {
         format: PixelFormat,
         resolution: Resolution,
         color: ColorInfo,
+        alpha: AlphaMode,
     ) -> Self {
         let (w, h) = (resolution.width(), resolution.height());
         let mut offset = 0;
@@ -351,11 +382,7 @@ impl InputFrame {
         queue.write_buffer(
             &uniforms,
             0,
-            bytemuck::bytes_of(&FrameUniforms {
-                matrix: color.ycbcr_to_rgb(),
-                layout: layout_code(format),
-                _pad: [0; 3],
-            }),
+            bytemuck::bytes_of(&FrameUniforms::new(format, color, alpha)),
         );
         // Bindings past the last plane repeat the first one (never read by the shader). Every
         // format has a plane; the 1 × 1 fallback only keeps this panic-free.
@@ -415,6 +442,7 @@ impl InputFrame {
         Self {
             format,
             resolution,
+            alpha,
             planes,
             staging,
             uniforms,
@@ -433,17 +461,17 @@ impl InputFrame {
         self.resolution
     }
 
+    pub fn alpha(&self) -> AlphaMode {
+        self.alpha
+    }
+
     /// Changes the colorimetry used for Y'CbCr formats (takes effect with the next
     /// submission).
     pub fn set_color(&self, queue: &wgpu::Queue, color: ColorInfo) {
         queue.write_buffer(
             &self.uniforms,
             0,
-            bytemuck::bytes_of(&FrameUniforms {
-                matrix: color.ycbcr_to_rgb(),
-                layout: layout_code(self.format),
-                _pad: [0; 3],
-            }),
+            bytemuck::bytes_of(&FrameUniforms::new(self.format, color, self.alpha)),
         );
     }
 
@@ -550,28 +578,36 @@ impl InputFrame {
 
     /// Records the passes drawing this frame into `target` (an [`INTERNAL_FORMAT`] layer of
     /// size `size`): straight conversion at the same size, otherwise conversion to display
-    /// light, then scaling into the fitted rectangle over a black letterbox.
+    /// light, then scaling into the fitted rectangle over a `letterbox` of that colour.
     pub(crate) fn encode_layer(
         &self,
         encoder: &mut wgpu::CommandEncoder,
         target: &wgpu::TextureView,
         size: Resolution,
+        letterbox: wgpu::Color,
     ) {
         if size == self.resolution {
-            let mut pass = begin_pass(encoder, "frame.direct.pass", target, true);
+            // Every pixel is overwritten.
+            let mut pass = begin_pass(encoder, "frame.direct.pass", target, letterbox);
             pass.set_pipeline(&self.pipelines.direct);
             pass.set_bind_group(0, &self.convert_bind_group, &[]);
             pass.draw(0..3, 0..1);
             return;
         }
         self.encode_linear(encoder);
-        let mut pass = begin_pass(encoder, "frame.scale.pass", target, true);
+        let mut pass = begin_pass(encoder, "frame.scale.pass", target, letterbox);
         self.draw_scaled(&mut pass, &self.pipelines.scale_internal, (0, 0), size);
     }
 
     /// Records the conversion to display light at native size (before [`Self::draw_scaled`]).
     pub(crate) fn encode_linear(&self, encoder: &mut wgpu::CommandEncoder) {
-        let mut pass = begin_pass(encoder, "frame.linearize.pass", self.linear.view(), false);
+        // Every pixel is overwritten.
+        let mut pass = begin_pass(
+            encoder,
+            "frame.linearize.pass",
+            self.linear.view(),
+            wgpu::Color::TRANSPARENT,
+        );
         pass.set_pipeline(&self.pipelines.linearize);
         pass.set_bind_group(0, &self.convert_bind_group, &[]);
         pass.draw(0..3, 0..1);
@@ -615,7 +651,7 @@ fn begin_pass<'e>(
     encoder: &'e mut wgpu::CommandEncoder,
     label: &str,
     target: &wgpu::TextureView,
-    clear_black: bool,
+    clear: wgpu::Color,
 ) -> wgpu::RenderPass<'e> {
     encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
         label: Some(label),
@@ -624,12 +660,7 @@ fn begin_pass<'e>(
             depth_slice: None,
             resolve_target: None,
             ops: wgpu::Operations {
-                load: if clear_black {
-                    wgpu::LoadOp::Clear(wgpu::Color::BLACK)
-                } else {
-                    // Every pixel is overwritten.
-                    wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT)
-                },
+                load: wgpu::LoadOp::Clear(clear),
                 store: wgpu::StoreOp::Store,
             },
         })],

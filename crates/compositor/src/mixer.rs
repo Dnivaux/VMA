@@ -2,10 +2,14 @@
 //! (solid colour, test pattern, [`InputFrame`]) into `Rgba16Float` layers, mixes them into the `Rgba16Float` Program target, then converts
 //! it to [`PROGRAM_FORMAT`] for the UI.
 //!
+//! A mixer made by [`Mixer::with_keys`] also keys layers over the mix (ADR 0010), bottom to
+//! top: the stinger, then overlay channels 1 to 4 ([`Keys`]). Each is a premultiplied layer
+//! drawn over the Program target with its opacity, on the encoded values.
+//!
 //! Every GPU object is created in [`Mixer::new`]; [`Mixer::encode`] only records commands and
 //! writes one small uniform: safe to call from the render thread.
 
-use vma_core::{Resolution, Rgb8};
+use vma_core::{OverlayChannel, Resolution, Rgb8};
 
 use crate::{InputFrame, PROGRAM_FORMAT, RenderTarget, TestPattern};
 
@@ -57,6 +61,131 @@ impl<'a> Mix<'a> {
     }
 }
 
+/// A layer keyed over the Program mix: `source` (its alpha, letterbox transparent) scaled by
+/// `opacity` (0–1, the transition of its channel).
+#[derive(Debug, Clone, Copy)]
+pub struct Key<'a> {
+    pub source: Source<'a>,
+    pub opacity: f32,
+}
+
+/// What is keyed over the Program mix, bottom to top: the stinger, then the overlay channels
+/// in the order of [`OverlayChannel::ALL`].
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Keys<'a> {
+    pub stinger: Option<Key<'a>>,
+    pub overlays: [Option<Key<'a>>; OverlayChannel::COUNT],
+}
+
+/// Number of key layers: the stinger, then the overlay channels.
+const KEY_LAYERS: usize = 1 + OverlayChannel::COUNT;
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct KeyUniforms {
+    opacity: f32,
+    _pad: [u32; 3],
+}
+
+/// One layer keyed over the mix, with its own uniforms (one submission draws them all).
+#[derive(Debug)]
+struct KeyLayer {
+    target: RenderTarget,
+    uniforms: wgpu::Buffer,
+    bind_group: wgpu::BindGroup,
+}
+
+impl KeyLayer {
+    fn new(
+        device: &wgpu::Device,
+        layout: &wgpu::BindGroupLayout,
+        resolution: Resolution,
+        i: usize,
+    ) -> Self {
+        let target =
+            RenderTarget::with_format(device, resolution, INTERNAL_FORMAT, &format!("key[{i}]"));
+        let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some(&format!("key[{i}].uniforms")),
+            size: std::mem::size_of::<KeyUniforms>() as wgpu::BufferAddress,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some(&format!("key[{i}].bg")),
+            layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: uniforms.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(target.view()),
+                },
+            ],
+        });
+        Self {
+            target,
+            uniforms,
+            bind_group,
+        }
+    }
+}
+
+/// The stinger's layer, then the overlay channels', and the pipeline drawing them.
+#[derive(Debug)]
+struct KeyLayers {
+    layers: [KeyLayer; KEY_LAYERS],
+    pipeline: wgpu::RenderPipeline,
+}
+
+impl KeyLayers {
+    fn new(device: &wgpu::Device, resolution: Resolution) -> Self {
+        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("key.bgl"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+            ],
+        });
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("key"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/key.wgsl").into()),
+        });
+        let pipeline = pipeline_in(
+            device,
+            "key",
+            &shader,
+            "fs_main",
+            &layout,
+            INTERNAL_FORMAT,
+            Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+        );
+        Self {
+            layers: std::array::from_fn(|i| KeyLayer::new(device, &layout, resolution, i)),
+            pipeline,
+        }
+    }
+}
+
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct MixUniforms {
@@ -76,10 +205,21 @@ pub struct Mixer {
     mix_bind_group: wgpu::BindGroup,
     output_pipeline: wgpu::RenderPipeline,
     output_bind_group: wgpu::BindGroup,
+    keys: Option<KeyLayers>,
 }
 
 impl Mixer {
+    /// A mixer without key layers (Preview): [`Keys`] passed to it are ignored.
     pub fn new(device: &wgpu::Device, resolution: Resolution) -> Self {
+        Self::build(device, resolution, false)
+    }
+
+    /// A mixer that also keys the stinger and the overlay channels over the mix (Program).
+    pub fn with_keys(device: &wgpu::Device, resolution: Resolution) -> Self {
+        Self::build(device, resolution, true)
+    }
+
+    fn build(device: &wgpu::Device, resolution: Resolution, keys: bool) -> Self {
         let layer = |i| {
             RenderTarget::with_format(device, resolution, INTERNAL_FORMAT, &format!("layer[{i}]"))
         };
@@ -173,6 +313,7 @@ impl Mixer {
             mix_bind_group,
             output_pipeline,
             output_bind_group,
+            keys: keys.then(|| KeyLayers::new(device, resolution)),
         }
     }
 
@@ -183,6 +324,19 @@ impl Mixer {
         queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
         frame: &Mix<'_>,
+        out: &wgpu::TextureView,
+    ) {
+        self.encode_keyed(queue, encoder, frame, &Keys::default(), out);
+    }
+
+    /// [`Mixer::encode`], with `keys` drawn over the mix before the output pass. A key of
+    /// opacity 0 (or NaN) costs nothing.
+    pub fn encode_keyed(
+        &self,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        frame: &Mix<'_>,
+        keys: &Keys<'_>,
         out: &wgpu::TextureView,
     ) {
         let Mix {
@@ -197,13 +351,14 @@ impl Mixer {
             mix.clamp(0.0, 1.0)
         };
         let [layer_a, layer_b] = &self.layers;
-        self.fill(queue, encoder, from, layer_a.view());
+        self.fill(queue, encoder, from, layer_a.view(), wgpu::Color::BLACK);
         // The second layer is only sampled with a non-zero weight.
         self.fill(
             queue,
             encoder,
             if mix > 0.0 { to } else { Source::Black },
             layer_b.view(),
+            wgpu::Color::BLACK,
         );
         let uniforms = MixUniforms {
             mix,
@@ -218,6 +373,14 @@ impl Mixer {
             &self.mix_bind_group,
             self.program.view(),
         );
+        if let Some(layers) = &self.keys {
+            let stack = std::iter::once(keys.stinger).chain(keys.overlays);
+            for (layer, key) in layers.layers.iter().zip(stack) {
+                if let Some(key) = key {
+                    self.draw_key(queue, encoder, &layers.pipeline, layer, key);
+                }
+            }
+        }
         draw_fullscreen(
             encoder,
             "output.pass",
@@ -233,12 +396,63 @@ impl Mixer {
         &self.program
     }
 
+    /// Fills `layer` with `key` and draws it over the Program target.
+    fn draw_key(
+        &self,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        pipeline: &wgpu::RenderPipeline,
+        layer: &KeyLayer,
+        key: Key<'_>,
+    ) {
+        let Key { source, opacity } = key;
+        // `max` turns NaN into 0: skipped like a key at 0.
+        let opacity = opacity.max(0.0);
+        if opacity == 0.0 {
+            return;
+        }
+        let opacity = opacity.min(1.0);
+        self.fill(
+            queue,
+            encoder,
+            source,
+            layer.target.view(),
+            wgpu::Color::TRANSPARENT,
+        );
+        let uniform = KeyUniforms {
+            opacity,
+            _pad: [0; 3],
+        };
+        queue.write_buffer(&layer.uniforms, 0, bytemuck::bytes_of(&uniform));
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("key.pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: self.program.view(),
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        pass.set_pipeline(pipeline);
+        pass.set_bind_group(0, &layer.bind_group, &[]);
+        pass.draw(0..3, 0..1);
+    }
+
+    /// Fills `layer` with `source`; a frame of another size leaves a `letterbox` around it.
     fn fill(
         &self,
         queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
         source: Source<'_>,
         layer: &wgpu::TextureView,
+        letterbox: wgpu::Color,
     ) {
         let clear = match source {
             Source::TestPattern { frame } => {
@@ -246,7 +460,7 @@ impl Mixer {
                 return;
             }
             Source::Frame(input) => {
-                input.encode_layer(encoder, layer, self.program.resolution());
+                input.encode_layer(encoder, layer, self.program.resolution(), letterbox);
                 return;
             }
             Source::Black => wgpu::Color::BLACK,
@@ -301,6 +515,19 @@ pub(crate) fn fullscreen_pipeline_in(
     layout: &wgpu::BindGroupLayout,
     format: wgpu::TextureFormat,
 ) -> wgpu::RenderPipeline {
+    pipeline_in(device, label, shader, fragment, layout, format, None)
+}
+
+/// A full-screen triangle pipeline with an optional blend state.
+fn pipeline_in(
+    device: &wgpu::Device,
+    label: &str,
+    shader: &wgpu::ShaderModule,
+    fragment: &str,
+    layout: &wgpu::BindGroupLayout,
+    format: wgpu::TextureFormat,
+    blend: Option<wgpu::BlendState>,
+) -> wgpu::RenderPipeline {
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some(label),
         bind_group_layouts: &[Some(layout)],
@@ -324,7 +551,7 @@ pub(crate) fn fullscreen_pipeline_in(
             compilation_options: wgpu::PipelineCompilationOptions::default(),
             targets: &[Some(wgpu::ColorTargetState {
                 format,
-                blend: None,
+                blend,
                 write_mask: wgpu::ColorWrites::ALL,
             })],
         }),

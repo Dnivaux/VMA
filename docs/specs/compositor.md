@@ -165,3 +165,37 @@ arrondis vers zéro (cas de NVIDIA) : un code calculé peut différer de la vale
 
 Restent pour B10 et B11 : la colorimétrie signalée dans les caps et le conteneur (relecture
 `io-gst`, étape 4) ; la commande FTB, sa durée et son retour (moteur, étape 5).
+
+## Phase 4 — Alpha et couches incrustées (ADR 0010, étape 1 du plan, 2026-11-09)
+- **Alpha prémultiplié** dans tous les calques. `InputFrame::new` prend un `AlphaMode` :
+  `Opaque` (l'octet alpha est ignoré : toutes les sources des Phases 1–3, inchangées),
+  `Straight` (multiplié par α dans le shader de conversion), `Premultiplied` (pris tel quel,
+  couleur bornée à α). Seuls RGBA / BGRA portent un alpha ; un format Y'CbCr est toujours opaque.
+- **Mise à l'échelle** : la conversion en lumière d'affichage est prémultipliée (L × α), le
+  filtrage bilinéaire se fait sur ces valeurs (pas de franges), puis la passe d'échelle
+  dé-prémultiplie, ré-encode et prémultiplie en R'G'B'. Le letterbox est noir dans un calque
+  du Program, **transparent** dans un calque incrusté. Les vignettes sont écrites sur fond noir,
+  opaques.
+- **Mélange du Program inchangé** : une source avec alpha au Program est vue sur du noir (les
+  valeurs prémultipliées sont celles-là).
+- **Couches incrustées** (`Keys`, `Mixer::with_keys`) : après le mélange, dans l'ordre stinger
+  puis overlays 1 à 4, chaque couche est remplie dans son propre calque `Rgba16Float`, puis
+  dessinée sur le Program par l'unité de mélange (`src + (1 − α) · dst`, prémultiplié) sur les
+  valeurs encodées, avec son opacité (uniform propre à chaque couche ; 0 ou NaN : aucune passe).
+  `Mixer::new` (Preview) n'a pas ces calques et ignore les `Keys` (Q5). Coût : 5 calques de la
+  taille du Program en mémoire, 1 ou 2 passes de plus par couche active.
+
+### Critères d'acceptation (Phase 4, côté `compositor`)
+| Critère | Test | Où |
+|---|---|---|
+| **D2** Alpha droit, α = 0, ¼, ½, ¾, 1, 4 couleurs × 3 fonds, sur chaque channel et le stinger : code le plus proche | `golden_alpha::straight_alpha_is_keyed_over_the_program` | CI |
+| **D2** Alpha prémultiplié pris tel quel | `golden_alpha::premultiplied_alpha_is_taken_as_is` | CI |
+| **D2** Source opaque : octet alpha ignoré, golden des Phases 1–3 inchangés | `golden_alpha::opaque_frames_ignore_their_alpha_byte` ; `golden_frame`, `golden_mix`, `golden_output` | CI |
+| **D2** Opacité d'un overlay (Fade à 25 / 50 / 75 %), bornes, NaN | `golden_alpha::the_opacity_of_a_channel_scales_its_key` | CI |
+| **D2** Mise à l'échelle : letterbox transparent d'un overlay, noir au Program ; pas de frange | `golden_alpha::the_letterbox_of_a_key_is_transparent`, `a_scaled_key_has_no_fringe` | CI |
+| **D1** Ordre stinger ▸ 1 ▸ 2 ▸ 3 ▸ 4, channels absents sautés | `golden_alpha::keys_are_stacked_stinger_then_channels_1_to_4` | CI |
+| **D1** Overlay inchangé pendant un Fade du Program ; Preview sans overlay | `golden_alpha::keys_stay_over_a_program_fade`, `a_mixer_without_keys_ignores_them` | CI |
+| Source avec alpha au mélange du Program : sur du noir | `golden_alpha::a_frame_with_alpha_in_the_program_mix_is_over_black` | CI |
+
+Restent pour D2 : le PNG avec alpha de bout en bout (étape 2, `io-gst`). Pour D1 : commandes,
+transitions au tick, FTB par-dessus (étape 3, moteur).

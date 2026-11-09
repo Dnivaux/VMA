@@ -31,7 +31,7 @@ use std::time::{Duration, Instant};
 
 use vma_clock::{LatencyHistogram, LatencySummary};
 use vma_compositor::{FrameError, FramePipelines, InputFrame, Plane};
-use vma_core::{ColorInfo, FrameRate, InputId, PixelFormat, Resolution};
+use vma_core::{AlphaMode, ColorInfo, FrameRate, InputId, PixelFormat, Resolution};
 
 use crate::state::SourceFormat;
 use crate::triple::{Consumer, Producer, TripleIndices, triple};
@@ -397,6 +397,7 @@ impl FeedRegistry {
                 pixel,
                 resolution,
                 color,
+                AlphaMode::Opaque,
             )
         });
         let stats = Arc::new(FeedStats::default());
@@ -585,6 +586,7 @@ mod tests {
                 PixelFormat::Rgba,
                 resolution,
                 ColorInfo::RGB_FULL,
+                AlphaMode::Opaque,
             )
         });
         let stats = Arc::new(FeedStats::default());

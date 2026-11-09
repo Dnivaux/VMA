@@ -20,7 +20,7 @@ use vma_compositor::{
     FramePipelines, InputFrame, Mix, MixSpace, Mixer, OutputLook, OutputStage, Plane, RenderTarget,
     Source, headless, readback,
 };
-use vma_core::{ColorInfo, PixelFormat, Resolution, Rgb8};
+use vma_core::{AlphaMode, ColorInfo, PixelFormat, Resolution, Rgb8};
 
 /// Picture of one tick: the UI's Program view and what the outputs receive.
 struct Tick {
@@ -94,6 +94,7 @@ impl Rig {
             PixelFormat::Rgba,
             self.resolution,
             ColorInfo::RGB_FULL,
+            AlphaMode::Opaque,
         );
         frame.stage_packed(data).unwrap();
         self.copy(&frame);
@@ -110,6 +111,7 @@ impl Rig {
             PixelFormat::Nv12,
             self.resolution,
             ColorInfo::BT709_LIMITED,
+            AlphaMode::Opaque,
         );
         frame
             .stage(&[

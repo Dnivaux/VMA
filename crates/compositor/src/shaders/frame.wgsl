@@ -5,6 +5,9 @@
 //
 // LINEARIZE = false: R'G'B' for a layer of the same size (no round trip through linear).
 // LINEARIZE = true: display light (BT.1886 simplified, L = V^2.4) for the scale pass.
+//
+// The result is premultiplied (ADR 0010): R'G'B' x a, or display light x a. Only RGBA / BGRA
+// read their alpha (`alpha` 1 straight, 2 premultiplied); everything else is opaque.
 
 struct Frame {
     // Rows of `[r, g, b] = M · [y, cb, cr, 1]`.
@@ -13,6 +16,8 @@ struct Frame {
     m2: vec4<f32>,
     // 0 NV12, 1 I420, 2 YUY2, 3 UYVY, 4 RGBA / BGRA.
     packing: u32,
+    // 0 opaque (alpha ignored), 1 straight, 2 premultiplied.
+    alpha: u32,
 }
 
 override LINEARIZE: bool = false;
@@ -60,15 +65,29 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
         }
         default {}
     }
+    var a = 1.0;
     if f.packing >= 4u {
-        rgb = textureLoad(plane0, p, 0).rgb;
+        let t = textureLoad(plane0, p, 0);
+        rgb = t.rgb;
+        if f.alpha != 0u {
+            a = t.a;
+        }
     } else {
         let v = vec4<f32>(ycc, 1.0);
         rgb = vec3<f32>(dot(f.m0, v), dot(f.m1, v), dot(f.m2, v));
+    }
+    if f.alpha == 2u {
+        // Already premultiplied: a colour above its alpha is out of gamut.
+        rgb = clamp(rgb, vec3<f32>(0.0), vec3<f32>(a));
+        if !LINEARIZE {
+            return vec4<f32>(rgb, a);
+        }
+        // Linear light is premultiplied after the transfer function: unpremultiply first.
+        rgb = select(vec3<f32>(0.0), rgb / a, a > 0.0);
     }
     rgb = clamp(rgb, vec3<f32>(0.0), vec3<f32>(1.0));
     if LINEARIZE {
         rgb = pow(rgb, vec3<f32>(GAMMA));
     }
-    return vec4<f32>(rgb, 1.0);
+    return vec4<f32>(rgb * a, a);
 }

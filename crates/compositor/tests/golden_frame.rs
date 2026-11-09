@@ -20,7 +20,7 @@ use vma_compositor::{
     FrameError, FramePipelines, InputFrame, Mix, Mixer, Plane, RenderTarget, Source, headless,
     readback,
 };
-use vma_core::{ColorInfo, Matrix, PixelFormat, Range, Resolution, Rgb8};
+use vma_core::{AlphaMode, ColorInfo, Matrix, PixelFormat, Range, Resolution, Rgb8};
 
 const W: u32 = 320;
 const H: u32 = 180;
@@ -59,6 +59,7 @@ impl Rig {
             format,
             res(w, h),
             color,
+            AlphaMode::Opaque,
         )
     }
 

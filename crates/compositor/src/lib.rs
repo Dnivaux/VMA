@@ -3,7 +3,8 @@
 //! - [`InputFrame`]: a CPU picture (NV12, I420, YUY2, UYVY, RGBA, BGRA) uploaded to the GPU,
 //!   converted to R'G'B' and scaled (fit, in linear light) into a layer or a thumbnail.
 //! - [`Mixer`]: Program composition — sources (solid colour, test pattern, frame) rendered into
-//!   [`INTERNAL_FORMAT`] layers, Cut / Fade in the gamma or linear domain, output pass to
+//!   [`INTERNAL_FORMAT`] layers, Cut / Fade in the gamma or linear domain, stinger and overlay
+//!   channels keyed over it ([`Keys`], premultiplied alpha), output pass to
 //!   [`PROGRAM_FORMAT`].
 //! - [`OutputStage`]: what every output receives — FTB and sync flash on the Program, then
 //!   Y'CbCr BT.709 limited range 4:2:0 (NV12 planes) for the encoders.
@@ -17,6 +18,11 @@
 //! defined directly in that encoded domain (75 % bars = code value 191). Linear light is only
 //! used for the optional linear mix and for scaling. The outputs are converted to Y'CbCr
 //! BT.709 limited range by the [`OutputStage`].
+//!
+//! # Alpha (ADR 0010)
+//! Layers are premultiplied; an [`InputFrame`] says how its alpha is read
+//! ([`vma_core::AlphaMode`]). The Program mix is opaque (a source with alpha is over black);
+//! keys are composed over it on the encoded values.
 
 mod error;
 mod frame;
@@ -30,7 +36,7 @@ pub mod thumbnails;
 
 pub use error::CompositorError;
 pub use frame::{FrameError, FramePipelines, InputFrame, Plane, fit_rect};
-pub use mixer::{INTERNAL_FORMAT, Mix, MixSpace, Mixer, Source};
+pub use mixer::{INTERNAL_FORMAT, Key, Keys, Mix, MixSpace, Mixer, Source};
 pub use output::{CHROMA_FORMAT, LUMA_FORMAT, OutputLook, OutputStage};
 pub use target::RenderTarget;
 pub use test_pattern::{TEST_PATTERN_PERIOD_FRAMES, TestPattern};
