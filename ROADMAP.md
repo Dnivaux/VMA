@@ -159,7 +159,7 @@ dont 14 et 15, condition de la validation des écarts de l'étape 3 — ainsi qu
 suivi de la Phase 1. À surveiller : `engine_frames_reach_the_file_with_flash_and_beep_aligned`,
 repris sous Windows sur 3 des 4 derniers runs (une image manquante au début).
 
-## Phase 3 — Réseau et audio · *en cours (spec validée le 2026-11-02)*
+## Phase 3 — Réseau et audio · *close sous Linux le 2026-11-09 ; Windows non vérifié (soaks reportés sans échéance)*
 NDI® en entrée et en sortie (runtime chargé dynamiquement), SRT en entrée, mélangeur audio
 (gain, mute, solo, vumètres, décalage par input, Master + bus A et B, audio-follow-video).
 
@@ -190,6 +190,14 @@ le binaire, runtime externe). Checklist pour le partenaire :
 
 NDI® est une marque déposée de Vizrt NDI AB.
 
-## Phase 4 — Habillage · ⬜
+## Phase 4 — Habillage · *spec en relecture (2026-11-09)*
+4 overlay channels avec transitions d'entrée / sortie, chaîne alpha de bout en bout, input HTML
+(CEF, hors écran, alpha, données sans rechargement), transition Stinger.
+
+**À valider** : [`docs/specs/phase-4.md`](docs/specs/phase-4.md) (critères D1–D13, questions
+Q1–Q10, plan en 10 étapes), ADR 0009 (input HTML : CEF dans un processus auxiliaire), ADR 0010
+(alpha, overlays, stinger). Checklist pour le partenaire :
+[`docs/manual-tests/observation-reference-phase4.md`](docs/manual-tests/observation-reference-phase4.md).
+
 ## Phase 5 — Contrôle et monitoring · ⬜
 ## Phase 6 — Sport · ⬜
