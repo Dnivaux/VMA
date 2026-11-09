@@ -1364,11 +1364,19 @@ mod tests {
 
     impl NdiSender {
         fn start(name: &str) -> Self {
+            Self::with_video(
+                name,
+                "videotestsrc is-live=true pattern=ball \
+                 ! video/x-raw,format=UYVY,width=320,height=180,framerate=25/1",
+            )
+        }
+
+        /// A sender of the pictures of `video` (gst-launch syntax), with the same tone.
+        fn with_video(name: &str, video: &str) -> Self {
             use gstreamer::prelude::*;
             let pipeline = gstreamer::parse::launch(&format!(
                 "ndisinkcombiner name=c ! ndisink ndi-name=\"{name}\" \
-                 videotestsrc is-live=true pattern=ball \
-                   ! video/x-raw,format=UYVY,width=320,height=180,framerate=25/1 ! c.video \
+                 {video} ! c.video \
                  audiotestsrc is-live=true freq=440 volume=0.3 \
                    ! audio/x-raw,rate=48000,channels=2 ! audioconvert ! c.audio"
             ))
@@ -1383,6 +1391,84 @@ mod tests {
             use gstreamer::prelude::*;
             let _ = self.0.set_state(gstreamer::State::Null);
         }
+    }
+
+    /// D3 (needs the NDI® runtime: `VMA_REQUIRE_NDI`): a sender with alpha (BGRA) reaches
+    /// the NDI input in BGRA, straight alpha; an opaque sender (UYVY) stays opaque.
+    #[test]
+    fn an_ndi_source_with_alpha_keeps_it() {
+        if !vma_io_ndi::status().is_available() {
+            assert!(
+                std::env::var_os("VMA_REQUIRE_NDI").is_none(),
+                "VMA_REQUIRE_NDI set but {:?}",
+                vma_io_ndi::status()
+            );
+            return;
+        }
+        let keyed = format!("VMA alpha {}", std::process::id());
+        let plain = format!("VMA opaque {}", std::process::id());
+        let _keyed = NdiSender::with_video(
+            &keyed,
+            "videotestsrc is-live=true pattern=red \
+             ! video/x-raw,width=320,height=180,framerate=25/1 ! alpha alpha=0.5 \
+             ! videoconvert ! video/x-raw,format=BGRA",
+        );
+        let _plain = NdiSender::start(&plain);
+        let (mut engine, _device) = spawn_engine_with(EngineConfig {
+            rate: FrameRate::FPS_50,
+            stream_clock: Some(crate::stream_clock()),
+            ..EngineConfig::default()
+        });
+        let io = IoRuntime::start(engine.take_io_port().unwrap()).unwrap();
+        let state = engine.state();
+        let until = |what: &str, secs: u64, done: &dyn Fn() -> bool| {
+            let end = Instant::now() + Duration::from_secs(secs);
+            while !done() {
+                assert!(Instant::now() < end, "{what}: {:?}", state.load().inputs);
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        };
+        let mut sources = Vec::new();
+        for source in [&keyed, &plain] {
+            let suffix = format!("({source})");
+            until("discovered", 20, &|| {
+                io.ndi_sources().iter().any(|n| n.ends_with(&suffix))
+            });
+            let name = io
+                .ndi_sources()
+                .into_iter()
+                .find(|n| n.ends_with(&suffix))
+                .unwrap();
+            let spec = vma_engine::InputSpec::Ndi { name };
+            send(
+                &engine,
+                Command::AddInput {
+                    spec: spec.clone(),
+                    name: None,
+                },
+            );
+            sources.push(spec);
+        }
+        let format = |spec: &vma_engine::InputSpec| {
+            state
+                .load()
+                .inputs
+                .iter()
+                .find(|i| i.spec == *spec)
+                .and_then(|i| match i.status {
+                    vma_engine::InputStatus::Live { source } => source,
+                    _ => None,
+                })
+        };
+        until("both live", 20, &|| {
+            sources.iter().all(|s| format(s).is_some())
+        });
+        let keyed = format(&sources[0]).unwrap();
+        assert_eq!(keyed.pixel, vma_core::PixelFormat::Bgra, "{keyed:?}");
+        assert_eq!(keyed.alpha, vma_core::AlphaMode::Straight, "{keyed:?}");
+        let plain = format(&sources[1]).unwrap();
+        assert_eq!(plain.alpha, vma_core::AlphaMode::Opaque, "{plain:?}");
+        drop(io);
     }
 
     /// C11 (input side, needs the NDI® runtime: `VMA_REQUIRE_NDI`): a local NDI sender is

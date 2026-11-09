@@ -809,6 +809,7 @@ fn add_fed_input(spawned: &Spawned) -> (vma_core::InputId, vma_engine::FrameSink
             vma_core::PixelFormat::Rgba,
             Resolution::new(320, 180).unwrap(),
             vma_core::ColorInfo::RGB_FULL,
+            vma_core::AlphaMode::Opaque,
             Some(FrameRate::FPS_50),
         )
         .unwrap();

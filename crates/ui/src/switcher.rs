@@ -1017,12 +1017,7 @@ fn clock(ms: u64) -> String {
 /// format of the pictures it delivers.
 fn source_mode(input: &InputState, capture: Option<String>) -> Option<String> {
     let delivered = match input.status {
-        InputStatus::Live { source: Some(f) } => Some(format!(
-            "{} {}{}",
-            f.resolution,
-            f.pixel,
-            f.rate.map(|r| format!(" {r}")).unwrap_or_default()
-        )),
+        InputStatus::Live { source: Some(f) } => Some(crate::stats_panel::source_label(&f)),
         _ => None,
     };
     match (capture, delivered) {

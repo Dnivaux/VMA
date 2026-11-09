@@ -610,7 +610,11 @@ fn open_still(
     input: InputId,
     path: &std::path::Path,
 ) -> Result<(), IoError> {
-    let StillImage { resolution, rgba } = still::decode_file(path)?;
+    let StillImage {
+        resolution,
+        rgba,
+        alpha,
+    } = still::decode_file(path)?;
     let mut sink = Feeds::create(
         feeds,
         input,
@@ -618,12 +622,13 @@ fn open_still(
             pixel: StillImage::FORMAT,
             resolution,
             color: ColorInfo::RGB_FULL,
+            alpha,
             rate: None,
         },
     )?;
     sink.push_packed(&rgba, 0)
         .map_err(|e| IoError::Pipeline(e.to_string()))?;
-    tracing::info!(%input, path = %path.display(), %resolution, "still image loaded");
+    tracing::info!(%input, path = %path.display(), %resolution, ?alpha, "still image loaded");
     Ok(())
 }
 

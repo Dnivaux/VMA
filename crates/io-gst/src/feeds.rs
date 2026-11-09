@@ -4,7 +4,7 @@
 
 use vma_audio::RingWriter;
 use vma_compositor::{FrameError, Plane};
-use vma_core::{ColorInfo, FrameRate, InputId, PixelFormat, Resolution};
+use vma_core::{AlphaMode, ColorInfo, FrameRate, InputId, PixelFormat, Resolution};
 use vma_engine::{FeedError, FeedRegistry, FrameSink};
 
 /// Format of the pictures of a source, as negotiated.
@@ -13,6 +13,8 @@ pub struct VideoFormat {
     pub pixel: PixelFormat,
     pub resolution: Resolution,
     pub color: ColorInfo,
+    /// Straight when the source carries alpha (ADR 0010), opaque otherwise.
+    pub alpha: AlphaMode,
     pub rate: Option<FrameRate>,
 }
 
@@ -61,6 +63,7 @@ impl Feeds for FeedRegistry {
             format.pixel,
             format.resolution,
             format.color,
+            format.alpha,
             format.rate,
         )
     }

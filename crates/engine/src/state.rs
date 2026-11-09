@@ -5,7 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 use vma_audio::{MAX_GAIN_DB, SoloMode};
-use vma_core::{AudioBus, FrameRate, InputId, OutputId, PixelFormat, Resolution};
+use vma_core::{AlphaMode, AudioBus, FrameRate, InputId, OutputId, PixelFormat, Resolution};
 
 use crate::audio_plan::{AudioPlan, PlanInput};
 use crate::command::{
@@ -34,6 +34,9 @@ pub struct SourceFormat {
     pub resolution: Resolution,
     pub rate: Option<FrameRate>,
     pub pixel: PixelFormat,
+    /// Straight: the pictures carry alpha (ADR 0010), keyed by it in an overlay.
+    #[serde(default)]
+    pub alpha: AlphaMode,
 }
 
 /// Life cycle of an input.
@@ -2480,6 +2483,7 @@ mod tests {
             resolution: Resolution::new(640, 480).unwrap(),
             rate: None,
             pixel: vma_core::PixelFormat::Rgba,
+            alpha: AlphaMode::Straight,
         };
         let v = s.version;
         s.apply_event(&Event::InputLive {
@@ -2536,6 +2540,7 @@ mod tests {
             resolution: Resolution::new(8, 8).unwrap(),
             rate: None,
             pixel: PixelFormat::Rgba,
+            alpha: AlphaMode::Opaque,
         };
         s.apply_event(&Event::InputLive { input: id, source });
         assert!(matches!(

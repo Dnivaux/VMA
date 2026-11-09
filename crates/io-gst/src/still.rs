@@ -2,14 +2,15 @@
 //! R'G'B'A, uploaded once as an [`PixelFormat::Rgba`] frame. No GStreamer pipeline.
 //!
 //! The decoded values are used as Rec.709 R'G'B' full range (ADR 0005): PNG / JPEG files are
-//! sRGB-encoded in practice, the small difference is accepted in Phase 1. Alpha is decoded but
-//! not composited (Phase 4, overlays). The EXIF orientation of a JPEG is applied.
+//! sRGB-encoded in practice, the small difference is accepted in Phase 1. An image with an
+//! alpha channel is a straight-alpha source (ADR 0010), any other one is opaque. The EXIF
+//! orientation of a JPEG is applied.
 
 use std::io::{BufRead, Cursor, Seek};
 use std::path::{Path, PathBuf};
 
 use image::{DynamicImage, ImageDecoder, ImageReader, Limits};
-use vma_core::{PixelFormat, Resolution};
+use vma_core::{AlphaMode, PixelFormat, Resolution};
 
 /// Largest side accepted, as for every [`Resolution`].
 pub const MAX_SIDE: u32 = 8192;
@@ -20,6 +21,8 @@ pub struct StillImage {
     pub resolution: Resolution,
     /// R'G'B'A rows, tightly packed ([`StillImage::FORMAT`]).
     pub rgba: Vec<u8>,
+    /// Straight if the file has an alpha channel, opaque otherwise (alpha bytes all 255).
+    pub alpha: AlphaMode,
 }
 
 impl StillImage {
@@ -31,6 +34,7 @@ impl std::fmt::Debug for StillImage {
         f.debug_struct("StillImage")
             .field("resolution", &self.resolution)
             .field("rgba", &format_args!("{} bytes", self.rgba.len()))
+            .field("alpha", &self.alpha)
             .finish()
     }
 }
@@ -75,6 +79,11 @@ fn decode<R: BufRead + Seek>(reader: ImageReader<R>) -> Result<StillImage, Still
     let orientation = decoder.orientation()?;
     let mut image = DynamicImage::from_decoder(decoder)?;
     image.apply_orientation(orientation);
+    let alpha = if image.color().has_alpha() {
+        AlphaMode::Straight
+    } else {
+        AlphaMode::Opaque
+    };
     let rgba = image.into_rgba8();
     let (width, height) = rgba.dimensions();
     let resolution =
@@ -82,6 +91,7 @@ fn decode<R: BufRead + Seek>(reader: ImageReader<R>) -> Result<StillImage, Still
     Ok(StillImage {
         resolution,
         rgba: rgba.into_raw(),
+        alpha,
     })
 }
 
@@ -105,6 +115,7 @@ mod tests {
         let still = decode_bytes(&encoded(&img.clone().into(), ImageFormat::Png)).unwrap();
         assert_eq!(still.resolution, Resolution::new(3, 2).unwrap());
         assert_eq!(still.rgba, img.into_raw());
+        assert_eq!(still.alpha, AlphaMode::Straight);
         assert_eq!(
             still.rgba.len() as u64,
             StillImage::FORMAT.frame_bytes(3, 2)
@@ -120,6 +131,7 @@ mod tests {
         ));
         let still = decode_bytes(&encoded(&grey, ImageFormat::Png)).unwrap();
         assert_eq!(still.rgba, [255; 16]);
+        assert_eq!(still.alpha, AlphaMode::Opaque, "no alpha channel");
     }
 
     #[test]
@@ -131,6 +143,7 @@ mod tests {
         );
         let still = decode_bytes(&jpeg).unwrap();
         assert_eq!(still.resolution, Resolution::new(16, 16).unwrap());
+        assert_eq!(still.alpha, AlphaMode::Opaque);
         for p in still.rgba.as_chunks::<4>().0 {
             for (got, want) in p.iter().zip([200u8, 60, 20, 255]) {
                 assert!(got.abs_diff(want) <= 6, "{p:?}");

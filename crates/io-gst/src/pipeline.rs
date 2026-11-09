@@ -1,7 +1,10 @@
 //! One GStreamer pipeline feeding one input (spec `io-gst.md`, « Transport des images »):
 //! `<source> ! videoconvert ! appsink`, the appsink limited to the formats the compositor
 //! uploads as is (NV12, I420, YUY2, UYVY, RGBA, BGRA). `videoconvert` stays in passthrough
-//! for those; any other format is converted (counted).
+//! for those; any other format is converted (counted). A source format with alpha (A420 of a
+//! WebM alpha, A444 of a ProRes 4444, ARGB…) limits the appsink to RGBA / BGRA, set by a
+//! probe on the caps that reach `videoconvert`: otherwise it may pick I420 and drop the alpha.
+//! Its pictures are then straight-alpha (ADR 0010); every other source is opaque.
 //!
 //! The appsink callback runs on the GStreamer streaming thread: it maps the buffer and pushes
 //! its planes into the input's feed (a mapped transfer buffer there, ADR 0004 amendment 1),
@@ -29,7 +32,7 @@ use gstreamer_video::prelude::*;
 use vma_audio::RingWriter;
 use vma_clock::TickGrid;
 use vma_compositor::Plane;
-use vma_core::{ColorInfo, FrameRate, InputId, Matrix, PixelFormat, Range, Resolution};
+use vma_core::{AlphaMode, ColorInfo, FrameRate, InputId, Matrix, PixelFormat, Range, Resolution};
 use vma_engine::{DeviceId, Timeline};
 
 use crate::IoError;
@@ -55,6 +58,18 @@ const ACCEPTED: [gst_video::VideoFormat; 6] = [
     gst_video::VideoFormat::Bgra,
 ];
 
+/// The formats accepted from a source with alpha: those that keep it.
+const ACCEPTED_ALPHA: [gst_video::VideoFormat; 2] =
+    [gst_video::VideoFormat::Rgba, gst_video::VideoFormat::Bgra];
+
+/// The appsink caps for a source with (`alpha`) or without alpha.
+fn sink_caps(alpha: bool) -> gst::Caps {
+    let formats: &[gst_video::VideoFormat] = if alpha { &ACCEPTED_ALPHA } else { &ACCEPTED };
+    gst_video::VideoCapsBuilder::new()
+        .format_list(formats.iter().copied())
+        .build()
+}
+
 fn pixel_format(format: gst_video::VideoFormat) -> Option<PixelFormat> {
     Some(match format {
         gst_video::VideoFormat::Nv12 => PixelFormat::Nv12,
@@ -68,8 +83,14 @@ fn pixel_format(format: gst_video::VideoFormat) -> Option<PixelFormat> {
 }
 
 /// Format of negotiated caps; colorimetry from the caps, or the default rule when unknown.
-pub(crate) fn video_format(info: &gst_video::VideoInfo) -> Option<VideoFormat> {
+/// Straight alpha for RGBA / BGRA from a source that has alpha (`source_alpha`).
+pub(crate) fn video_format(info: &gst_video::VideoInfo, source_alpha: bool) -> Option<VideoFormat> {
     let pixel = pixel_format(info.format())?;
+    let alpha = if source_alpha && matches!(pixel, PixelFormat::Rgba | PixelFormat::Bgra) {
+        AlphaMode::Straight
+    } else {
+        AlphaMode::Opaque
+    };
     let resolution = Resolution::new(info.width(), info.height()).ok()?;
     let assumed = ColorInfo::assumed(pixel, info.height());
     let color = if pixel.is_yuv() {
@@ -98,6 +119,7 @@ pub(crate) fn video_format(info: &gst_video::VideoInfo) -> Option<VideoFormat> {
         pixel,
         resolution,
         color,
+        alpha,
         rate,
     })
 }
@@ -112,6 +134,8 @@ struct Shared {
     /// Nanoseconds per source frame (0 = unknown).
     period_ns: AtomicU64,
     converting: AtomicBool,
+    /// The format reaching `videoconvert` has alpha.
+    source_alpha: AtomicBool,
     /// Video files: loop at the end of the segment.
     looping: AtomicBool,
     /// Video files: the last segment was pushed without Loop (pictures may still be queued).
@@ -356,11 +380,7 @@ impl GstInput {
         };
         // Pictures and sound dated in the master clock's time (ADR 0007 § 1).
         pipeline.use_clock(Some(&crate::clock::master_clock()));
-        sink.set_caps(Some(
-            &gst_video::VideoCapsBuilder::new()
-                .format_list(ACCEPTED)
-                .build(),
-        ));
+        sink.set_caps(Some(&sink_caps(false)));
         sink.set_max_buffers(1);
         sink.set_drop(true);
         sink.set_sync(recipe.sync);
@@ -371,9 +391,11 @@ impl GstInput {
             pictures: AtomicU64::new(0),
             period_ns: AtomicU64::new(0),
             converting: AtomicBool::new(false),
+            source_alpha: AtomicBool::new(false),
             looping: AtomicBool::new(false),
             segment_done: AtomicBool::new(false),
         });
+        watch_source_alpha(&convert, &sink, &shared);
         let (notes_tx, notes) = crossbeam_channel::bounded(16);
         if let Some(bus) = pipeline.bus() {
             let weak = pipeline.downgrade();
@@ -600,6 +622,30 @@ impl Drop for GstInput {
 }
 
 type Parts = (gst::Pipeline, gst::Element, gst_app::AppSink);
+
+/// Follows the caps reaching `convert`: a source format with alpha limits `sink` to the
+/// formats that keep it, before `videoconvert` negotiates (the probe runs first).
+fn watch_source_alpha(convert: &gst::Element, sink: &gst_app::AppSink, shared: &Arc<Shared>) {
+    let Some(pad) = convert.static_pad("sink") else {
+        return;
+    };
+    let sink = sink.downgrade();
+    let shared = Arc::clone(shared);
+    pad.add_probe(gst::PadProbeType::EVENT_DOWNSTREAM, move |_, info| {
+        if let Some(event) = info.event()
+            && let gst::EventView::Caps(caps) = event.view()
+            && let Ok(source) = gst_video::VideoInfo::from_caps(caps.caps())
+        {
+            let alpha = source.format_info().has_alpha();
+            if shared.source_alpha.swap(alpha, Ordering::Relaxed) != alpha
+                && let Some(sink) = sink.upgrade()
+            {
+                sink.set_caps(Some(&sink_caps(alpha)));
+            }
+        }
+        gst::PadProbeReturn::Ok
+    });
+}
 
 /// `<source> ! videoconvert ! appsink`, from `gst-launch` syntax.
 fn launch_pipeline(source: &str) -> Result<Parts, IoError> {
@@ -1176,7 +1222,8 @@ impl<F: Feeds> Stream<F> {
         let pts = buffer.pts();
         let info =
             gst_video::VideoInfo::from_caps(caps).map_err(|_| gst::FlowError::NotNegotiated)?;
-        let format = video_format(&info).ok_or(gst::FlowError::NotNegotiated)?;
+        let source_alpha = self.shared.source_alpha.load(Ordering::Relaxed);
+        let format = video_format(&info, source_alpha).ok_or(gst::FlowError::NotNegotiated)?;
         if self.out.as_ref().is_none_or(|(f, _)| *f != format) {
             self.on_new_format(format)?;
         }
@@ -1335,6 +1382,8 @@ pub(crate) mod tests {
         pub(crate) stream_times: Vec<Option<u64>>,
         /// First byte of each picture (its first luma sample).
         pub(crate) first_bytes: Vec<u8>,
+        /// First 4 bytes of the last picture (its first pixel, for RGBA / BGRA).
+        pub(crate) first_texel: [u8; 4],
     }
 
     /// CPU stand-in for the engine's feeds.
@@ -1365,6 +1414,9 @@ pub(crate) mod tests {
                     .unwrap_or(0),
             );
             f.plane_bytes = planes.iter().map(|p| p.data.len()).collect();
+            if let Some(texel) = planes.first().and_then(|p| p.data.first_chunk::<4>()) {
+                f.first_texel = *texel;
+            }
             f.arrivals.push(Instant::now());
             Ok(())
         }
@@ -1511,6 +1563,119 @@ pub(crate) mod tests {
         assert!((rate - 50.0).abs() <= 1.0, "{rate:.2} pictures/s");
         assert_eq!(f.plane_bytes, [1920 * 1080, 1920 * 1080 / 2]);
         assert!(!input.converting());
+    }
+
+    /// D3: a source with alpha reaches its feed in RGBA / BGRA with its alpha, straight;
+    /// RGBA made from a source without alpha is opaque.
+    #[test]
+    fn sources_with_alpha_keep_it() {
+        init();
+        let red_half = "videotestsrc is-live=true pattern=red \
+             ! video/x-raw,width=64,height=36,framerate=25/1 ! alpha alpha=0.5";
+        for (source, converting, alpha) in [
+            // AYUV: converted, and only to a format with alpha.
+            (
+                format!("{red_half} ! video/x-raw,format=AYUV"),
+                true,
+                Some(128),
+            ),
+            (
+                format!("{red_half} ! video/x-raw,format=RGBA"),
+                false,
+                Some(128),
+            ),
+            (
+                format!("{red_half} ! video/x-raw,format=BGRA"),
+                false,
+                Some(128),
+            ),
+            // No alpha in the source: BGRx becomes BGRA, opaque.
+            (
+                "videotestsrc is-live=true pattern=red \
+                 ! video/x-raw,format=BGRx,width=64,height=36,framerate=25/1"
+                    .into(),
+                true,
+                None,
+            ),
+        ] {
+            let feeds = FakeFeeds::default();
+            let mut input = GstInput::start(InputId(1), &live(&source), feeds.clone()).unwrap();
+            assert!(wait_until(Duration::from_secs(5), || feeds.count() == 1
+                && feeds.last().lock().unwrap().frames.len() > 2));
+            assert!(input.poll(Instant::now()).is_none());
+            let f = feeds.last();
+            let f = f.lock().unwrap();
+            let fmt = f.format.unwrap();
+            assert!(
+                matches!(fmt.pixel, PixelFormat::Rgba | PixelFormat::Bgra),
+                "{source}: {fmt:?}"
+            );
+            assert_eq!(input.converting(), converting, "{source}");
+            let a = f.first_texel[3];
+            match alpha {
+                Some(want) => {
+                    assert_eq!(fmt.alpha, AlphaMode::Straight, "{source}");
+                    assert!(a.abs_diff(want) <= 1, "{source}: alpha {a}");
+                }
+                None => {
+                    assert_eq!(fmt.alpha, AlphaMode::Opaque, "{source}");
+                    assert_eq!(a, 255, "{source}");
+                }
+            }
+        }
+    }
+
+    /// The clips of `tests/data` (README there).
+    pub(crate) fn data(name: &str) -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/data")
+            .join(name)
+    }
+
+    /// D3: video files with alpha (WebM VP8 / VP9 alpha, ProRes 4444, QuickTime Animation,
+    /// PNG in MOV) open on their first picture with its alpha, straight. A decoder missing
+    /// is skipped with its name (`VMA_REQUIRE_ALPHA_DECODERS`: fails instead).
+    #[test]
+    fn video_files_with_alpha_keep_it() {
+        init();
+        for (file, decoder, tolerance) in [
+            ("alpha-vp9.webm", "vp9alphadecodebin", 4),
+            ("alpha-vp8.webm", "vp8alphadecodebin", 4),
+            ("alpha-prores4444.mov", "avdec_prores", 2),
+            ("alpha-qtrle.mov", "avdec_qtrle", 0),
+            ("alpha-png.mov", "avdec_png", 0),
+        ] {
+            if gst::ElementFactory::find(decoder).is_none() {
+                assert!(
+                    std::env::var_os("VMA_REQUIRE_ALPHA_DECODERS").is_none(),
+                    "{decoder} missing"
+                );
+                eprintln!("skipped {file}: no {decoder}");
+                continue;
+            }
+            let feeds = FakeFeeds::default();
+            let mut input =
+                GstInput::start(InputId(1), &Recipe::file(data(file)), feeds.clone()).unwrap();
+            assert!(
+                drive_until(&mut input, Duration::from_secs(5), |_| feeds.count() == 1
+                    && !feeds.last().lock().unwrap().frames.is_empty()),
+                "{file}: no picture"
+            );
+            let f = feeds.last();
+            let f = f.lock().unwrap();
+            let fmt = f.format.unwrap();
+            assert_eq!(fmt.alpha, AlphaMode::Straight, "{file}: {fmt:?}");
+            let [x, y, z, a] = f.first_texel;
+            let rgb = match fmt.pixel {
+                PixelFormat::Rgba => [x, y, z],
+                PixelFormat::Bgra => [z, y, x],
+                other => panic!("{file}: {other}"),
+            };
+            for (got, want) in rgb.iter().zip([48u8, 128, 192]) {
+                assert!(got.abs_diff(want) <= tolerance, "{file}: {rgb:?}");
+            }
+            assert!(a.abs_diff(127) <= 1, "{file}: alpha {a}");
+        }
     }
 
     /// Every accepted format reaches the feed as is; another one goes through videoconvert.

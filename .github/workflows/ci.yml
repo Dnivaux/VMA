@@ -161,6 +161,14 @@ jobs:
           done
           # Present on both runners: the SRT tests (B8) must run, not be skipped.
           echo "VMA_REQUIRE_SRT=1" >> "$GITHUB_ENV"
+      - name: Decoders with alpha present (WebM alpha, ProRes, QuickTime Animation, PNG)
+        shell: bash
+        run: |
+          for e in vp8alphadecodebin vp9alphadecodebin avdec_prores avdec_qtrle avdec_png; do
+            gst-inspect-1.0 --exists "$e" && echo "$e: ok" || { echo "$e: missing"; exit 1; }
+          done
+          # The alpha files test (Phase 4, D3) must run, not skip a clip.
+          echo "VMA_REQUIRE_ALPHA_DECODERS=1" >> "$GITHUB_ENV"
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy

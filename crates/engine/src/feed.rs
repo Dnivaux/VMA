@@ -381,12 +381,14 @@ impl FeedRegistry {
     /// input becomes `Live` with this source format, and the render thread shows its
     /// pictures from the first one pushed. A feed for an input that no longer exists is
     /// dropped; a second feed for the same input replaces the first (format change).
+    /// `alpha` says how the pictures' alpha is read (ADR 0010).
     pub fn create(
         &self,
         input: InputId,
         pixel: PixelFormat,
         resolution: Resolution,
         color: ColorInfo,
+        alpha: AlphaMode,
         rate: Option<FrameRate>,
     ) -> Result<FrameSink, FeedError> {
         let slots = [0, 1, 2].map(|_| {
@@ -397,7 +399,7 @@ impl FeedRegistry {
                 pixel,
                 resolution,
                 color,
-                AlphaMode::Opaque,
+                alpha,
             )
         });
         let stats = Arc::new(FeedStats::default());
@@ -406,6 +408,7 @@ impl FeedRegistry {
             resolution,
             rate,
             pixel,
+            alpha,
         };
         self.attach
             .try_send(Attach {
@@ -597,6 +600,7 @@ mod tests {
                 resolution,
                 rate: None,
                 pixel: PixelFormat::Rgba,
+                alpha: AlphaMode::Opaque,
             },
         };
         let picture = vec![128u8; 64 * 36 * 4];

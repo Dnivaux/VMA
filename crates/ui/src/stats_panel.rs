@@ -157,12 +157,7 @@ fn inputs(ui: &mut egui::Ui, engine: &RenderEngine, io: &dyn IoStatus) {
                 };
                 let s = stats.snapshot();
                 let status = match input.status {
-                    InputStatus::Live { source: Some(f) } => format!(
-                        "{} {}{}",
-                        f.resolution,
-                        f.pixel,
-                        f.rate.map(|r| format!(" {r}")).unwrap_or_default()
-                    ),
+                    InputStatus::Live { source: Some(f) } => source_label(&f),
                     InputStatus::Live { source: None } => "en direct".into(),
                     InputStatus::Starting => "démarrage".into(),
                     InputStatus::SignalLost { .. } => "signal perdu".into(),
@@ -236,4 +231,40 @@ fn counter(ui: &mut egui::Ui, label: &str, value: u64) {
 
 fn ms(d: Duration) -> String {
     format!("{:.3} ms", d.as_secs_f64() * 1000.0)
+}
+
+/// What a live source delivers: size, pixel format, alpha if it has some, rate.
+pub(crate) fn source_label(f: &vma_engine::SourceFormat) -> String {
+    let alpha = match f.alpha {
+        vma_core::AlphaMode::Opaque => "",
+        vma_core::AlphaMode::Straight | vma_core::AlphaMode::Premultiplied => " avec alpha",
+    };
+    format!(
+        "{} {}{alpha}{}",
+        f.resolution,
+        f.pixel,
+        f.rate.map(|r| format!(" {r}")).unwrap_or_default()
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use vma_core::{AlphaMode, FrameRate, PixelFormat, Resolution};
+
+    #[test]
+    fn a_source_with_alpha_says_so() {
+        let mut f = vma_engine::SourceFormat {
+            resolution: Resolution::HD_1080,
+            rate: Some(FrameRate::FPS_50),
+            pixel: PixelFormat::Nv12,
+            alpha: AlphaMode::Opaque,
+        };
+        let plain = source_label(&f);
+        assert!(!plain.contains("alpha"), "{plain}");
+        f.pixel = PixelFormat::Bgra;
+        f.alpha = AlphaMode::Straight;
+        let keyed = source_label(&f);
+        assert!(keyed.contains("BGRA avec alpha"), "{keyed}");
+    }
 }

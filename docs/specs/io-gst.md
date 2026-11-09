@@ -625,3 +625,31 @@ NDI® est une marque déposée de Vizrt NDI AB. ADR 0008.
 | Source locale 50p à ± 100 ppm, arrivées à 1–1,8 ms de son temps de flux (en phase avec les ticks) : chaque image sur le tick de son temps de flux, délai fixe, 2 images sautées (ou répétées) en 400 s, pas plus | `pipeline::tests::a_drifting_local_source_skips_one_picture_per_period_of_drift` | CI (temps simulé) |
 | Le son saute avec chaque glissement (un saut de latence par glissement), à 0,2 ms de l'image montrée à chaque tick, l'image répétée comprise ; une image déplacée seule : aller et retour ; étalement 24p dans 50p : aucun saut | `engine` `audio::tests::the_sound_jumps_with_the_slips_of_a_drifting_source`, `audio::tests::one_picture_out_of_place_and_a_wide_spread_are_not_slips` | CI |
 | **C14** : soak 1 h (6 sources synchro 1080p50 avec son, dont 2 à ± 100 ppm, mélangeur, enregistrement + stream + NDI®) | `tests/soak/phase3-c14.sh` | manuel (Linux) |
+
+## Phase 4 — Sources avec alpha (ADR 0010, étape 2, 2026-11-09)
+- **Négociation** : une sonde sur les caps qui arrivent à `videoconvert` regarde si le format
+  de la source a un alpha (`VideoFormatInfo::has_alpha`). Si oui, l'appsink n'accepte plus que
+  RGBA / BGRA, avant que `videoconvert` négocie : sans cela il choisit I420 pour un A420 (WebM
+  alpha) et jette l'alpha. La sonde remet la liste complète si la source change de format.
+- **Mode d'alpha** (`VideoFormat::alpha`, puis `SourceFormat::alpha` dans l'état) : `Straight`
+  pour du RGBA / BGRA venu d'une source à alpha, `Opaque` sinon, y compris pour du BGRA fait
+  d'un BGRx (octet alpha à 255).
+- **Fichiers** décodés avec leur alpha par `decodebin` : WebM VP8 / VP9 alpha
+  (`vp8alphadecodebin` / `vp9alphadecodebin`, `gst-plugins-bad`), ProRes 4444
+  (`avdec_prores`), QuickTime Animation (`avdec_qtrle`) et PNG en MOV (`avdec_png`,
+  `gst-libav`). Clips de test dans `crates/io-gst/tests/data` (commandes de génération dans son
+  `README.md`).
+- **Images fixes** : `Straight` si le fichier a un canal alpha (PNG RGBA, niveaux de gris avec
+  alpha), `Opaque` sinon (JPEG, PNG sans alpha).
+- **NDI®** : `ndisrc` reçoit en `uyvy-bgra` (défaut du plugin) : le runtime donne du BGRA
+  pour une source avec alpha (le UYVA serait réduit à UYVY par `ndisrcdemux`), UYVY sinon.
+- **UI** : « avec alpha » après le format, dans l'infobulle des vignettes et les Statistiques.
+
+### Critères (étape 2)
+| Critère | Test | Où |
+|---|---|---|
+| **D3** Source live avec alpha (AYUV converti, RGBA / BGRA tels quels) : RGBA / BGRA, alpha droit à ±1 ; BGRx converti : opaque, alpha 255 | `pipeline::tests::sources_with_alpha_keep_it` | CI |
+| **D3** Fichiers WebM VP8 / VP9 alpha, ProRes 4444, QuickTime Animation, PNG en MOV : première image avec son alpha (127 ± 1) et sa couleur | `pipeline::tests::video_files_with_alpha_keep_it` (décodeurs exigés en CI : `VMA_REQUIRE_ALPHA_DECODERS`) | CI |
+| **D3** Image fixe : alpha selon le fichier | `still::tests::png_is_decoded_exactly`, `sixteen_bit_and_grey_pngs_become_rgba8`, `jpeg_is_decoded_approximately` | CI |
+| **D3** NDI® : source BGRA avec alpha → BGRA droit ; source UYVY → opaque | `outputs::tests::an_ndi_source_with_alpha_keeps_it` | conditionnel (`VMA_REQUIRE_NDI`) : machine de dev |
+| Libellé « avec alpha » | `stats_panel::tests::a_source_with_alpha_says_so` | CI |
