@@ -215,5 +215,22 @@ et une page d'exemple (Q3). Checklist pour le partenaire :
 | 9. Audio HTML, « À propos » ; D12 | ⬜ | — |
 | 10. Soak d'acceptation D11 (1 h), arrêt pour revue | ⬜ | — |
 
+## Chantier demandé — Interface familière à l'opératrice de la référence · ⬜ *(à placer)*
+Demande du mainteneur (2026-11-09) : l'interface doit **ressembler** à celle de la référence pour
+que la partenaire qui l'utilise au quotidien ne soit pas perdue, **sans la copier** (BRIEF §2,
+clean room) : mêmes zones à l'écran, mêmes gestes, mêmes raccourcis et mêmes réactions ;
+couleurs, police, icônes (Lucide proposé : `egui-lucide`, MIT + ISC, ou sa police d'icônes ;
+la crate Phosphor n'est pas encore à egui 0.37), formes et textes propres à VMA.
+
+| Étape | État |
+|---|---|
+| 1. Checklist d'observation de l'interface pour la partenaire (où est chaque zone, actions les plus fréquentes et leur ordre, raccourcis, ce qui la gênerait si ça bougeait) ; pas de capture à reproduire | ⬜ |
+| 2. ADR 0011 « Identité visuelle » (palette, typographie, jeu d'icônes, principes de disposition), à valider | ⬜ |
+| 3. Passe sur l'UI : disposition d'après la checklist, icônes, thème ; tests d'UI inchangés (boutons trouvés par leur nom accessible) | ⬜ |
+| 4. Relecture du déroulé par la partenaire | ⬜ |
+
+**Placement à décider par le mainteneur** : avant l'étape 4 de la Phase 4 (essai CEF) ou après
+sa revue. Hors du périmètre de la Phase 4 (BRIEF §10) : n'avance que sur demande.
+
 ## Phase 5 — Contrôle et monitoring · ⬜
 ## Phase 6 — Sport · ⬜
