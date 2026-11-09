@@ -10,6 +10,7 @@
 #   VMA_MEDIAMTX=/path/to/mediamtx tests/soak/phase3-c14.sh
 #   VMA_SOAK_SECS=60 VMA_MEDIAMTX=… tests/soak/phase3-c14.sh     # short trial
 #   VMA_NO_NDI=1 …                                                # without the NDI output
+#   VMA_KEEP_DIR=…                    # where the recording is kept on failure (default: /tmp)
 #
 # MediaMTX (MIT) is not part of the repository: download v1.21.2 and check its SHA-256
 # against .github/workflows/ci.yml. The stream key is random and passed through the
@@ -65,4 +66,9 @@ echo "== C14 : $secs s → $report"
 status=$?
 grep -m1 '^\*\*Verdict' "$report" || status=1
 ls -l "$work/rec"
+if [ "$status" -ne 0 ]; then
+    # Kept to look into the failure (the report tells when the pairs out of sync came).
+    keep="${VMA_KEEP_DIR:-${TMPDIR:-/tmp}}/vma-c14-$(date +%F-%H%M%S)"
+    mv "$work/rec" "$keep" && echo "Enregistrement gardé : $keep"
+fi
 exit $status

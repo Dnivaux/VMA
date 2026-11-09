@@ -148,6 +148,7 @@ pub struct RenderEngine {
     input_stats: InputStatsReader,
     timelines: Timelines,
     outputs: OutputHub,
+    ticks: TickGrid,
     io_port: Option<IoPort>,
 }
 
@@ -371,6 +372,7 @@ impl RenderEngine {
                 input_stats,
                 timelines: timelines.clone(),
                 outputs: outputs.clone(),
+                ticks,
                 io_port: Some(IoPort {
                     requests: io_requests,
                     events: io_events,
@@ -455,6 +457,11 @@ impl RenderEngine {
 
     pub fn config(&self) -> EngineConfig {
         self.config
+    }
+
+    /// The master ticks in stream time.
+    pub fn ticks(&self) -> TickGrid {
+        self.ticks
     }
 
     pub fn clock_stats(&self) -> Arc<ClockStats> {

@@ -68,6 +68,8 @@ pub struct SyncSnapshot {
     pub beeps: u64,
     /// Beep − flash of each pair, in nanoseconds, in order.
     pub offsets_ns: Vec<i64>,
+    /// Timestamp in the stream of the flash of each pair, in the order of `offsets_ns`.
+    pub flash_pts_ns: Vec<u64>,
     pub unpaired_flashes: u64,
     pub unpaired_beeps: u64,
     /// The source stopped after pictures had come in (and was opened again).
@@ -78,6 +80,11 @@ pub struct SyncSnapshot {
 }
 
 impl SyncSnapshot {
+    fn pair(&mut self, flash_pts_ns: u64, offset_ns: i64) {
+        self.offsets_ns.push(offset_ns);
+        self.flash_pts_ns.push(flash_pts_ns);
+    }
+
     /// Largest |beep − flash|.
     pub fn worst_ns(&self) -> Option<i64> {
         self.offsets_ns.iter().map(|o| o.abs()).max()
@@ -115,7 +122,7 @@ impl Pairing {
     fn flash(&mut self, at: u64, out: &mut SyncSnapshot) {
         out.flashes += 1;
         match take_near(&mut self.beeps, at) {
-            Some(beep) => out.offsets_ns.push(signed(beep) - signed(at)),
+            Some(beep) => out.pair(at, signed(beep) - signed(at)),
             None => self.flashes.push_back(at),
         }
         // Flashes come in time order: a beep this far back cannot pair any more.
@@ -128,7 +135,7 @@ impl Pairing {
     fn beep(&mut self, at: u64, out: &mut SyncSnapshot) {
         out.beeps += 1;
         match take_near(&mut self.flashes, at) {
-            Some(flash) => out.offsets_ns.push(signed(at) - signed(flash)),
+            Some(flash) => out.pair(flash, signed(at) - signed(flash)),
             None => self.beeps.push_back(at),
         }
         while self
@@ -597,6 +604,7 @@ mod tests {
         assert_eq!(out.unpaired_flashes, 0, "video may run ahead");
         p.beep(6_001 * MS, &mut out);
         assert_eq!(out.offsets_ns, [12 * MS as i64, -8 * MS as i64, MS as i64]);
+        assert_eq!(out.flash_pts_ns, [1_000 * MS, 2_000 * MS, 6_000 * MS]);
         assert_eq!((out.flashes, out.beeps), (4, 3));
         assert_eq!((out.unpaired_flashes, out.unpaired_beeps), (1, 0));
         // Too far apart to be a pair.

@@ -759,6 +759,7 @@ fn output_statistics_show_every_figure() {
     };
     let outputs = [state.outputs[0].clone(), lost];
     let counters = vma_engine::OutputCountersSnapshot {
+        first_frame: Some(10),
         delivered: 4321,
         dropped: 7,
         queued: 2,

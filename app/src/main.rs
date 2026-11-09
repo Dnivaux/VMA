@@ -3,6 +3,7 @@
 mod cli;
 mod screens;
 mod soak;
+mod sync_diagnosis;
 
 use anyhow::Context as _;
 use std::process::ExitCode;
@@ -318,6 +319,7 @@ impl<'a> App<'a> {
                     transitions: inputs.len() >= 2,
                     audio: engine.audio_stats(),
                     stream_key: stream_key.clone(),
+                    ticks: engine.ticks(),
                 },
             )
         });

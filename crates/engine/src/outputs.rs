@@ -254,6 +254,8 @@ pub trait OutputConsumer: Send + 'static {
 /// Counters of one attached output.
 #[derive(Debug, Default)]
 pub struct OutputCounters {
+    /// Index of the first frame handed to the consumer, + 1 (0: none yet).
+    first: AtomicU64,
     delivered: AtomicU64,
     dropped: AtomicU64,
     queued: AtomicUsize,
@@ -262,6 +264,8 @@ pub struct OutputCounters {
 /// Point-in-time copy of [`OutputCounters`].
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct OutputCountersSnapshot {
+    /// Index of the first frame handed to the consumer: time 0 of its timestamps.
+    pub first_frame: Option<u64>,
     /// Frames handed to the consumer.
     pub delivered: u64,
     /// Frames lost because its queue was full.
@@ -273,6 +277,7 @@ pub struct OutputCountersSnapshot {
 impl OutputCounters {
     pub fn snapshot(&self) -> OutputCountersSnapshot {
         OutputCountersSnapshot {
+            first_frame: self.first.load(Ordering::Relaxed).checked_sub(1),
             delivered: self.delivered.load(Ordering::Relaxed),
             dropped: self.dropped.load(Ordering::Relaxed),
             queued: self.queued.load(Ordering::Relaxed),
@@ -613,6 +618,10 @@ impl Distributor {
             .spawn(move || {
                 for frame in rx {
                     thread_counters.queued.fetch_sub(1, Ordering::Relaxed);
+                    if thread_counters.first.load(Ordering::Relaxed) == 0 {
+                        let first = frame.index.saturating_add(1);
+                        thread_counters.first.store(first, Ordering::Relaxed);
+                    }
                     consumer.consume(frame);
                     thread_counters.delivered.fetch_add(1, Ordering::Relaxed);
                 }

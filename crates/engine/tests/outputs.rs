@@ -286,6 +286,10 @@ fn frames_are_read_back_only_while_an_output_is_attached() {
 
     let rx = collect(&engine, 7);
     assert!(wait_for(Duration::from_secs(2), || rx.len() >= 5));
+    // Time 0 of the output: the first frame it was handed.
+    let first = rx.try_iter().next().unwrap().index;
+    let counters = engine.outputs().counters(OutputId(7)).unwrap();
+    assert_eq!(counters.first_frame, Some(first));
     engine.outputs().detach(OutputId(7));
     let hub = engine.outputs();
     assert!(wait_for(Duration::from_secs(2), || hub.active() == 0));

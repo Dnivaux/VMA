@@ -7,13 +7,14 @@
 //! `docs/manual-tests/phase0-soak-hostile.md`.
 
 use crate::cli::SoakOptions;
+use crate::sync_diagnosis::{self, Change, Mark, MarkKind, Placement};
 use anyhow::Context as _;
 use std::fmt::Write as _;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
-use vma_clock::ClockStats;
+use vma_clock::{ClockStats, TickGrid};
 use vma_core::{InputId, OutputId};
 use vma_engine::{
     Command, CommandSender, EngineConfig, InputAudioSnapshot, InputSpec, InputStatsReader,
@@ -72,6 +73,8 @@ pub struct SoakContext {
     pub audio: Arc<vma_engine::AudioStats>,
     /// `--stream`: hidden from the command line in the report (B13).
     pub stream_key: vma_engine::Secret,
+    /// The master ticks on the shared clock (C14 diagnosis).
+    pub ticks: TickGrid,
 }
 
 #[derive(Debug)]
@@ -220,20 +223,20 @@ fn sync_clock(spec: &InputSpec) -> Option<(vma_core::FrameRate, i32)> {
 struct Planned {
     at_ns: u64,
     fade: bool,
-    to: (vma_core::FrameRate, i32),
+    to: (InputId, (vma_core::FrameRate, i32)),
 }
 
-/// The clock of the sync source on air (the first one when none is).
-fn on_air_clock(state: &State) -> Option<(vma_core::FrameRate, i32)> {
+/// The sync source on air and its clock (the first one when none is).
+fn on_air_source(state: &State) -> Option<(InputId, (vma_core::FrameRate, i32))> {
     let mut sources = state
         .inputs
         .iter()
         .filter_map(|i| Some((i.id, sync_clock(&i.spec)?)));
-    let first = sources.clone().next()?.1;
+    let first = sources.clone().next()?;
     Some(
         sources
             .find(|(id, _)| Some(*id) == state.program)
-            .map_or(first, |(_, clock)| clock),
+            .unwrap_or(first),
     )
 }
 
@@ -285,7 +288,7 @@ fn plan_sync_transition(state: &State, commands: &CommandSender, now_ns: u64) ->
     Some(Planned {
         at_ns,
         fade,
-        to: next.1,
+        to: *next,
     })
 }
 /// Acceptance A10: arrival → Program within 2 master frames.
@@ -368,11 +371,22 @@ fn run(
         .iter()
         .any(|i| sync_clock(&i.spec).is_some());
     // C14: the sync source on air since each time of the shared clock.
-    let mut on_air: Vec<(u64, (vma_core::FrameRate, i32))> = started_ns
-        .zip(on_air_clock(&soak.state.load()))
+    let mut changes: Vec<Change> = started_ns
+        .zip(on_air_source(&soak.state.load()))
         .filter(|_| soak.transitions)
+        .map(|(at_ns, (to, clock))| Change {
+            at_ns,
+            to,
+            clock,
+            fade: None,
+        })
         .into_iter()
         .collect();
+    // C14 diagnosis: what happened to each input, and the first frame of the stream read
+    // back (its time 0).
+    let mut marks: Vec<Mark> = Vec::new();
+    let mut counts: Vec<(InputId, [u64; 3])> = Vec::new();
+    let mut stream_first_frame: Option<u64> = None;
     // C14: the sound read at the end of the warm-up (the start of each source is silent).
     let mut audio_warm: Option<Vec<InputAudioSnapshot>> = None;
     let mut losses: Vec<(InputId, u64)> = Vec::new();
@@ -430,7 +444,12 @@ fn run(
                 if soak.commands.send(Source::Script, command).is_ok() {
                     transitions += 1;
                     fades += u64::from(p.fade);
-                    on_air.push((p.at_ns, p.to));
+                    changes.push(Change {
+                        at_ns: p.at_ns,
+                        to: p.to.0,
+                        clock: p.to.1,
+                        fade: Some(p.fade),
+                    });
                 }
                 planned = None;
                 last_transition = Instant::now();
@@ -443,6 +462,20 @@ fn run(
             };
             if soak.commands.send(Source::Script, command).is_ok() {
                 transitions += 1;
+            }
+        }
+        if let (true, Some(clock)) = (sync_sources, clock) {
+            let now_ns = clock.now();
+            record_marks(soak, now_ns, &mut counts, &mut marks);
+            if stream_first_frame.is_none() {
+                stream_first_frame = soak
+                    .state
+                    .load()
+                    .outputs
+                    .iter()
+                    .find(|o| matches!(o.spec, vma_engine::OutputSpec::Rtmp(_)))
+                    .and_then(|o| soak.outputs.counters(o.id))
+                    .and_then(|c| c.first_frame);
             }
         }
         // Lost signals, counted once per loss.
@@ -480,6 +513,7 @@ fn run(
     };
     let elapsed = started.elapsed();
     // From the end of the warm-up, as the analyser counts (`None`: one flash a second).
+    let on_air: Vec<_> = changes.iter().map(|c| (c.at_ns, c.clock)).collect();
     let flashes_on_air = started_ns.filter(|_| !on_air.is_empty()).map(|ns| {
         on_air_flashes(
             &on_air,
@@ -488,6 +522,32 @@ fn run(
         )
     });
     let sync = analyser.map(|a| a.map(vma_io_gst::SyncAnalyser::stop));
+    let sync_diagnosis = match (&sync, started_ns, stream_first_frame) {
+        (Some(Ok(sync)), Some(started_ns), Some(first_frame)) if !changes.is_empty() => {
+            let placement = Placement {
+                ticks: soak.ticks,
+                first_frame,
+                started_ns,
+            };
+            let diagnosis = sync_diagnosis::diagnose(
+                &sync.flash_pts_ns,
+                &sync.offsets_ns,
+                &placement,
+                &changes,
+                &marks,
+                OFF_PAIRS_LISTED,
+            );
+            let state = soak.state.load();
+            Some(sync_diagnosis::report(&diagnosis, OFF_PAIRS_LISTED, |id| {
+                state
+                    .inputs
+                    .iter()
+                    .position(|i| i.id == id)
+                    .map_or_else(|| format!("{id}"), |n| format!("n° {}", n + 1))
+            }))
+        }
+        _ => None,
+    };
     if end == End::DeviceLost {
         // The outputs get black, then are finalised (ADR 0006 § 7): report on what they wrote.
         let lost = Instant::now();
@@ -517,6 +577,7 @@ fn run(
         audio_warm: audio_warm.as_deref(),
         reconnections: &reconnections,
         sync: sync.as_ref(),
+        sync_diagnosis: sync_diagnosis.as_deref(),
     };
     let (report, passed) = report(options, soak, &run);
     if let Some(dir) = options
@@ -555,6 +616,8 @@ struct Run<'a> {
     reconnections: &'a [(OutputId, u64)],
     /// `--sync-check`: what the analyser saw, or why it did not start.
     sync: Option<&'a Result<vma_io_gst::SyncSnapshot, String>>,
+    /// Sync sources: the pairs out of sync, placed (see `sync_diagnosis`).
+    sync_diagnosis: Option<&'a str>,
 }
 
 /// B1 on what the analyser saw over `elapsed`: every |beep − flash| within one frame, one
@@ -579,6 +642,52 @@ fn sync_verdict(
         expected,
     }
 }
+
+/// Pairs out of sync listed in the report, at most.
+const OFF_PAIRS_LISTED: usize = 20;
+
+/// Records, at `now_ns`, the pictures skipped and repeated and the latency jumps of each
+/// input since the previous call (`counts`: the counters then).
+fn record_marks(
+    soak: &SoakContext,
+    now_ns: u64,
+    counts: &mut Vec<(InputId, [u64; 3])>,
+    marks: &mut Vec<Mark>,
+) {
+    const KINDS: [MarkKind; 3] = [MarkKind::Skipped, MarkKind::Repeated, MarkKind::LatencyJump];
+    let audio = soak.audio.inputs();
+    for input in &soak.state.load().inputs {
+        let Some(stats) = soak.input_stats.get(input.id).map(|s| s.snapshot()) else {
+            continue;
+        };
+        let jumps = audio
+            .iter()
+            .find(|a| a.input == input.id)
+            .map_or(0, |a| a.latency_jumps);
+        let now = [stats.skipped, stats.repeated, jumps];
+        let before = match counts.iter_mut().find(|(id, _)| *id == input.id) {
+            Some((_, before)) => std::mem::replace(before, now),
+            None => {
+                // First reading: what happened before (the start) is not placed.
+                counts.push((input.id, now));
+                continue;
+            }
+        };
+        for ((kind, now), before) in KINDS.into_iter().zip(now).zip(before) {
+            if now > before && marks.len() < MAX_MARKS {
+                marks.push(Mark {
+                    at_ns: now_ns,
+                    input: input.id,
+                    kind,
+                    count: now - before,
+                });
+            }
+        }
+    }
+}
+
+/// Marks kept, at most (an hour of C14 has about 40).
+const MAX_MARKS: usize = 10_000;
 
 /// Seconds at the start of a soak without flashes read back: the stream starts, the server
 /// probes it, the analyser connects and waits for a key frame.
@@ -1085,6 +1194,10 @@ fn report(options: &SoakOptions, soak: &SoakContext, run: &Run<'_>) -> (String, 
                     ""
                 }
             );
+            if let Some(diagnosis) = run.sync_diagnosis {
+                s.push_str(diagnosis);
+                s.push('\n');
+            }
         }
     }
 
