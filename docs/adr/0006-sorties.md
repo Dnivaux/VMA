@@ -188,10 +188,14 @@ Précisions (détail dans `commands.md`, `ui.md` et `io-gst.md`, « Phase 2 ») 
   remplit une image de son pool (allouée une fois) en noir NV12 limité (Y' 16, Cb Cr 128) et
   la distribue avec le PTS, la durée et l'audio de *n*, comme une image relue. Compteur
   `black` de la distribution, dans le rapport de soak.
-- **À l'instant de la perte**, les images encore sur le GPU (5 au plus : les 4 tampons de relecture et l'image en cours ;
-  3 sur la machine de dev, 5 sous WARP ; ≈ 100 ms à 50p) ne sont
-  jamais relues : un trou, PTS inchangés et audio continu, comme toute image non relue
-  (questions 14–15).
+- **À l'instant de la perte**, les images encore sur le GPU (5 au plus : les 4 tampons de relecture et l'image en cours)
+  ne sont jamais relues : un trou, PTS inchangés et audio continu, comme toute image non relue
+  (questions 14–15). Avec `Device::destroy` (le test B14), s'y ajoutent les ticks rendus
+  avant que wgpu signale la perte : `destroy` rend seulement le device invalide, la perte
+  vient quand sa file est vide (WebGPU), et les soumissions de ces ticks sont refusées.
+  Mesuré : 1 image en vol puis 2 ticks sur la machine de dev (3 images), 6 images sous WARP
+  (*précisé le 2026-11-09 : la borne de 5 en tout faisait échouer le test environ une fois
+  sur cinq sous Windows*).
 - **`vma-control`** voit la perte par `RenderFeedback::device_lost_at()` : événement
   `DeviceLost { frame }` (journalisé, `State::device_lost`), démarrages refusés
   (`Rejection::DeviceLost`) ; au bout du délai (`EngineConfig::device_lost_grace`, 10 s,

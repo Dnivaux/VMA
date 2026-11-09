@@ -325,6 +325,8 @@ fn a_lost_gpu_sends_black_at_the_pts_of_n_then_finalises() {
         .unwrap();
     assert!(wait_for(Duration::from_secs(2), || rx.len() >= 10));
 
+    let feedback = engine.feedback();
+    let destroyed_at = feedback.last_frame();
     device.destroy();
     assert!(
         wait_for(Duration::from_secs(5), || state
@@ -369,12 +371,26 @@ fn a_lost_gpu_sends_black_at_the_pts_of_n_then_finalises() {
     let last = rendered.last().unwrap().index;
     let first = black.first().unwrap().index;
     eprintln!(
-        "lost at {lost_at}: last rendered {last}, first black {first}, {} black frames, {distribution:?}",
+        "destroyed after {destroyed_at}, lost at {lost_at}: last rendered {last}, first black {first}, {} black frames, {distribution:?}",
         black.len()
     );
-    // At most the frames in flight are lost at the moment of the loss: the 4 readback buffers
-    // (`readback::RING`) and the frame being rendered (5 under WARP, 3 on the dev machine).
-    assert!(first - last <= 6, "gap {last} → {first}");
+    // Not read back: the frames in flight at the destroy, at most the 4 readback buffers
+    // (`readback::RING`) and the frame being rendered (1 on the dev machine)…
+    assert!(
+        destroyed_at <= last + 5,
+        "gap {last} → {first}, destroyed after {destroyed_at}"
+    );
+    // … and the ticks until wgpu reports the loss: `destroy` only makes the device invalid,
+    // the loss comes once its queue is empty (WebGPU), and the submissions of the ticks in
+    // between are refused (2 ticks on the dev machine; under WARP, 6 frames lost in all).
+    assert!(
+        lost_at <= destroyed_at + 10,
+        "destroyed after {destroyed_at}, lost at {lost_at}"
+    );
+    assert_eq!(
+        first, lost_at,
+        "black from the first tick that found the loss"
+    );
     assert!(black.iter().all(|f| f.black), "not black after the loss");
     // About one per tick during the grace period.
     let expected = grace.as_secs_f64() * rate.as_f64();
