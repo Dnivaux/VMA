@@ -244,6 +244,26 @@ Commandes de `phase-3.md` § 5, mises en œuvre telles quelles ; précisions app
   `SeqLock<N>`), lu par `vma-audio` à chaque bloc. Un input absent du plan (retiré) n'est
   plus mixé.
 
+## Phase 4 — Overlays (étape 3, 2026-11-09)
+Commandes de `phase-4.md` § 5 pour les overlays, mises en œuvre telles quelles ; précisions
+apportées en codant (à relire) :
+- **Channel** : `OverlayChannel` (`core`), écrit par son numéro dans le journal
+  (`{"OverlayIn":{"channel":2,"input":3}}`) ; un numéro hors de 1–4 n'est même pas relu.
+- **État** : `State::overlays` (4 × `OverlayState` : `input`, `on`, `transition`, `immediate`),
+  relu avec son défaut dans un état d'avant la Phase 4. L'input **reste** dans le channel après
+  sa sortie (il est dessiné pendant son fondu) ; `OverlayOff` et `OverlayAllOff` notent la
+  sortie comme immédiate, `OverlayIn` / `OverlayOut` comme suivant la transition du channel.
+  Un `OverlayIn` déjà en place ne change rien (pas de nouvelle version).
+- **Refus** : input inconnu (`UnknownInput`), input sans image (`NoPictures` : son seul),
+  durée au-delà de 10 s (`DurationOutOfRange`). Un input retiré quitte son channel sans
+  transition.
+- **Plan du rendu** : 4 mots de plus dans le seqlock (input, sens, durée du fondu en ticks,
+  0 = à l'instant : Cut ou sortie immédiate ; au plus 65 535). Le rendu fait monter ou
+  descendre l'opacité de chaque channel comme le FTB : la k-ième image après la commande
+  montre (k + 1) / n ; reprise à mi-chemin depuis où elle en était ; un **autre input** dans le
+  même channel repart de 0 (l'ancien disparaît, le nouveau entre avec la transition).
+- Les transitions du Program (Cut, Fade, T-Bar) ne touchent pas aux channels.
+
 ## Critères d'acceptation
 | Critère | Test |
 |---|---|

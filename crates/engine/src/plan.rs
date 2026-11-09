@@ -6,7 +6,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering, fence};
 
-use vma_core::InputId;
+use vma_core::{InputId, OverlayChannel};
 
 use crate::command::{Effect, MixDomain};
 
@@ -39,6 +39,16 @@ pub struct PlanFtb {
     pub frames: u32,
 }
 
+/// An overlay channel as the render thread sees it (ADR 0010).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct PlanOverlay {
+    pub input: Option<InputId>,
+    /// Towards fully shown (`true`) or gone.
+    pub on: bool,
+    /// Ticks of a full fade; 0 = at once (Cut, or `OverlayOff`). At most `u16::MAX`.
+    pub frames: u32,
+}
+
 /// What to show, as of state `version`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct RenderPlan {
@@ -50,9 +60,28 @@ pub struct RenderPlan {
     pub ftb: PlanFtb,
     /// A full-screen output is on: the render thread fills its frames.
     pub fullscreen: bool,
+    /// In the order of [`OverlayChannel::ALL`].
+    pub overlays: [PlanOverlay; OverlayChannel::COUNT],
 }
 
-const WORDS: usize = 8;
+const WORDS: usize = 8 + OverlayChannel::COUNT;
+
+fn encode_overlay(o: &PlanOverlay) -> u64 {
+    let input = o.input.map_or(0, |i| u64::from(i.0) + 1);
+    let frames = u64::from(o.frames.min(u32::from(u16::MAX)));
+    (input & 0xffff_ffff) | (frames << 32) | (u64::from(o.on) << 48)
+}
+
+fn decode_overlay(w: u64) -> PlanOverlay {
+    PlanOverlay {
+        input: (w & 0xffff_ffff)
+            .checked_sub(1)
+            .and_then(|v| u32::try_from(v).ok())
+            .map(InputId),
+        on: (w >> 48) & 1 == 1,
+        frames: ((w >> 32) & 0xffff) as u32,
+    }
+}
 
 impl RenderPlan {
     fn encode(&self) -> [u64; WORDS] {
@@ -77,6 +106,7 @@ impl RenderPlan {
             MixDomain::Gamma => 0,
             MixDomain::Linear => 1,
         };
+        let [o1, o2, o3, o4] = self.overlays.each_ref().map(encode_overlay);
         [
             self.version,
             id(self.program),
@@ -88,6 +118,10 @@ impl RenderPlan {
             u64::from(self.ftb.black)
                 | (u64::from(self.ftb.frames) << 1)
                 | (u64::from(self.fullscreen) << 40),
+            o1,
+            o2,
+            o3,
+            o4,
         ]
     }
 
@@ -97,7 +131,20 @@ impl RenderPlan {
                 .and_then(|v| u32::try_from(v).ok())
                 .map(InputId)
         };
-        let [version, program, preview, t_id, from, to, bits, ftb] = w;
+        let [
+            version,
+            program,
+            preview,
+            t_id,
+            from,
+            to,
+            bits,
+            ftb,
+            o1,
+            o2,
+            o3,
+            o4,
+        ] = w;
         let transition = match (t_id, id(to)) {
             (1.., Some(to)) => Some(PlanTransition {
                 id: t_id,
@@ -135,6 +182,7 @@ impl RenderPlan {
                 frames: ((ftb >> 1) & 0xffff_ffff) as u32,
             },
             fullscreen: (ftb >> 40) & 1 == 1,
+            overlays: [o1, o2, o3, o4].map(decode_overlay),
         }
     }
 }
@@ -266,6 +314,14 @@ mod tests {
                 frames: n * 11,
             },
             fullscreen: n.is_multiple_of(4),
+            overlays: std::array::from_fn(|c| {
+                let c = c as u32;
+                PlanOverlay {
+                    input: (!(n + c).is_multiple_of(3)).then_some(InputId(n + c)),
+                    on: (n + c).is_multiple_of(2),
+                    frames: (n * 97 + c) % 65_536,
+                }
+            }),
         }
     }
 
@@ -292,6 +348,17 @@ mod tests {
             ..RenderPlan::default()
         };
         assert_eq!(RenderPlan::decode(edge.encode()), edge);
+        // The longest overlay fade fits (10 s at 60 fps); longer is clamped, not wrapped.
+        let mut long = RenderPlan::default();
+        long.overlays[3] = PlanOverlay {
+            input: Some(InputId(u32::MAX - 1)),
+            on: true,
+            frames: 100_000,
+        };
+        let decoded = RenderPlan::decode(long.encode()).overlays[3];
+        assert_eq!(decoded.input, Some(InputId(u32::MAX - 1)));
+        assert_eq!(decoded.frames, u32::from(u16::MAX));
+        assert!(decoded.on);
     }
 
     #[test]

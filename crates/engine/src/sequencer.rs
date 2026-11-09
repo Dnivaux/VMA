@@ -6,13 +6,34 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use vma_core::InputId;
+use vma_core::{InputId, OverlayChannel};
 
 use crate::command::{Effect, MixDomain};
-use crate::plan::{PlanFtb, PlanProgress, PlanReader, RenderPlan};
+use crate::plan::{PlanFtb, PlanOverlay, PlanProgress, PlanReader, RenderPlan};
 
-/// FTB level meaning full black (fixed point: exact at both ends, linear in between).
-const FTB_BLACK: u64 = 1 << 40;
+/// A level at its end (fixed point: exact at both ends, linear in between): FTB fully black,
+/// overlay fully shown.
+const FULL: u64 = 1 << 40;
+
+/// Moves `level` towards [`FULL`] (`up`) or 0: a full fade over `frames` ticks (0: at once),
+/// `elapsed` ticks since the last move.
+fn ramp(level: u64, up: bool, frames: u32, elapsed: u64) -> u64 {
+    let step = FULL.div_ceil(u64::from(frames.max(1)));
+    let moved = step.saturating_mul(elapsed);
+    if up {
+        level.saturating_add(moved).min(FULL)
+    } else {
+        level.saturating_sub(moved)
+    }
+}
+
+/// An overlay channel shown on one tick.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct OverlayShown {
+    pub input: InputId,
+    /// 0 (excluded) to 1.
+    pub opacity: f32,
+}
 
 /// What the Program output shows on one tick: `from` mixed towards `to` by `mix`
 /// (0 = `from` alone, 1 = `to` alone). `None` is black.
@@ -30,6 +51,8 @@ pub struct Composition {
     pub fade_to_black: f32,
     /// A full-screen output is on.
     pub fullscreen: bool,
+    /// Overlay channels visible on this tick, in the order of [`OverlayChannel::ALL`].
+    pub overlays: [Option<OverlayShown>; OverlayChannel::COUNT],
 }
 
 impl Composition {
@@ -68,7 +91,7 @@ pub struct RenderFeedback {
     /// frame.
     started_id: AtomicU64,
     done_id: AtomicU64,
-    /// FTB level of the last tick, 0 to [`FTB_BLACK`].
+    /// FTB level of the last tick, 0 to [`FULL`].
     ftb: AtomicU64,
     /// First tick that found the GPU lost, + 1 (0: not lost).
     device_lost: AtomicU64,
@@ -134,9 +157,12 @@ pub struct Sequencer {
     plan: RenderPlan,
     /// Timed transition being run: `(id, first frame)`.
     running: Option<(u64, u64)>,
-    /// FTB level, 0 to [`FTB_BLACK`], and the frame it was computed for.
+    /// FTB level, 0 to [`FULL`], and the frame it was computed for.
     ftb: u64,
     ftb_frame: Option<u64>,
+    /// Per overlay channel: the input drawn and its level, 0 to [`FULL`].
+    overlays: [(Option<InputId>, u64); OverlayChannel::COUNT],
+    overlay_frame: Option<u64>,
 }
 
 impl Sequencer {
@@ -147,7 +173,37 @@ impl Sequencer {
             running: None,
             ftb: 0,
             ftb_frame: None,
+            overlays: [(None, 0); OverlayChannel::COUNT],
+            overlay_frame: None,
         }
+    }
+
+    /// Moves every overlay channel towards its plan: a new input starts from nothing, then
+    /// each level goes up or down like the FTB (a Fade is linear, `(k + 1) / frames` on the
+    /// k-th tick; turned back half-way, it returns from where it was).
+    fn overlays(
+        &mut self,
+        frame: u64,
+        plan: &[PlanOverlay; OverlayChannel::COUNT],
+    ) -> [Option<OverlayShown>; OverlayChannel::COUNT] {
+        let elapsed = self
+            .overlay_frame
+            .map_or(1, |last| frame.saturating_sub(last));
+        self.overlay_frame = Some(frame);
+        let mut shown = [None; OverlayChannel::COUNT];
+        for ((state, plan), out) in self.overlays.iter_mut().zip(plan).zip(&mut shown) {
+            let (input, level) = state;
+            if *input != plan.input {
+                *input = plan.input;
+                *level = 0;
+            }
+            *level = ramp(*level, plan.on && input.is_some(), plan.frames, elapsed);
+            *out = input.filter(|_| *level > 0).map(|input| OverlayShown {
+                input,
+                opacity: ratio(*level),
+            });
+        }
+        shown
     }
 
     /// Moves the FTB level towards the plan's target: a full fade over `frames` ticks, so the
@@ -156,13 +212,7 @@ impl Sequencer {
     fn fade_to_black(&mut self, frame: u64, ftb: PlanFtb) -> u64 {
         let elapsed = self.ftb_frame.map_or(1, |last| frame.saturating_sub(last));
         self.ftb_frame = Some(frame);
-        let step = FTB_BLACK.div_ceil(u64::from(ftb.frames.max(1)));
-        let moved = step.saturating_mul(elapsed);
-        self.ftb = if ftb.black {
-            self.ftb.saturating_add(moved).min(FTB_BLACK)
-        } else {
-            self.ftb.saturating_sub(moved)
-        };
+        self.ftb = ramp(self.ftb, ftb.black, ftb.frames, elapsed);
         self.ftb
     }
 
@@ -175,6 +225,7 @@ impl Sequencer {
         let plan = self.plan;
         let ftb = self.fade_to_black(frame, plan.ftb);
         feedback.ftb.store(ftb, Ordering::Release);
+        let overlays = self.overlays(frame, &plan.overlays);
         let mut composition = Composition {
             frame,
             version: plan.version,
@@ -186,6 +237,7 @@ impl Sequencer {
             preview: plan.preview,
             fade_to_black: ftb_ratio(ftb),
             fullscreen: plan.fullscreen,
+            overlays,
         };
         if let Some(t) = plan.transition {
             let progress = match t.progress {
@@ -239,7 +291,12 @@ impl Sequencer {
 }
 
 fn ftb_ratio(level: u64) -> f32 {
-    (level.min(FTB_BLACK) as f64 / FTB_BLACK as f64) as f32
+    ratio(level)
+}
+
+/// A level as 0–1.
+fn ratio(level: u64) -> f32 {
+    (level.min(FULL) as f64 / FULL as f64) as f32
 }
 
 #[cfg(test)]
@@ -265,6 +322,7 @@ mod tests {
             domain: MixDomain::Gamma,
             ftb: PlanFtb::default(),
             fullscreen: false,
+            overlays: Default::default(),
         }
     }
 
@@ -325,6 +383,96 @@ mod tests {
         set(128, Effect::Cut);
         assert_eq!(seq.tick(2, &feedback).mix, 1.0);
         assert_eq!(feedback.started(), None, "manual transitions are not timed");
+    }
+
+    fn overlay(input: InputId, on: bool, frames: u32) -> RenderPlan {
+        let mut plan = RenderPlan {
+            version: 1,
+            program: Some(A),
+            ..RenderPlan::default()
+        };
+        plan.overlays[1] = PlanOverlay {
+            input: Some(input),
+            on,
+            frames,
+        };
+        plan
+    }
+
+    fn opacities(
+        seq: &mut Sequencer,
+        feedback: &RenderFeedback,
+        frames: std::ops::Range<u64>,
+    ) -> Vec<f32> {
+        frames
+            .map(|f| {
+                let c = seq.tick(f, feedback);
+                assert!(c.overlays[0].is_none() && c.overlays[2].is_none());
+                c.overlays[1].map_or(0.0, |o| o.opacity)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn an_overlay_fades_in_and_out_linearly() {
+        // D1: tick k after the command shows (k + 1) / frames, like a transition.
+        let (writer, reader) = plan_channel();
+        let feedback = RenderFeedback::default();
+        let mut seq = Sequencer::new(reader);
+        seq.tick(0, &feedback);
+        writer.publish(&overlay(B, true, 4));
+        assert_eq!(
+            opacities(&mut seq, &feedback, 1..6),
+            [0.25, 0.5, 0.75, 1.0, 1.0]
+        );
+        let c = seq.tick(6, &feedback);
+        assert_eq!(c.overlays[1].map(|o| o.input), Some(B));
+        writer.publish(&overlay(B, false, 4));
+        assert_eq!(
+            opacities(&mut seq, &feedback, 7..12),
+            [0.75, 0.5, 0.25, 0.0, 0.0]
+        );
+        assert_eq!(seq.tick(12, &feedback).overlays[1], None, "gone at 0");
+    }
+
+    #[test]
+    fn an_overlay_turned_back_returns_from_where_it_was() {
+        let (writer, reader) = plan_channel();
+        let feedback = RenderFeedback::default();
+        let mut seq = Sequencer::new(reader);
+        writer.publish(&overlay(B, true, 4));
+        assert_eq!(opacities(&mut seq, &feedback, 0..2), [0.25, 0.5]);
+        writer.publish(&overlay(B, false, 4));
+        assert_eq!(opacities(&mut seq, &feedback, 2..4), [0.25, 0.0]);
+        // Skipped ticks keep time: 3 ticks later, 3 steps.
+        writer.publish(&overlay(B, true, 4));
+        assert_eq!(opacities(&mut seq, &feedback, 6..7), [0.75]);
+    }
+
+    #[test]
+    fn a_cut_overlay_and_a_new_input_switch_at_once() {
+        let (writer, reader) = plan_channel();
+        let feedback = RenderFeedback::default();
+        let mut seq = Sequencer::new(reader);
+        writer.publish(&overlay(A, true, 0));
+        assert_eq!(opacities(&mut seq, &feedback, 0..1), [1.0], "Cut in");
+        // Another input in the same channel starts from nothing, then fades in.
+        writer.publish(&overlay(B, true, 2));
+        let c = seq.tick(1, &feedback);
+        assert_eq!(
+            c.overlays[1],
+            Some(OverlayShown {
+                input: B,
+                opacity: 0.5
+            })
+        );
+        assert_eq!(opacities(&mut seq, &feedback, 2..3), [1.0]);
+        // Off: at once, whatever the fade.
+        writer.publish(&overlay(B, false, 0));
+        assert_eq!(seq.tick(3, &feedback).overlays[1], None);
+        // The overlays never touch the Program mix.
+        let c = seq.tick(4, &feedback);
+        assert_eq!((c.single(), c.fade_to_black), (Some(Some(A)), 0.0));
     }
 
     #[test]

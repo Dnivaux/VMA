@@ -47,3 +47,11 @@ En attendant les réponses, VMA utilise la valeur entre parenthèses (`phase-4.m
     fin du stinger)
 23. Formats de fichier acceptés avec alpha (WebM, MOV ProRes 4444, séquence PNG, autres) ?
     (WebM VP8 / VP9 alpha, ProRes 4444, QuickTime Animation / PNG)
+
+## Compléments (étape 3)
+24. Le tally d'un input en overlay (à l'antenne) : rouge comme au Program, une autre couleur,
+    ou rien ? (rouge)
+25. Une vidéo mise en overlay démarre-t-elle seule (comme au Program avec la lecture
+    automatique) ? (non en Phase 4 : elle joue si on l'a lancée)
+26. Le son d'un input en overlay passe-t-il au Master (audio-follow-video) ? (non : seul le
+    Program le fait suivre)

@@ -207,3 +207,23 @@ Voir l'ADR 0006 (§§ 1–3, 5 et « Mise en œuvre côté moteur »).
 | Critère | Test | Statut |
 |---|---|---|
 | Son seul : lu une période derrière le tick, aucun échantillon manquant, bip à l'échantillon près ; casque = Master sans solo ; solo AFL d'un input muet : silence ; PFL : entendu au casque, absent du Master | `audio::tests::a_sound_only_input_and_the_headphones` | CI |
+
+## Phase 4 — Overlay channels (étape 3, 2026-11-09)
+- **Séquenceur** : une rampe d'opacité par channel (point fixe, comme le FTB, `ramp`), sans
+  allocation (tableaux fixes) ; `Composition::overlays` donne, pour chaque channel visible,
+  son input et son opacité.
+- **Rendu** : le mixeur du Program est un `Mixer::with_keys` (ADR 0010) ; à chaque tick, chaque
+  channel visible devient une `Key` (sa source, son opacité) dessinée sur le Program : vue
+  Program de l'UI, sorties (le FTB de l'étage de sortie passe **par-dessus**) et plein écran.
+  La Preview n'a pas d'overlay (Q5). Un input dont le feed n'a pas encore d'image n'est pas
+  dessiné (pas de noir sur le Program). Sources avec alpha : feed créé avec `AlphaMode` (étape 2).
+- Le son d'un input en overlay ne change pas (l'audio-follow-video ne suit que le Program).
+
+### Critères (étape 3)
+| Critère | Test | Où |
+|---|---|---|
+| **D1** Fondu d'entrée et de sortie linéaire au tick près, retour à mi-chemin, ticks manqués comptés | `sequencer::tests::an_overlay_fades_in_and_out_linearly`, `an_overlay_turned_back_returns_from_where_it_was` | CI |
+| **D1** Cut et sortie immédiate à l'instant ; un autre input repart de 0 ; le mélange du Program inchangé | `sequencer::tests::a_cut_overlay_and_a_new_input_switch_at_once` | CI |
+| **D1** De bout en bout sur GPU : image à alpha (feed `Straight`) en overlay 1 sur le Program (vue et sorties, ±1 code), overlay 2 en fondu par-dessus, FTB des sorties par-dessus les overlays, vue Program inchangée, Preview sans overlay, retour au Program seul | `render_loop::overlays_are_keyed_over_the_program_under_the_ftb` | CI |
+| **D9** Règles : In / Out / Toggle / Off / AllOff, refus, input retiré, plan (durées, Cut, Off), indépendance des transitions du Program ; channel invalide refusé à la relecture | `state::tests::overlays_go_in_out_and_toggle`, `overlays_are_refused_without_pictures_or_out_of_range`, `a_removed_input_leaves_its_channel`, `the_plan_carries_each_channel_and_its_fade` | CI |
+| Plan : 4 mots de plus, durée bornée à 65 535 ticks sans débordement | `plan::tests::encoding_round_trips` | CI |

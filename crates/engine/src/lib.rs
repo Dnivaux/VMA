@@ -49,13 +49,13 @@ pub use outputs::{
     HubClosed, OutputConsumer, OutputCounters, OutputCountersSnapshot, OutputFrame, OutputHub,
     SyncTest, audio_sample_at, video_pts_ns,
 };
-pub use plan::{PlanFtb, PlanProgress, PlanReader, PlanTransition, RenderPlan};
+pub use plan::{PlanFtb, PlanOverlay, PlanProgress, PlanReader, PlanTransition, RenderPlan};
 pub use render::{EngineConfig, EngineError, FrameReader, IoPort, Readers, RenderEngine};
-pub use sequencer::{Composition, OnAir, RenderFeedback, Sequencer};
+pub use sequencer::{Composition, OnAir, OverlayShown, RenderFeedback, Sequencer};
 pub use state::{
     AudioState, BusState, Ending, Event, FadeToBlack, Format, InputAudio, InputState, InputStatus,
-    IoRequest, MAX_INPUTS, MAX_NAME_CHARS, Monitor, OutputState, OutputStatus, Playback, Rejection,
-    SourceFormat, State, TransitionState,
+    IoRequest, MAX_INPUTS, MAX_NAME_CHARS, Monitor, OutputState, OutputStatus, OverlayState,
+    Playback, Rejection, SourceFormat, State, TransitionState,
 };
 pub use stats::{RenderCpuSummary, RenderStats, RenderStatsSnapshot};
 pub use timeline::{Timeline, Timelines};

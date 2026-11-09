@@ -10,7 +10,7 @@ use crate::journal::{self, Journal, JournalStats};
 use crate::outputs::{self, ActiveOutputs, Delivery, OutputHub, OutputSettings, SyncTest};
 use crate::plan::plan_channel;
 use crate::readback::{RING, Ring, RingWriter};
-use crate::sequencer::{Composition, RenderFeedback, Sequencer};
+use crate::sequencer::{Composition, OverlayShown, RenderFeedback, Sequencer};
 use crate::sources::{RenderSource, SOURCE_CAPACITY, SourceTable};
 use crate::state::{Format, State};
 use crate::stats::{RenderStats, TickTimes};
@@ -23,7 +23,7 @@ use std::time::{Duration, Instant};
 use vma_clock::{ClockStats, FrameClock, StreamClock, SystemTime, TickGrid};
 use vma_compositor::thumbnails::{self, ATLAS_CELLS, ThumbnailPainter};
 use vma_compositor::{
-    FramePipelines, Mix, MixSpace, Mixer, OutputLook, OutputStage, RenderTarget, Source,
+    FramePipelines, Key, Keys, Mix, MixSpace, Mixer, OutputLook, OutputStage, RenderTarget, Source,
 };
 use vma_core::{FrameRate, InputId, Resolution};
 
@@ -204,7 +204,8 @@ impl RenderEngine {
             output([0, 1, 2].map(|i| thumbnails::new_atlas(&device, &format!("thumbnails[{i}]"))));
         let (fullscreen, fullscreen_reader) = output(targets("fullscreen"));
         let mixers = [
-            Mixer::new(&device, config.resolution),
+            // Program with the overlay channels keyed over it; Preview without (Q5).
+            Mixer::with_keys(&device, config.resolution),
             Mixer::new(&device, config.resolution),
         ];
         let painter = ThumbnailPainter::new(&device);
@@ -690,6 +691,20 @@ impl RenderWorker {
         }
     }
 
+    /// What an overlay channel draws: nothing while its input has no picture (not black,
+    /// which would hide the Program).
+    fn key(&self, shown: Option<OverlayShown>, frame: u64) -> Option<Key<'_>> {
+        let shown = shown?;
+        let source = match self.sources.get(shown.input)? {
+            RenderSource::Feed(reader) => Source::Frame(reader.current()?),
+            other => render_source_to_compositor(other, frame),
+        };
+        Some(Key {
+            source,
+            opacity: shown.opacity,
+        })
+    }
+
     /// Renders Program, Preview, (every other tick) the thumbnails and (with an output
     /// attached, or the full screen on) the output stage in one submission, then publishes
     /// them. Returns the CPU time spent encoding, submitting, and on the output stage (part of
@@ -715,16 +730,20 @@ impl RenderWorker {
             space,
         };
         let preview = Mix::single(self.source(composition.preview, frame));
+        let program_keys = Keys {
+            stinger: None,
+            overlays: composition.overlays.map(|o| self.key(o, frame)),
+        };
         let with_thumbnails = frame.is_multiple_of(2);
 
-        for ((mixer, out), mix) in self
+        for ((mixer, out), (mix, keys)) in self
             .mixers
             .iter()
             .zip([&self.program, &self.preview])
-            .zip([program, preview])
+            .zip([(program, program_keys), (preview, Keys::default())])
         {
             if let Some(target) = out.frames.targets.get(out.producer.back()) {
-                mixer.encode(&self.queue, &mut encoder, &mix, target.view());
+                mixer.encode_keyed(&self.queue, &mut encoder, &mix, &keys, target.view());
             }
         }
         // After the Program mixer, which wrote the Program this stage reads.

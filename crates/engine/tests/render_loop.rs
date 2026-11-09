@@ -780,6 +780,14 @@ fn fullscreen_frames_show_the_program_after_ftb_while_on() {
 /// Adds an input fed from outside (a file spec: no `io-gst` yet, so nothing opens it) and
 /// attaches a 320 × 180 RGBA feed to it.
 fn add_fed_input(spawned: &Spawned) -> (vma_core::InputId, vma_engine::FrameSink) {
+    add_fed_input_with(spawned, vma_core::AlphaMode::Opaque)
+}
+
+/// [`add_fed_input`] whose pictures are read with `alpha`.
+fn add_fed_input_with(
+    spawned: &Spawned,
+    alpha: vma_core::AlphaMode,
+) -> (vma_core::InputId, vma_engine::FrameSink) {
     let state = spawned.engine.state();
     let before = state.load().inputs.len();
     spawned
@@ -809,7 +817,7 @@ fn add_fed_input(spawned: &Spawned) -> (vma_core::InputId, vma_engine::FrameSink
             vma_core::PixelFormat::Rgba,
             Resolution::new(320, 180).unwrap(),
             vma_core::ColorInfo::RGB_FULL,
-            vma_core::AlphaMode::Opaque,
+            alpha,
             Some(FrameRate::FPS_50),
         )
         .unwrap();
@@ -825,6 +833,132 @@ fn add_fed_input(spawned: &Spawned) -> (vma_core::InputId, vma_engine::FrameSink
 
 fn solid(rgb: [u8; 3]) -> Vec<u8> {
     [rgb[0], rgb[1], rgb[2], 255].repeat(320 * 180)
+}
+
+/// D1 / D2 end to end: a picture with alpha in overlay channel 1 is keyed over the Program
+/// (its view and the outputs), a colour in channel 2 fades in over the Program and out
+/// again; the FTB covers the overlays on the outputs; the Preview never shows them.
+#[test]
+fn overlays_are_keyed_over_the_program_under_the_ftb() {
+    use vma_core::OverlayChannel;
+    let mut spawned = spawn_with_journal(
+        FrameRate::FPS_50,
+        Resolution::new(320, 180).unwrap(),
+        Journal::Disabled,
+    );
+    let commands = spawned.engine.commands();
+    let feedback = spawned.engine.feedback();
+    let send = |command| commands.send(Source::Ui, command).unwrap();
+    let state = spawned.engine.state();
+    for color in [Rgb8::new(0, 0, 255), Rgb8::WHITE, Rgb8::new(0, 255, 0)] {
+        send(Command::AddInput {
+            spec: InputSpec::Color { color },
+            name: None,
+        });
+    }
+    assert!(wait_for(Duration::from_secs(2), || state
+        .load()
+        .inputs
+        .len()
+        == 3));
+    let (blue, white, green) = {
+        let s = state.load();
+        (s.inputs[0].id, s.inputs[1].id, s.inputs[2].id)
+    };
+    send(Command::SetPreview { input: green });
+    let (keyed, mut sink) = add_fed_input_with(&spawned, vma_core::AlphaMode::Straight);
+    sink.push_packed(&[255, 0, 0, 128].repeat(320 * 180), 0)
+        .unwrap();
+    assert!(wait_for(Duration::from_secs(2), || feedback.on_air()
+        == OnAir::Input(blue)));
+    let one = OverlayChannel::new(1).unwrap();
+    let two = OverlayChannel::new(2).unwrap();
+    send(Command::SetOverlayTransition {
+        channel: one,
+        effect: vma_engine::Effect::Cut,
+        duration_ms: 0,
+    });
+    send(Command::OverlayIn {
+        channel: one,
+        input: keyed,
+    });
+    assert!(wait_for(Duration::from_secs(2), || state
+        .load()
+        .overlay(one)
+        .shows(keyed)));
+    let from = feedback.last_frame() + 2;
+    // Red at α 128 over blue, on the encoded values: 128 and 127, within a code.
+    let [r, g, b, a] = center_pixel(&mut spawned, from);
+    assert!(
+        r.abs_diff(128) <= 1 && g == 0 && b.abs_diff(127) <= 1 && a == 255,
+        "{r} {g} {b}"
+    );
+    let (img, w) = read_frame(&mut spawned, Out::Preview, from);
+    assert_eq!(
+        pixel(&img, w, w / 2, 90),
+        [0, 255, 0, 255],
+        "Preview without overlay"
+    );
+
+    // Channel 2: white fades in over 500 ms (25 ticks) on top of channel 1.
+    send(Command::OverlayIn {
+        channel: two,
+        input: white,
+    });
+    let started = feedback.last_frame();
+    let [r, _, _, _] = center_pixel(&mut spawned, started + 10);
+    assert!(r > 128 && r < 255, "half-way: {r}");
+    let [r, g, b, _] = center_pixel(&mut spawned, started + 30);
+    assert_eq!([r, g, b], [255, 255, 255], "white on top");
+
+    // FTB at once: black on the outputs, overlays included; the Program view keeps them.
+    let (tx, rx) = crossbeam_channel::unbounded();
+    let hub = spawned.engine.outputs();
+    hub.attach(vma_core::OutputId(1), Box::new(Luma(tx)))
+        .unwrap();
+    assert!(wait_for(Duration::from_secs(2), || hub.active() > 0));
+    let mut seen: Vec<(u64, u8)> = Vec::new();
+    let until = |index: u64, seen: &mut Vec<(u64, u8)>| {
+        assert!(
+            wait_for(Duration::from_secs(5), || {
+                seen.extend(rx.try_iter());
+                seen.last().is_some_and(|s| s.0 >= index)
+            }),
+            "no output frame after {index}"
+        );
+        seen.last().map(|s| s.1)
+    };
+    assert_eq!(
+        until(feedback.last_frame() + 1, &mut seen),
+        Some(235),
+        "white overlay out"
+    );
+    send(Command::SetFadeToBlackDuration { ms: 0 });
+    send(Command::FadeToBlack);
+    assert!(wait_for(Duration::from_secs(3), || feedback
+        .fade_to_black()
+        == 1.0));
+    assert_eq!(
+        until(feedback.last_frame() + 1, &mut seen),
+        Some(16),
+        "FTB over the overlays"
+    );
+    let from = feedback.last_frame() + 1;
+    assert_eq!(center_pixel(&mut spawned, from), [255, 255, 255, 255]);
+    send(Command::FadeToBlack);
+
+    // Both out: Off at once for channel 2, channel 1 by its Cut; the Program is blue again.
+    send(Command::OverlayOff { channel: two });
+    send(Command::OverlayOut { channel: one });
+    assert!(wait_for(Duration::from_secs(2), || state
+        .load()
+        .overlays
+        .iter()
+        .all(|o| !o.on)));
+    let from = feedback.last_frame() + 2;
+    assert_eq!(center_pixel(&mut spawned, from), [0, 0, 255, 255]);
+    hub.detach(vma_core::OutputId(1));
+    spawned.engine.stop();
 }
 
 /// A picture pushed into a feed shows in the Program, the Preview and the thumbnails; the

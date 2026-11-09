@@ -8,7 +8,7 @@
 use std::path::Path;
 
 use egui::{Color32, Key, Rect, RichText, Sense, Stroke, StrokeKind, TextureId, Vec2};
-use vma_core::{InputId, OutputId, Rgb8};
+use vma_core::{InputId, OutputId, OverlayChannel, Rgb8};
 use vma_engine::{
     AutoPlay, Command, CommandId, CommandSender, DeviceId, Effect, InputSpec, InputState,
     InputStatus, Level, MAX_NAME_CHARS, MAX_TRANSITION_MS, MeterReading, MixDomain, Playback,
@@ -845,6 +845,26 @@ impl Switcher {
                         }
                     }
                 });
+                // Overlay channels 1–4: in, or out if it is there (ADR 0010).
+                if !sound_only {
+                    ui.horizontal(|ui| {
+                        for channel in OverlayChannel::ALL {
+                            let n = channel.number();
+                            let on = state.overlay(channel).shows(id);
+                            let hint = if on {
+                                format!("Retirer de l'overlay {n}")
+                            } else {
+                                format!("Mettre en overlay {n}")
+                            };
+                            let button = ui
+                                .add(egui::Button::new(n.to_string()).small().selected(on))
+                                .on_hover_text(hint);
+                            if button.clicked() {
+                                self.send(ui, view, Command::OverlayToggle { channel, input: id });
+                            }
+                        }
+                    });
+                }
             });
         });
     }
@@ -973,6 +993,42 @@ impl Switcher {
                 }
 
                 ui.separator();
+                ui.label(RichText::new("Overlays (entrée et sortie)").strong());
+                egui::Grid::new("vma.overlay_transitions").show(ui, |ui| {
+                    for channel in OverlayChannel::ALL {
+                        let n = channel.number();
+                        let current = state.overlay(channel).transition;
+                        let (mut effect, mut duration) = (current.effect, current.duration_ms);
+                        egui::ComboBox::from_label(format!("Overlay {n}"))
+                            .selected_text(describe_effect(effect))
+                            .show_ui(ui, |ui| {
+                                for e in [Effect::Fade, Effect::Cut] {
+                                    ui.selectable_value(&mut effect, e, describe_effect(e));
+                                }
+                            });
+                        ui.add_enabled(
+                            effect == Effect::Fade,
+                            egui::DragValue::new(&mut duration)
+                                .range(0..=MAX_TRANSITION_MS)
+                                .speed(10)
+                                .suffix(" ms"),
+                        );
+                        ui.end_row();
+                        if effect != current.effect || duration != current.duration_ms {
+                            self.send(
+                                ui,
+                                view,
+                                Command::SetOverlayTransition {
+                                    channel,
+                                    effect,
+                                    duration_ms: duration,
+                                },
+                            );
+                        }
+                    }
+                });
+
+                ui.separator();
                 ui.label(RichText::new("Mixage des Fade").strong());
                 let mut domain = state.mix_domain;
                 ui.radio_value(
@@ -1028,6 +1084,13 @@ fn source_mode(input: &InputState, capture: Option<String>) -> Option<String> {
 }
 
 /// « Fade 0,5 s », « Cut ».
+fn describe_effect(effect: Effect) -> &'static str {
+    match effect {
+        Effect::Fade => "Fade",
+        Effect::Cut => "Cut",
+    }
+}
+
 fn describe(setting: TransitionSetting) -> String {
     match setting.effect {
         Effect::Cut => "Cut".to_owned(),

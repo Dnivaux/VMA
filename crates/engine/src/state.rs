@@ -5,7 +5,9 @@
 
 use serde::{Deserialize, Serialize};
 use vma_audio::{MAX_GAIN_DB, SoloMode};
-use vma_core::{AlphaMode, AudioBus, FrameRate, InputId, OutputId, PixelFormat, Resolution};
+use vma_core::{
+    AlphaMode, AudioBus, FrameRate, InputId, OutputId, OverlayChannel, PixelFormat, Resolution,
+};
 
 use crate::audio_plan::{AudioPlan, PlanInput};
 use crate::command::{
@@ -13,7 +15,7 @@ use crate::command::{
     MixDomain, TRANSITION_BUTTONS, TransitionSetting,
 };
 use crate::output_spec::{InvalidSpec, MAX_OUTPUTS, OutputSpec, RecordSpec, STREAM_SLOTS};
-use crate::plan::{PlanFtb, PlanProgress, PlanTransition, RenderPlan};
+use crate::plan::{PlanFtb, PlanOverlay, PlanProgress, PlanTransition, RenderPlan};
 
 /// Maximum number of inputs (fixed slot table on the render side, ADR 0003).
 pub const MAX_INPUTS: usize = 64;
@@ -212,6 +214,39 @@ impl Default for FadeToBlack {
     }
 }
 
+/// One overlay channel (ADR 0010): its input, whether it is in, and its transition. The
+/// input stays after it went out (drawn while it fades); the opacity itself runs on the
+/// render thread.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OverlayState {
+    pub input: Option<InputId>,
+    /// In (or going in); else out (or going out).
+    pub on: bool,
+    /// Entry and exit: Cut or Fade.
+    pub transition: TransitionSetting,
+    /// The last move was immediate (`OverlayOff`), whatever the transition.
+    #[serde(default)]
+    pub immediate: bool,
+}
+
+impl Default for OverlayState {
+    fn default() -> Self {
+        Self {
+            input: None,
+            on: false,
+            transition: State::DEFAULT_OVERLAY_TRANSITION,
+            immediate: false,
+        }
+    }
+}
+
+impl OverlayState {
+    /// `input` is in this channel (or going in).
+    pub fn shows(&self, input: InputId) -> bool {
+        self.on && self.input == Some(input)
+    }
+}
+
 /// What happens to Preview when a transition ends.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Ending {
@@ -293,6 +328,8 @@ impl TransitionState {
 pub enum Rejection {
     #[error("unknown input {0}")]
     UnknownInput(InputId),
+    #[error("{0} has no pictures")]
+    NoPictures(InputId),
     #[error("no input in Preview")]
     NoPreview,
     #[error("a transition is running")]
@@ -471,6 +508,9 @@ pub struct State {
     /// Buses and headphones (the inputs carry their own settings).
     #[serde(default)]
     pub audio: AudioState,
+    /// The overlay channels, in the order of [`OverlayChannel::ALL`].
+    #[serde(default)]
+    pub overlays: [OverlayState; OverlayChannel::COUNT],
     next_input: u32,
     next_transition: u64,
     next_output: u32,
@@ -506,6 +546,8 @@ impl State {
     pub const DEFAULT_QUICK_PLAY: TransitionSetting = TransitionSetting::fade(500);
     /// FTB duration (`phase-2.md` § 6, to be confirmed by observation).
     pub const DEFAULT_FTB_MS: u32 = 1000;
+    /// Overlay entry and exit (`phase-4.md` § 6, to be confirmed by observation).
+    pub const DEFAULT_OVERLAY_TRANSITION: TransitionSetting = TransitionSetting::fade(500);
     /// The recording present from the start.
     pub const DEFAULT_RECORDING: OutputId = OutputId(1);
 
@@ -533,6 +575,7 @@ impl State {
             ftb: FadeToBlack::default(),
             device_lost: None,
             audio: AudioState::default(),
+            overlays: Default::default(),
             next_input: 1,
             next_transition: 1,
             next_output: Self::DEFAULT_RECORDING.0 + 1,
@@ -613,6 +656,71 @@ impl State {
                     .frames(self.format.rate)
                     .unwrap_or(0),
             },
+            overlays: self.overlays.map(|o| PlanOverlay {
+                input: o.input,
+                on: o.on,
+                frames: if o.immediate {
+                    0
+                } else {
+                    o.transition.frames(self.format.rate).unwrap_or(0)
+                },
+            }),
+        }
+    }
+
+    pub fn overlay(&self, channel: OverlayChannel) -> &OverlayState {
+        let [a, b, c, d] = &self.overlays;
+        match channel.number() {
+            1 => a,
+            2 => b,
+            3 => c,
+            _ => d,
+        }
+    }
+
+    /// The channel `input` is in (or going in), if any.
+    pub fn overlay_of(&self, input: InputId) -> Option<OverlayChannel> {
+        OverlayChannel::ALL
+            .into_iter()
+            .find(|c| self.overlay(*c).shows(input))
+    }
+
+    fn overlay_mut(&mut self, channel: OverlayChannel) -> &mut OverlayState {
+        let [a, b, c, d] = &mut self.overlays;
+        match channel.number() {
+            1 => a,
+            2 => b,
+            3 => c,
+            _ => d,
+        }
+    }
+
+    /// Puts `input` in `channel` with its transition (replacing the input there).
+    fn overlay_in(&mut self, channel: OverlayChannel, input: InputId) -> Result<Change, Rejection> {
+        self.require(input)?;
+        if !self.input(input).is_some_and(|i| i.spec.kind().has_video()) {
+            return Err(Rejection::NoPictures(input));
+        }
+        let o = self.overlay_mut(channel);
+        let before = *o;
+        o.input = Some(input);
+        o.on = true;
+        o.immediate = false;
+        Ok(Change {
+            changed: *o != before,
+            io: Vec::new(),
+        })
+    }
+
+    /// Takes `channel` out, with its transition or at once.
+    fn overlay_out(&mut self, channel: OverlayChannel, immediate: bool) -> Change {
+        let o = self.overlay_mut(channel);
+        let before = *o;
+        o.on = false;
+        o.immediate = immediate;
+        Change {
+            changed: *o != before,
+            io: Vec::new(),
         }
     }
 
@@ -936,6 +1044,35 @@ impl State {
                     return Err(Rejection::DurationOutOfRange(*ms));
                 }
                 self.ftb.duration_ms = *ms;
+                Ok(Change::changed())
+            }
+            Command::OverlayIn { channel, input } => self.overlay_in(*channel, *input),
+            Command::OverlayOut { channel } => Ok(self.overlay_out(*channel, false)),
+            Command::OverlayOff { channel } => Ok(self.overlay_out(*channel, true)),
+            Command::OverlayToggle { channel, input } => {
+                if self.overlay(*channel).shows(*input) {
+                    Ok(self.overlay_out(*channel, false))
+                } else {
+                    self.overlay_in(*channel, *input)
+                }
+            }
+            Command::OverlayAllOff => {
+                let mut changed = false;
+                for channel in OverlayChannel::ALL {
+                    changed |= self.overlay_out(channel, true).changed;
+                }
+                Ok(Change {
+                    changed,
+                    io: Vec::new(),
+                })
+            }
+            Command::SetOverlayTransition {
+                channel,
+                effect,
+                duration_ms,
+            } => {
+                let setting = valid_setting(*effect, *duration_ms)?;
+                self.overlay_mut(*channel).transition = setting;
                 Ok(Change::changed())
             }
             Command::SetInputGain { input, db } => {
@@ -1263,6 +1400,12 @@ impl State {
         if self.preview == Some(input) {
             self.preview = None;
         }
+        for o in &mut self.overlays {
+            if o.input == Some(input) {
+                o.input = None;
+                o.on = false;
+            }
+        }
         let removed = self
             .inputs
             .iter()
@@ -1541,6 +1684,213 @@ mod tests {
         let err = state.apply(&command).unwrap_err();
         assert_eq!(*state, before, "{command:?} changed the state");
         err
+    }
+
+    fn channel(n: u8) -> OverlayChannel {
+        OverlayChannel::new(n).unwrap()
+    }
+
+    #[test]
+    fn overlays_go_in_out_and_toggle() {
+        // D9 (rules): In, Out, Toggle, Off and AllOff, each channel on its own.
+        let mut s = state();
+        let a = color(&mut s, 1);
+        let b = color(&mut s, 2);
+        assert_eq!(s.overlay(channel(1)), &OverlayState::default());
+        s.apply(&Command::OverlayIn {
+            channel: channel(1),
+            input: a,
+        })
+        .unwrap();
+        s.apply(&Command::OverlayIn {
+            channel: channel(3),
+            input: b,
+        })
+        .unwrap();
+        assert!(s.overlay(channel(1)).shows(a));
+        assert!(s.overlay(channel(3)).shows(b));
+        assert_eq!(s.overlay_of(b), Some(channel(3)));
+        assert!(!s.overlay(channel(2)).on);
+        // Again: nothing changes, not even the version.
+        let v = s.version;
+        s.apply(&Command::OverlayIn {
+            channel: channel(1),
+            input: a,
+        })
+        .unwrap();
+        assert_eq!(s.version, v);
+        // Toggle the input that is there: out, input kept (it fades out).
+        s.apply(&Command::OverlayToggle {
+            channel: channel(1),
+            input: a,
+        })
+        .unwrap();
+        assert_eq!(s.overlay(channel(1)).input, Some(a));
+        assert!(!s.overlay(channel(1)).on);
+        assert_eq!(s.overlay_of(a), None);
+        // Toggle another input: it goes in, replacing the first.
+        s.apply(&Command::OverlayToggle {
+            channel: channel(1),
+            input: b,
+        })
+        .unwrap();
+        assert!(s.overlay(channel(1)).shows(b));
+        // Out keeps the transition, Off is immediate, In again is not.
+        s.apply(&Command::OverlayOut {
+            channel: channel(3),
+        })
+        .unwrap();
+        assert!(!s.overlay(channel(3)).immediate);
+        s.apply(&Command::OverlayOff {
+            channel: channel(1),
+        })
+        .unwrap();
+        assert!(s.overlay(channel(1)).immediate && !s.overlay(channel(1)).on);
+        s.apply(&Command::OverlayIn {
+            channel: channel(1),
+            input: a,
+        })
+        .unwrap();
+        assert!(!s.overlay(channel(1)).immediate);
+        s.apply(&Command::OverlayIn {
+            channel: channel(4),
+            input: a,
+        })
+        .unwrap();
+        s.apply(&Command::OverlayAllOff).unwrap();
+        assert!(
+            s.overlays
+                .iter()
+                .all(|o| !o.on && (o.input.is_none() || o.immediate))
+        );
+    }
+
+    #[test]
+    fn overlays_are_refused_without_pictures_or_out_of_range() {
+        let mut s = state();
+        let a = color(&mut s, 1);
+        assert_eq!(
+            refused(
+                &mut s,
+                Command::OverlayIn {
+                    channel: channel(1),
+                    input: InputId(99)
+                }
+            ),
+            Rejection::UnknownInput(InputId(99))
+        );
+        s.apply(&Command::AddInput {
+            spec: InputSpec::AudioDevice {
+                device: DeviceId("alsa_input.mic".into()),
+            },
+            name: None,
+        })
+        .unwrap();
+        let mic = s.inputs.last().unwrap().id;
+        assert_eq!(
+            refused(
+                &mut s,
+                Command::OverlayToggle {
+                    channel: channel(2),
+                    input: mic
+                }
+            ),
+            Rejection::NoPictures(mic)
+        );
+        assert_eq!(
+            refused(
+                &mut s,
+                Command::SetOverlayTransition {
+                    channel: channel(2),
+                    effect: Effect::Fade,
+                    duration_ms: 10_001,
+                }
+            ),
+            Rejection::DurationOutOfRange(10_001)
+        );
+        // A channel outside 1–4 cannot even be read from a journal line.
+        let line = format!(r#"{{"OverlayIn":{{"channel":5,"input":{}}}}}"#, a.0);
+        assert!(serde_json::from_str::<Command>(&line).is_err());
+        let line = format!(r#"{{"OverlayIn":{{"channel":4,"input":{}}}}}"#, a.0);
+        assert_eq!(
+            serde_json::from_str::<Command>(&line).unwrap(),
+            Command::OverlayIn {
+                channel: channel(4),
+                input: a
+            }
+        );
+    }
+
+    #[test]
+    fn a_removed_input_leaves_its_channel() {
+        let mut s = state();
+        let a = color(&mut s, 1);
+        let b = color(&mut s, 2);
+        s.apply(&Command::OverlayIn {
+            channel: channel(2),
+            input: a,
+        })
+        .unwrap();
+        s.apply(&Command::OverlayIn {
+            channel: channel(3),
+            input: b,
+        })
+        .unwrap();
+        s.apply(&Command::OverlayOut {
+            channel: channel(3),
+        })
+        .unwrap();
+        s.apply(&Command::RemoveInput { input: a }).unwrap();
+        s.apply(&Command::RemoveInput { input: b }).unwrap();
+        assert_eq!(s.overlay(channel(2)).input, None);
+        assert_eq!(s.overlay(channel(3)).input, None, "even fading out");
+        assert!(s.plan().overlays.iter().all(|o| o.input.is_none()));
+    }
+
+    #[test]
+    fn the_plan_carries_each_channel_and_its_fade() {
+        let mut s = state();
+        let a = color(&mut s, 1);
+        s.apply(&Command::OverlayIn {
+            channel: channel(2),
+            input: a,
+        })
+        .unwrap();
+        let o = s.plan().overlays[1];
+        // 500 ms at 50 fps by default.
+        assert_eq!((o.input, o.on, o.frames), (Some(a), true, 25));
+        s.apply(&Command::SetOverlayTransition {
+            channel: channel(2),
+            effect: Effect::Cut,
+            duration_ms: 800,
+        })
+        .unwrap();
+        assert_eq!(s.plan().overlays[1].frames, 0, "Cut: at once");
+        s.apply(&Command::SetOverlayTransition {
+            channel: channel(2),
+            effect: Effect::Fade,
+            duration_ms: 1000,
+        })
+        .unwrap();
+        assert_eq!(s.plan().overlays[1].frames, 50);
+        s.apply(&Command::OverlayOff {
+            channel: channel(2),
+        })
+        .unwrap();
+        let o = s.plan().overlays[1];
+        assert_eq!((o.on, o.frames), (false, 0), "Off: at once");
+        // A Program transition leaves the channels alone.
+        let b = color(&mut s, 2);
+        s.apply(&Command::OverlayIn {
+            channel: channel(2),
+            input: a,
+        })
+        .unwrap();
+        s.apply(&Command::SetPreview { input: b }).unwrap();
+        s.apply(&Command::Cut).unwrap();
+        assert!(s.overlay(channel(2)).shows(a));
+        let empty = s.plan().overlays[0];
+        assert_eq!((empty.input, empty.on), (None, false));
     }
 
     fn done(state: &mut State) {

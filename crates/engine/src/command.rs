@@ -6,7 +6,9 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use vma_audio::SoloMode;
-use vma_core::{AudioBus, FrameRate, InputId, InputKind, OutputId, Resolution, Rgb8};
+use vma_core::{
+    AudioBus, FrameRate, InputId, InputKind, OutputId, OverlayChannel, Resolution, Rgb8,
+};
 
 use crate::output_spec::{InvalidSpec, OutputSpec, Secret, SrtMode, validate_srt};
 
@@ -124,6 +126,33 @@ pub enum Command {
     FadeToBlack,
     SetFadeToBlackDuration {
         ms: u32,
+    },
+    // Overlays (Phase 4, `phase-4.md` § 5, ADR 0010). Refused for an input without pictures.
+    /// `input` enters `channel` with the channel's transition, replacing the input there.
+    OverlayIn {
+        channel: OverlayChannel,
+        input: InputId,
+    },
+    /// The input of `channel` leaves with the channel's transition.
+    OverlayOut {
+        channel: OverlayChannel,
+    },
+    /// The input of `channel` leaves at once, whatever the transition.
+    OverlayOff {
+        channel: OverlayChannel,
+    },
+    /// Out if `input` is in `channel`, else in.
+    OverlayToggle {
+        channel: OverlayChannel,
+        input: InputId,
+    },
+    /// Every channel off at once.
+    OverlayAllOff,
+    /// Entry and exit transition of `channel`: Cut or Fade.
+    SetOverlayTransition {
+        channel: OverlayChannel,
+        effect: Effect,
+        duration_ms: u32,
     },
     // Audio (Phase 3, `phase-3.md` § 5). Refused for an input without sound.
     /// Fader of an input, from −∞ to +10 dB.

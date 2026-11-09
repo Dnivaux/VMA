@@ -225,6 +225,21 @@ refusées, `journal_dropped`.
 - Tests d'UI dans une fenêtre de 1 920 × 1 040 (écran 1080p) : inputs et mélangeur côte à
   côte.
 
+## Phase 4 — Overlays (étape 3, 2026-11-09)
+- **Vignettes** : sous les boutons de chaque input qui a une image, 4 petits boutons **1 2 3 4**
+  : l'input entre dans ce channel, ou en sort s'il y est (`OverlayToggle`) ; le bouton du
+  channel où il est apparaît enfoncé. Infobulle « Mettre en overlay *n* » / « Retirer de
+  l'overlay *n* ».
+- **Tally** : un input dans un overlay (entré ou en train d'entrer) est **rouge** comme au
+  Program (à confirmer sur la référence).
+- **Réglages** : section « Overlays (entrée et sortie) », une ligne par channel : effet (Fade /
+  Cut) et durée (ms) → `SetOverlayTransition`.
+- **Format de la source** : « avec alpha » dans l'infobulle des vignettes et les
+  Statistiques (étape 2).
+- Tests sans fenêtre : `switcher::overlay_buttons_and_channel_settings` (boutons par carte,
+  état enfoncé, aucun bouton pour un son seul, réglage d'un channel),
+  `tally::tests::an_input_in_an_overlay_is_on_air`.
+
 ## Critères d'acceptation
 | Critère | Test |
 |---|---|

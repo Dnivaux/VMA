@@ -8,7 +8,8 @@ pub const TALLY_PROGRAM: Color32 = Color32::from_rgb(220, 30, 30);
 pub const TALLY_PREVIEW: Color32 = Color32::from_rgb(40, 175, 75);
 
 /// Tally of an input, as observed on the reference: red on Program, green in Preview, both
-/// inputs of a transition red while it runs.
+/// inputs of a transition red while it runs. An input in an overlay channel is on air: red
+/// (to be confirmed on the reference).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tally {
     Off,
@@ -18,7 +19,10 @@ pub enum Tally {
 
 impl Tally {
     pub fn of(state: &State, input: InputId) -> Self {
-        if state.program == Some(input) || state.transition.is_some_and(|t| t.involves(input)) {
+        if state.program == Some(input)
+            || state.transition.is_some_and(|t| t.involves(input))
+            || state.overlay_of(input).is_some()
+        {
             Self::Program
         } else if state.preview == Some(input) {
             Self::Preview
@@ -41,6 +45,32 @@ mod tests {
     use super::*;
     use vma_core::{FrameRate, Resolution, Rgb8};
     use vma_engine::{Command, Format, InputSpec};
+
+    #[test]
+    fn an_input_in_an_overlay_is_on_air() {
+        let mut state = State::new(Format {
+            rate: FrameRate::FPS_50,
+            resolution: Resolution::HD_1080,
+        });
+        for r in 0..3 {
+            state
+                .apply(&Command::AddInput {
+                    spec: InputSpec::Color {
+                        color: Rgb8::new(r, 0, 0),
+                    },
+                    name: None,
+                })
+                .unwrap();
+        }
+        let c = state.inputs[2].id;
+        let channel = vma_core::OverlayChannel::new(4).unwrap();
+        state
+            .apply(&Command::OverlayIn { channel, input: c })
+            .unwrap();
+        assert_eq!(Tally::of(&state, c), Tally::Program);
+        state.apply(&Command::OverlayOut { channel }).unwrap();
+        assert_eq!(Tally::of(&state, c), Tally::Off, "out (even fading out)");
+    }
 
     #[test]
     fn red_green_and_both_red_during_a_transition() {

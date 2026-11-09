@@ -14,7 +14,7 @@
 use egui::accesskit::Role;
 use egui::{Rect, TextureId, Vec2};
 use egui_kittest::Harness;
-use egui_kittest::kittest::Queryable;
+use egui_kittest::kittest::{NodeT, Queryable};
 use vma_core::{FrameRate, InputId, Resolution, Rgb8};
 use vma_engine::{
     AutoPlay, Command, CommandProbe, CommandSender, DeviceId, Effect, Format, InputSpec, Level,
@@ -435,6 +435,84 @@ fn settings_window() {
         h.state().sent(),
         [Command::SetMixDomain {
             domain: MixDomain::Linear
+        }]
+    );
+}
+
+/// D9 (UI): buttons 1–4 of each card toggle that input in that overlay channel; the
+/// channel it is in shows selected; a sound-only input has none; « Réglages » sets the
+/// transition of each channel.
+#[test]
+fn overlay_buttons_and_channel_settings() {
+    use vma_core::OverlayChannel;
+    let channel = |n| OverlayChannel::new(n).unwrap();
+    let mut state = state();
+    state
+        .apply(&Command::OverlayIn {
+            channel: channel(3),
+            input: id(2),
+        })
+        .unwrap();
+    state
+        .apply(&Command::AddInput {
+            spec: InputSpec::AudioDevice {
+                device: DeviceId("alsa_input.mic".into()),
+            },
+            name: None,
+        })
+        .unwrap();
+    let mut h = harness(state);
+    // Four cards with pictures, one sound-only: four buttons per channel.
+    for n in ["1", "2", "3", "4"] {
+        assert_eq!(
+            h.get_all_by_role_and_label(Role::Button, n).count(),
+            4,
+            "{n}"
+        );
+    }
+    click_button(&h, "1", 0);
+    h.run();
+    assert_eq!(
+        h.state().sent(),
+        [Command::OverlayToggle {
+            channel: channel(1),
+            input: id(1)
+        }]
+    );
+    click_button(&h, "3", 1);
+    h.run();
+    assert_eq!(
+        h.state().sent(),
+        [Command::OverlayToggle {
+            channel: channel(3),
+            input: id(2)
+        }]
+    );
+    let mut threes: Vec<_> = h.get_all_by_role_and_label(Role::Button, "3").collect();
+    threes.sort_by(|a, b| a.rect().left().partial_cmp(&b.rect().left()).unwrap());
+    let selected: Vec<bool> = threes
+        .iter()
+        .map(|b| b.accesskit_node().toggled() == Some(egui::accesskit::Toggled::True))
+        .collect();
+    assert_eq!(
+        selected,
+        [false, true, false, false],
+        "input 2 in channel 3"
+    );
+    drop(threes);
+
+    h.get_by_label("Réglages").click();
+    h.run();
+    h.get_by_label("Overlay 2").click();
+    h.run();
+    h.get_all_by_label("Cut").last().unwrap().click();
+    h.run();
+    assert_eq!(
+        h.state().sent(),
+        [Command::SetOverlayTransition {
+            channel: channel(2),
+            effect: Effect::Cut,
+            duration_ms: 500
         }]
     );
 }
