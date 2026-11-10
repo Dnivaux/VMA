@@ -201,10 +201,12 @@ jobs:
       matrix:
         os: [ubuntu-24.04, windows-latest]
     runs-on: ${{ matrix.os }}
-    env:
-      CEF_PATH: ${{ runner.temp }}/cef
     steps:
       - uses: actions/checkout@v5
+      # Where cef-dll-sys downloads CEF, kept by the cache below (`runner` has no job-level env).
+      - name: CEF location
+        shell: bash
+        run: echo "CEF_PATH=${{ runner.temp }}/cef" >> "$GITHUB_ENV"
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
