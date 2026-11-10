@@ -11,5 +11,5 @@ pub mod shm;
 
 pub use host::{
     HELPER, HelperProcess, HtmlEvent, HtmlFeeds, HtmlFrames, HtmlHost, HtmlStatus, Launcher,
-    ProcessLauncher, Timings, locate_helper,
+    PageAction, ProcessLauncher, Timings, data_event_script, locate_helper,
 };

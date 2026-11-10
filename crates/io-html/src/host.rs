@@ -194,6 +194,24 @@ impl Default for Timings {
     }
 }
 
+/// What the page of an HTML input is asked to do ([`HtmlHost::page`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PageAction {
+    /// JavaScript run in the page as is.
+    Script(String),
+    Navigate(String),
+    Reload,
+    Back,
+    Forward,
+}
+
+/// The script that hands `json` to the page: a `vma-data` DOM event whose `detail` is that
+/// value (`window.addEventListener("vma-data", e => … e.detail …)`). `json` must be valid
+/// JSON, which is a valid JavaScript expression.
+pub fn data_event_script(json: &str) -> String {
+    format!("window.dispatchEvent(new CustomEvent(\"vma-data\", {{ detail: ({json}) }}));")
+}
+
 /// What the host reports to `vma-io`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HtmlEvent {
@@ -211,6 +229,7 @@ struct Input {
     browser: u32,
     url: String,
     size: Resolution,
+    css: Option<String>,
     /// `Create` sent to the current helper.
     created: bool,
     attempts: u32,
@@ -385,12 +404,14 @@ impl<F: HtmlFeeds> HtmlHost<F> {
         self.launches
     }
 
-    /// Opens the HTML input `input` on `url`, of size `size` (the Program's by default).
+    /// Opens the HTML input `input` on `url`, of size `size` (the Program's by default), `css`
+    /// added to every page it loads.
     pub fn open(
         &mut self,
         input: InputId,
         url: &str,
         size: Option<Resolution>,
+        css: Option<&str>,
         emit: &mut impl FnMut(HtmlEvent),
     ) {
         self.close(input);
@@ -401,6 +422,7 @@ impl<F: HtmlFeeds> HtmlHost<F> {
             browser,
             url: url.to_owned(),
             size: size.unwrap_or(self.program),
+            css: css.map(str::to_owned),
             created: false,
             attempts: 0,
             reload_at: None,
@@ -416,6 +438,30 @@ impl<F: HtmlFeeds> HtmlHost<F> {
             return;
         }
         self.create_pending(emit);
+    }
+
+    /// Asks the page of `input` to do `action`. Lost while the helper is down or the page not
+    /// created yet, except `Navigate`: kept for the next opening.
+    pub fn page(&mut self, input: InputId, action: PageAction) {
+        let Some(i) = self.inputs.iter_mut().find(|i| i.input == input) else {
+            tracing::debug!(%input, "page action for an unknown HTML input");
+            return;
+        };
+        let browser = i.browser;
+        let message = match action {
+            PageAction::Script(code) => ToHelper::Script { browser, code },
+            PageAction::Navigate(url) => {
+                i.url.clone_from(&url);
+                ToHelper::Navigate { browser, url }
+            }
+            PageAction::Reload => ToHelper::Reload { browser },
+            PageAction::Back => ToHelper::Back { browser },
+            PageAction::Forward => ToHelper::Forward { browser },
+        };
+        match &self.helper {
+            Helper::Running { connection, .. } if i.created => connection.send(&message),
+            _ => tracing::debug!(%input, "page action dropped: page not open"),
+        }
     }
 
     pub fn close(&mut self, input: InputId) {
@@ -698,6 +744,7 @@ impl<F: HtmlFeeds> HtmlHost<F> {
                         rate_num: self.rate.num(),
                         rate_den: self.rate.den(),
                         frames: path,
+                        css: input.css.clone(),
                     });
                     input.created = true;
                 }

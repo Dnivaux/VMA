@@ -217,6 +217,8 @@ pub enum InvalidSpec {
     NdiName,
     #[error("the page address must start with http://, https:// or file://")]
     HtmlUrl,
+    #[error("text sent to a page is limited to 64 KiB")]
+    HtmlTooLong,
 }
 
 impl OutputSpec {

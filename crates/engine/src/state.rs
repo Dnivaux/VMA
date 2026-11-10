@@ -11,8 +11,8 @@ use vma_core::{
 
 use crate::audio_plan::{AudioPlan, PlanInput};
 use crate::command::{
-    AutoPlay, Command, Db, DeviceId, Effect, InputSpec, MAX_AUDIO_DELAY_MS, MAX_TRANSITION_MS,
-    MixDomain, TRANSITION_BUTTONS, TransitionSetting,
+    AutoPlay, Command, Db, DeviceId, Effect, InputSpec, MAX_AUDIO_DELAY_MS, MAX_HTML_TEXT,
+    MAX_TRANSITION_MS, MixDomain, TRANSITION_BUTTONS, TransitionSetting,
 };
 use crate::output_spec::{InvalidSpec, MAX_OUTPUTS, OutputSpec, RecordSpec, STREAM_SLOTS};
 use crate::plan::{PlanFtb, PlanOverlay, PlanProgress, PlanTransition, RenderPlan};
@@ -386,6 +386,10 @@ pub enum Rejection {
     GainOutOfRange(Db),
     #[error("delay {0} ms is out of range (0–1000)")]
     DelayOutOfRange(u32),
+    #[error("{0} is not an HTML input")]
+    NotHtml(InputId),
+    #[error("the data for the page is not valid JSON: {0}")]
+    InvalidJson(String),
 }
 
 /// Work for `io-gst` that follows from an accepted command.
@@ -430,6 +434,24 @@ pub enum IoRequest {
     SetMonitor {
         device: Option<DeviceId>,
     },
+    /// Something for the page of an HTML input.
+    Html {
+        input: InputId,
+        action: HtmlAction,
+    },
+}
+
+/// What an HTML input's page is asked to do ([`IoRequest::Html`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HtmlAction {
+    /// `vma-data` event with this JSON (checked) as its `detail`.
+    Data(String),
+    Script(String),
+    Reload,
+    /// Load this address (credentials included).
+    Navigate(String),
+    Back,
+    Forward,
 }
 
 /// Something that happened outside `vma-control` and changes the state.
@@ -969,6 +991,38 @@ impl State {
                     _ => return Err(Rejection::NotAColor(*input)),
                 }
                 Ok(Change::changed())
+            }
+            Command::HtmlData { input, json } => {
+                if json.len() > MAX_HTML_TEXT {
+                    return Err(Rejection::InvalidInput(InvalidSpec::HtmlTooLong));
+                }
+                serde_json::from_str::<serde_json::Value>(json)
+                    .map_err(|e| Rejection::InvalidJson(e.to_string()))?;
+                self.html_action(*input, HtmlAction::Data(json.clone()))
+            }
+            Command::HtmlScript { input, script } => {
+                if script.len() > MAX_HTML_TEXT {
+                    return Err(Rejection::InvalidInput(InvalidSpec::HtmlTooLong));
+                }
+                self.html_action(*input, HtmlAction::Script(script.clone()))
+            }
+            Command::HtmlReload { input } => self.html_action(*input, HtmlAction::Reload),
+            Command::HtmlBack { input } => self.html_action(*input, HtmlAction::Back),
+            Command::HtmlForward { input } => self.html_action(*input, HtmlAction::Forward),
+            Command::SetHtmlUrl { input, url } => {
+                url.validate().map_err(Rejection::InvalidInput)?;
+                let id = *input;
+                match &mut self.input_mut(id)?.spec {
+                    InputSpec::Html { url: current, .. } => *current = url.clone(),
+                    _ => return Err(Rejection::NotHtml(id)),
+                }
+                Ok(Change {
+                    changed: true,
+                    io: vec![IoRequest::Html {
+                        input: id,
+                        action: HtmlAction::Navigate(url.expose().to_owned()),
+                    }],
+                })
             }
             Command::Play { input } => self.set_playing(*input, true),
             Command::Pause { input } => self.set_playing(*input, false),
@@ -1606,6 +1660,17 @@ impl State {
             .ok_or(Rejection::UnknownInput(input))
     }
 
+    /// `action` for the page of HTML input `input`; no change to the state.
+    fn html_action(&mut self, input: InputId, action: HtmlAction) -> Result<Change, Rejection> {
+        if !matches!(self.input_mut(input)?.spec, InputSpec::Html { .. }) {
+            return Err(Rejection::NotHtml(input));
+        }
+        Ok(Change {
+            changed: false,
+            io: vec![IoRequest::Html { input, action }],
+        })
+    }
+
     fn playback_mut(&mut self, input: InputId) -> Result<&mut Playback, Rejection> {
         self.input_mut(input)?
             .playback
@@ -1644,6 +1709,7 @@ fn valid_name(name: &str) -> Result<String, Rejection> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::command::HtmlUrl;
     use std::path::PathBuf;
     use vma_core::Rgb8;
 
@@ -1688,6 +1754,145 @@ mod tests {
 
     fn channel(n: u8) -> OverlayChannel {
         OverlayChannel::new(n).unwrap()
+    }
+
+    fn html(state: &mut State) -> InputId {
+        state
+            .apply(&Command::AddInput {
+                spec: InputSpec::Html {
+                    url: HtmlUrl::new("https://op:pw@scores.example/board.html"),
+                    size: None,
+                    css: Some("body { font-size: 40px }".into()),
+                },
+                name: None,
+            })
+            .unwrap();
+        state.inputs.last().unwrap().id
+    }
+
+    /// D9 (HTML, rules): each page command goes to `vma-io` for an HTML input only, data must
+    /// be JSON, texts are bounded; a new address is kept in the spec, credentials included.
+    #[test]
+    fn html_commands_reach_the_page_of_html_inputs_only() {
+        let mut s = state();
+        let page = html(&mut s);
+        let other = color(&mut s, 1);
+        let request = |s: &mut State, command| s.apply(&command).unwrap();
+        assert_eq!(
+            request(
+                &mut s,
+                Command::HtmlData {
+                    input: page,
+                    json: r#"{"home": 3, "away": 1}"#.into()
+                }
+            ),
+            [IoRequest::Html {
+                input: page,
+                action: HtmlAction::Data(r#"{"home": 3, "away": 1}"#.into())
+            }]
+        );
+        for (command, action) in [
+            (
+                Command::HtmlScript {
+                    input: page,
+                    script: "go()".into(),
+                },
+                HtmlAction::Script("go()".into()),
+            ),
+            (Command::HtmlReload { input: page }, HtmlAction::Reload),
+            (Command::HtmlBack { input: page }, HtmlAction::Back),
+            (Command::HtmlForward { input: page }, HtmlAction::Forward),
+        ] {
+            let before = s.clone();
+            assert_eq!(
+                request(&mut s, command),
+                [IoRequest::Html {
+                    input: page,
+                    action
+                }]
+            );
+            assert_eq!(s, before, "a page command does not change the state");
+        }
+        let io = request(
+            &mut s,
+            Command::SetHtmlUrl {
+                input: page,
+                url: HtmlUrl::new("https://op:pw@scores.example/other.html"),
+            },
+        );
+        assert_eq!(
+            io,
+            [IoRequest::Html {
+                input: page,
+                action: HtmlAction::Navigate("https://op:pw@scores.example/other.html".into())
+            }]
+        );
+        let InputSpec::Html { url, css, .. } = &s.input(page).unwrap().spec else {
+            panic!()
+        };
+        assert_eq!(url.expose(), "https://op:pw@scores.example/other.html");
+        assert_eq!(css.as_deref(), Some("body { font-size: 40px }"), "kept");
+
+        assert_eq!(
+            refused(&mut s, Command::HtmlReload { input: other }),
+            Rejection::NotHtml(other)
+        );
+        assert_eq!(
+            refused(
+                &mut s,
+                Command::SetHtmlUrl {
+                    input: other,
+                    url: HtmlUrl::new("https://x.example/")
+                }
+            ),
+            Rejection::NotHtml(other)
+        );
+        assert!(matches!(
+            refused(
+                &mut s,
+                Command::HtmlData {
+                    input: page,
+                    json: "{home: 3".into()
+                }
+            ),
+            Rejection::InvalidJson(_)
+        ));
+        assert_eq!(
+            refused(
+                &mut s,
+                Command::HtmlScript {
+                    input: page,
+                    script: "x".repeat(MAX_HTML_TEXT + 1)
+                }
+            ),
+            Rejection::InvalidInput(InvalidSpec::HtmlTooLong)
+        );
+        assert_eq!(
+            refused(
+                &mut s,
+                Command::SetHtmlUrl {
+                    input: page,
+                    url: HtmlUrl::new("ftp://x/")
+                }
+            ),
+            Rejection::InvalidInput(InvalidSpec::HtmlUrl)
+        );
+        assert_eq!(
+            refused(&mut s, Command::HtmlReload { input: InputId(99) }),
+            Rejection::UnknownInput(InputId(99))
+        );
+        let too_long_css = Command::AddInput {
+            spec: InputSpec::Html {
+                url: HtmlUrl::new("file:///a.html"),
+                size: None,
+                css: Some("x".repeat(MAX_HTML_TEXT + 1)),
+            },
+            name: None,
+        };
+        assert!(matches!(
+            refused(&mut s, too_long_css),
+            Rejection::InvalidInput(InvalidSpec::HtmlTooLong)
+        ));
     }
 
     #[test]

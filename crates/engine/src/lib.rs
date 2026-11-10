@@ -32,7 +32,8 @@ pub use audio::{
 pub use audio_plan::AudioPlan;
 pub use command::{
     AutoPlay, Command, CommandId, Db, DeviceId, Effect, HtmlUrl, InputSpec, MAX_AUDIO_DELAY_MS,
-    MAX_TRANSITION_MS, MixDomain, Source, SrtSource, TRANSITION_BUTTONS, TransitionSetting,
+    MAX_HTML_TEXT, MAX_TRANSITION_MS, MixDomain, Source, SrtSource, TRANSITION_BUTTONS,
+    TransitionSetting,
 };
 pub use control::{
     CommandProbe, CommandSender, ControlStats, InputFeedStats, InputStatsReader, IoEvent,
@@ -53,9 +54,9 @@ pub use plan::{PlanFtb, PlanOverlay, PlanProgress, PlanReader, PlanTransition, R
 pub use render::{EngineConfig, EngineError, FrameReader, IoPort, Readers, RenderEngine};
 pub use sequencer::{Composition, OnAir, OverlayShown, RenderFeedback, Sequencer};
 pub use state::{
-    AudioState, BusState, Ending, Event, FadeToBlack, Format, InputAudio, InputState, InputStatus,
-    IoRequest, MAX_INPUTS, MAX_NAME_CHARS, Monitor, OutputState, OutputStatus, OverlayState,
-    Playback, Rejection, SourceFormat, State, TransitionState,
+    AudioState, BusState, Ending, Event, FadeToBlack, Format, HtmlAction, InputAudio, InputState,
+    InputStatus, IoRequest, MAX_INPUTS, MAX_NAME_CHARS, Monitor, OutputState, OutputStatus,
+    OverlayState, Playback, Rejection, SourceFormat, State, TransitionState,
 };
 pub use stats::{RenderCpuSummary, RenderStats, RenderStatsSnapshot};
 pub use timeline::{Timeline, Timelines};

@@ -124,6 +124,7 @@ fn an_html_page_is_keyed_over_the_program_and_survives_its_helper() {
         spec: InputSpec::Html {
             url: HtmlUrl::new(page_url()),
             size: None,
+            css: None,
         },
         name: None,
     });
@@ -300,6 +301,7 @@ fn an_animated_page_shows_one_new_step_per_program_picture() {
         spec: InputSpec::Html {
             url: HtmlUrl::new(page_file("steps", STEPS)),
             size: None,
+            css: None,
         },
         name: None,
     });

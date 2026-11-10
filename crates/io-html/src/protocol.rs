@@ -76,6 +76,25 @@ pub enum ToHelper {
         rate_num: u32,
         rate_den: u32,
         frames: PathBuf,
+        /// Style sheet added to every page the browser loads.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        css: Option<String>,
+    },
+    /// Runs JavaScript in the page's main frame (no reload).
+    Script {
+        browser: u32,
+        code: String,
+    },
+    /// Loads another page.
+    Navigate {
+        browser: u32,
+        url: String,
+    },
+    Back {
+        browser: u32,
+    },
+    Forward {
+        browser: u32,
     },
     /// Loads the page again (after its renderer process ended).
     Reload {
@@ -217,6 +236,7 @@ mod tests {
             rate_num: 60000,
             rate_den: 1001,
             frames: PathBuf::from("/dev/shm/vma-html-1-7"),
+            css: Some("body { color: red }".into()),
         };
         write(&mut buf, &create).unwrap();
         write(

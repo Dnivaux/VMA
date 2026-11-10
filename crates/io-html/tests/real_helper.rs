@@ -16,7 +16,10 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use vma_core::{FrameRate, InputId, Resolution};
-use vma_io_html::{HtmlEvent, HtmlFeeds, HtmlFrames, HtmlHost, HtmlStatus, locate_helper};
+use vma_io_html::{
+    HtmlEvent, HtmlFeeds, HtmlFrames, HtmlHost, HtmlStatus, PageAction, data_event_script,
+    locate_helper,
+};
 
 /// A page with a transparent background: a block at `rgba(255, 0, 0, 0.5)` in the top-left
 /// corner, and a white one whose position changes at each `requestAnimationFrame`.
@@ -38,6 +41,8 @@ struct Picture {
     /// BGRA at (32, 32) and at the bottom-right corner.
     half: [u8; 4],
     corner: [u8; 4],
+    /// BGRA at the centre of the 64 × 64 blocks along the top edge, (32 + 64 k, 32).
+    blocks: [[u8; 4]; 4],
 }
 
 #[derive(Debug, Clone, Default)]
@@ -65,6 +70,7 @@ impl HtmlFrames for Out {
             len: data.len(),
             half: px(32, 32),
             corner: px(self.width - 1, height - 1),
+            blocks: [0, 1, 2, 3].map(|k| px(32 + 64 * k, 32)),
         });
         Ok(())
     }
@@ -176,7 +182,8 @@ fn a_transparent_page_reaches_the_feed_with_its_alpha_at_the_master_rate() {
     let mut rig = Rig::new(status);
     let input = InputId(1);
     let lost = &mut rig.lost;
-    rig.host.open(input, &page(), None, &mut |e| lost.push(e));
+    rig.host
+        .open(input, &page(), None, None, &mut |e| lost.push(e));
     rig.until("first picture", Duration::from_secs(20), |r| {
         r.feeds.count() > 0
     });
@@ -222,7 +229,8 @@ fn a_killed_renderer_or_helper_is_survived() {
     let mut rig = Rig::new(status);
     let input = InputId(2);
     let lost = &mut rig.lost;
-    rig.host.open(input, &page(), None, &mut |e| lost.push(e));
+    rig.host
+        .open(input, &page(), None, None, &mut |e| lost.push(e));
     rig.until("first picture", Duration::from_secs(20), |r| {
         r.feeds.count() > 10
     });
@@ -315,4 +323,122 @@ fn kill(pid: u32) {
         .status()
         .unwrap();
     assert!(status.success(), "kill {pid}");
+}
+
+/// D6's page: blocks along the top edge show the times the page was loaded (red of block 0,
+/// counted in `sessionStorage`), the last `vma-data` value (green of block 1), what a script
+/// writes (blue of block 2); block 3 is left to the input's CSS.
+const DATA_PAGE: &str = r#"<!doctype html><html><head><style>
+html, body { margin: 0; background: transparent; }
+div { position: absolute; top: 0; width: 64px; height: 64px; }
+#loads { left: 0; } #data { left: 64px; } #script { left: 128px; } #css { left: 192px; }
+</style></head><body>
+<div id="loads"></div><div id="data"></div><div id="script"></div><div id="css"></div>
+<script>
+const loads = Number(sessionStorage.getItem("loads") || 0) + 1;
+sessionStorage.setItem("loads", loads);
+document.getElementById("loads").style.background = `rgb(${loads}, 0, 0)`;
+window.addEventListener("vma-data", (e) => {
+  document.getElementById("data").style.background = `rgb(0, ${e.detail.v}, 0)`;
+});
+// Repainted every frame, so each tick gives a picture.
+(function f() { document.body.dataset.t = performance.now(); requestAnimationFrame(f); })();
+</script></body></html>"#;
+
+/// D6: data, script, reload, another address, back; the CSS of the input on every page.
+#[test]
+fn a_page_takes_data_and_scripts_without_reloading() {
+    let Some(status) = helper() else { return };
+    let mut rig = Rig::new(status);
+    let input = InputId(3);
+    let dir = std::env::temp_dir().join(format!("vma-html-test-page-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let first = dir.join("data.html");
+    std::fs::write(&first, DATA_PAGE).unwrap();
+    let second = dir.join("second.html");
+    std::fs::write(
+        &second,
+        r#"<html><body style="margin:0;background:transparent">
+<div style="position:absolute;left:0;top:0;width:64px;height:64px;background:rgb(0,0,250)"></div>
+</body></html>"#,
+    )
+    .unwrap();
+    let url = |p: &std::path::Path| {
+        let p = p.to_string_lossy().replace('\\', "/");
+        if p.starts_with('/') {
+            format!("file://{p}")
+        } else {
+            format!("file:///{p}")
+        }
+    };
+    let css = "#css { background: rgb(0, 0, 99) !important; }";
+    let lost = &mut rig.lost;
+    rig.host
+        .open(input, &url(&first), None, Some(css), &mut |e| lost.push(e));
+    let last = |r: &Rig| r.feeds.pictures.lock().unwrap().last().map(|p| p.blocks);
+    rig.until("loaded once", Duration::from_secs(20), |r| {
+        last(r).is_some_and(|b| b[0] == [0, 0, 1, 255])
+    });
+    rig.until("CSS applied", Duration::from_secs(5), |r| {
+        last(r).is_some_and(|b| b[3] == [99, 0, 0, 255])
+    });
+
+    // Data: shown within two pictures, the page not loaded again.
+    let sent_at = rig.feeds.count();
+    rig.host.page(
+        input,
+        PageAction::Script(data_event_script(r#"{"v": 200}"#)),
+    );
+    rig.until("data shown", Duration::from_secs(5), |r| {
+        last(r).is_some_and(|b| b[1] == [0, 200, 0, 255])
+    });
+    let pictures = rig.feeds.pictures.lock().unwrap().clone();
+    let shown_at = pictures
+        .iter()
+        .position(|p| p.blocks[1] == [0, 200, 0, 255])
+        .unwrap();
+    assert!(
+        shown_at - sent_at <= 2,
+        "data shown {} pictures later",
+        shown_at - sent_at
+    );
+    assert!(
+        pictures[sent_at..]
+            .iter()
+            .all(|p| p.blocks[0] == [0, 0, 1, 255]),
+        "no reload"
+    );
+
+    // Any script, no reload either.
+    rig.host.page(
+        input,
+        PageAction::Script(
+            r#"document.getElementById("script").style.background = "rgb(0, 0, 77)";"#.into(),
+        ),
+    );
+    rig.until("script ran", Duration::from_secs(5), |r| {
+        last(r).is_some_and(|b| b[2] == [77, 0, 0, 255] && b[0] == [0, 0, 1, 255])
+    });
+
+    // Reload: loaded a second time, the CSS again, the data gone.
+    rig.host.page(input, PageAction::Reload);
+    rig.until("reloaded", Duration::from_secs(10), |r| {
+        last(r).is_some_and(|b| b[0] == [0, 0, 2, 255] && b[3] == [99, 0, 0, 255])
+    });
+    assert_eq!(
+        last(&rig).unwrap()[1],
+        [0, 0, 0, 0],
+        "data gone with the reload"
+    );
+
+    // Another address, then back.
+    rig.host.page(input, PageAction::Navigate(url(&second)));
+    rig.until("second page", Duration::from_secs(10), |r| {
+        last(r).is_some_and(|b| b[0] == [250, 0, 0, 255])
+    });
+    rig.host.page(input, PageAction::Back);
+    rig.until("back on the first", Duration::from_secs(10), |r| {
+        last(r).is_some_and(|b| b[0][2] >= 2 && b[0][0] == 0)
+    });
+    assert!(rig.lost.is_empty(), "{:?}", rig.lost);
 }

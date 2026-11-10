@@ -154,6 +154,34 @@ pub enum Command {
         effect: Effect,
         duration_ms: u32,
     },
+    // HTML inputs (Phase 4 step 7, `phase-4.md` § 5). Refused for any other input. None
+    // reloads the page except `HtmlReload` and `SetHtmlUrl`; all are journaled in full.
+    /// DOM event `vma-data` in the page, `detail` = this JSON (checked).
+    HtmlData {
+        input: InputId,
+        json: String,
+    },
+    /// JavaScript run in the page as is.
+    HtmlScript {
+        input: InputId,
+        script: String,
+    },
+    HtmlReload {
+        input: InputId,
+    },
+    /// Loads another page in the input (kept for its next openings).
+    SetHtmlUrl {
+        input: InputId,
+        url: HtmlUrl,
+    },
+    /// Previous page of the input's history.
+    HtmlBack {
+        input: InputId,
+    },
+    /// Next page of the input's history.
+    HtmlForward {
+        input: InputId,
+    },
     // Audio (Phase 3, `phase-3.md` § 5). Refused for an input without sound.
     /// Fader of an input, from −∞ to +10 dB.
     SetInputGain {
@@ -320,13 +348,18 @@ pub enum InputSpec {
         name: String,
     },
     /// A web page rendered off screen with its alpha (Phase 4, ADR 0009), at the master rate;
-    /// `size`: `None` = the Program's.
+    /// `size`: `None` = the Program's; `css`: style sheet added to every page it loads.
     Html {
         url: HtmlUrl,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         size: Option<Resolution>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        css: Option<String>,
     },
 }
+
+/// Longest JSON, script or style sheet sent to an HTML input, in bytes.
+pub const MAX_HTML_TEXT: usize = 64 * 1024;
 
 /// Address of an HTML input: `http://`, `https://` or `file://`. Credentials in it
 /// (`user:pass@`) are never written out: `Serialize` and `Debug` give `***` in their place
@@ -358,7 +391,7 @@ impl HtmlUrl {
         }
     }
 
-    fn validate(&self) -> Result<(), InvalidSpec> {
+    pub(crate) fn validate(&self) -> Result<(), InvalidSpec> {
         match self.0.split_once("://") {
             Some((scheme, rest))
                 if !rest.is_empty()
@@ -464,7 +497,13 @@ impl InputSpec {
         match self {
             Self::Srt(s) => validate_srt(s.mode, &s.host, s.port, s.latency_ms, &s.passphrase),
             Self::Ndi { name } if name.trim().is_empty() => Err(InvalidSpec::NdiName),
-            Self::Html { url, .. } => url.validate(),
+            Self::Html { url, css, .. } => {
+                url.validate()?;
+                match css {
+                    Some(css) if css.len() > MAX_HTML_TEXT => Err(InvalidSpec::HtmlTooLong),
+                    _ => Ok(()),
+                }
+            }
             _ => Ok(()),
         }
     }
@@ -706,6 +745,7 @@ mod tests {
         InputSpec::Html {
             url: HtmlUrl::new(url),
             size: None,
+            css: None,
         }
     }
 
@@ -765,11 +805,15 @@ mod tests {
         let spec = InputSpec::Html {
             url: url.clone(),
             size: Some(Resolution::HD_720),
+            css: None,
         };
         let json = serde_json::to_string(&spec).unwrap();
         assert!(!json.contains("s3cret"), "{json}");
         let back: InputSpec = serde_json::from_str(&json).unwrap();
-        let InputSpec::Html { url: read, size } = back else {
+        let InputSpec::Html {
+            url: read, size, ..
+        } = back
+        else {
             panic!("{back:?}")
         };
         assert_eq!(

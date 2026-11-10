@@ -931,6 +931,52 @@ mod tests {
         assert_eq!(replayed, *rig.reader.load());
     }
 
+    /// D9 (HTML): page commands are journaled in full (credentials of an address excepted)
+    /// and a replay gives the same state.
+    #[test]
+    fn html_commands_are_journaled_and_replayed() {
+        use crate::command::HtmlUrl;
+        let mut rig = Rig::new(FrameRate::FPS_50);
+        rig.send(Command::AddInput {
+            spec: InputSpec::Html {
+                url: HtmlUrl::new("file:///scores/board.html"),
+                size: None,
+                css: None,
+            },
+            name: None,
+        });
+        let page = rig.controller.state().inputs.last().unwrap().id;
+        rig.send(Command::HtmlData {
+            input: page,
+            json: r#"{"home":3}"#.into(),
+        });
+        rig.send(Command::HtmlScript {
+            input: page,
+            script: "tick()".into(),
+        });
+        rig.send(Command::SetHtmlUrl {
+            input: page,
+            url: HtmlUrl::new("https://op:s3cret@scores.example/live.html"),
+        });
+        rig.send(Command::HtmlReload { input: page });
+        let text = rig.journal_text();
+        assert!(text.contains(r#""json":"{\"home\":3}""#), "{text}");
+        assert!(text.contains("tick()"));
+        assert!(text.contains("https://***@scores.example/live.html"));
+        assert!(!text.contains("s3cret"), "{text}");
+        let fresh = State::new(Format {
+            rate: FrameRate::FPS_50,
+            resolution: Resolution::HD_1080,
+        });
+        let replayed = replay(fresh, &text).unwrap();
+        // The same state, but for the credentials, never written.
+        let mut expected = (*rig.reader.load()).clone();
+        if let InputSpec::Html { url, .. } = &mut expected.inputs[0].spec {
+            *url = HtmlUrl::new("https://***@scores.example/live.html");
+        }
+        assert_eq!(replayed, expected);
+    }
+
     /// C13: every audio setting goes through a command, is journaled (−∞ included), comes
     /// back by replay, and reaches `vma-audio` through the audio plan.
     #[test]

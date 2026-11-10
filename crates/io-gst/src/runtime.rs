@@ -11,7 +11,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use vma_core::{ColorInfo, InputId, OutputId};
-use vma_engine::{InputSpec, IoEvent, IoEventSender, IoPort, IoRequest, Timeline};
+use vma_engine::{HtmlAction, InputSpec, IoEvent, IoEventSender, IoPort, IoRequest, Timeline};
 
 use crate::IoError;
 use crate::audio_devices::{AudioDeviceList, AudioDevices, AudioInputSlot, AudioMonitor};
@@ -26,7 +26,7 @@ use crate::outputs::{Activities, OutputActivity, Outputs};
 use crate::pipeline::{Capture, GstInput, Recipe};
 use crate::still::{self, StillImage};
 use crate::supervisor::retry_delay;
-use vma_io_html::{HtmlEvent, HtmlHost, HtmlStatus};
+use vma_io_html::{HtmlEvent, HtmlHost, HtmlStatus, PageAction, data_event_script};
 use vma_io_ndi::NdiStatus;
 
 /// How often `vma-io` checks its pipelines (bus, watchdog, retries) without requests.
@@ -474,6 +474,17 @@ impl Worker {
                 let events = &self.port.events;
                 self.outputs.stop(output, &mut |e| send(events, e));
             }
+            IoRequest::Html { input, action } => {
+                let action = match action {
+                    HtmlAction::Data(json) => PageAction::Script(data_event_script(&json)),
+                    HtmlAction::Script(code) => PageAction::Script(code),
+                    HtmlAction::Reload => PageAction::Reload,
+                    HtmlAction::Navigate(url) => PageAction::Navigate(url),
+                    HtmlAction::Back => PageAction::Back,
+                    HtmlAction::Forward => PageAction::Forward,
+                };
+                self.html.page(input, action);
+            }
             IoRequest::SetMonitor { device } => match &mut self.headphones {
                 Some(headphones) => headphones.set_device(device),
                 None => tracing::debug!("headphones off: device not played"),
@@ -628,11 +639,12 @@ impl Worker {
                 // Refused with its reason, no new attempt (ADR 0008 § 3).
                 NdiStatus::Unavailable { reason } => lost(reason.clone()),
             },
-            InputSpec::Html { url, size } => {
+            InputSpec::Html { url, size, css } => {
                 let events = &self.port.events;
-                self.html.open(input, url.expose(), *size, &mut |e| {
-                    send(events, html_event(e))
-                });
+                self.html
+                    .open(input, url.expose(), *size, css.as_deref(), &mut |e| {
+                        send(events, html_event(e))
+                    });
             }
             InputSpec::Color { .. } | InputSpec::TestSource { .. } => {}
         }

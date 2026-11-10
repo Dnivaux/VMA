@@ -20,7 +20,9 @@ use std::rc::Rc;
 use std::sync::mpsc::{Receiver, TryRecvError};
 use std::time::{Duration, Instant};
 
-use cef::{BrowserSettings, ImplBrowser, ImplBrowserHost, LogSeverity, Settings, WindowInfo};
+use cef::{
+    BrowserSettings, ImplBrowser, ImplBrowserHost, ImplFrame, LogSeverity, Settings, WindowInfo,
+};
 use vma_io_html::protocol::{self, ALIVE_PERIOD, Connect, FromHelper, SLOTS, ToHelper, VERSION};
 use vma_io_html::shm::SharedFrames;
 
@@ -33,6 +35,8 @@ const NAP: Duration = Duration::from_micros(500);
 
 struct Browser {
     cef: Option<cef::Browser>,
+    /// Added to every page it loads.
+    css: Option<String>,
     width: i32,
     height: i32,
     frames: SharedFrames,
@@ -109,6 +113,16 @@ impl Events for Service {
     }
 
     fn loaded(&self, browser: u32, http_status: i32) {
+        let page = self
+            .0
+            .borrow()
+            .browsers
+            .get(&browser)
+            .and_then(|b| Some((b.cef.clone()?, b.css.clone()?)));
+        // Outside the borrow: CEF may call back.
+        if let Some((cef, css)) = page {
+            run_script(&cef, &style_script(&css));
+        }
         self.0.borrow_mut().send(&FromHelper::Loaded {
             browser,
             http_status,
@@ -312,6 +326,7 @@ fn handle(service: &Service, events: &Shared, message: ToHelper) {
             rate_num,
             rate_den,
             frames,
+            css,
         } => {
             let bytes = SharedFrames::frame_bytes(width, height);
             let opened = SharedFrames::open(&frames, bytes);
@@ -329,6 +344,7 @@ fn handle(service: &Service, events: &Shared, message: ToHelper) {
                 browser,
                 Browser {
                     cef: None,
+                    css,
                     width: w,
                     height: h,
                     frames,
@@ -369,17 +385,31 @@ fn handle(service: &Service, events: &Shared, message: ToHelper) {
             }
         }
         ToHelper::Reload { browser } => {
-            let cef = service
-                .0
-                .borrow()
-                .browsers
-                .get(&browser)
-                .and_then(|b| b.cef.clone());
-            if let Some(cef) = cef {
+            if let Some(cef) = browser_of(service, browser) {
                 cef.reload_ignore_cache();
             }
         }
         ToHelper::Close { browser } => close(service, browser),
+        ToHelper::Script { browser, code } => {
+            if let Some(cef) = browser_of(service, browser) {
+                run_script(&cef, &code);
+            }
+        }
+        ToHelper::Navigate { browser, url } => {
+            if let Some(frame) = browser_of(service, browser).and_then(|b| b.main_frame()) {
+                frame.load_url(Some(&url.as_str().into()));
+            }
+        }
+        ToHelper::Back { browser } => {
+            if let Some(cef) = browser_of(service, browser) {
+                cef.go_back();
+            }
+        }
+        ToHelper::Forward { browser } => {
+            if let Some(cef) = browser_of(service, browser) {
+                cef.go_forward();
+            }
+        }
         ToHelper::Release { browser, slot } => {
             if let Some(b) = service.0.borrow_mut().browsers.get_mut(&browser)
                 && usize::from(slot) < SLOTS
@@ -392,6 +422,33 @@ fn handle(service: &Service, events: &Shared, message: ToHelper) {
         // Taken by `serve` as they arrive.
         ToHelper::BeginFrame { .. } => {}
     }
+}
+
+/// The CEF browser of number `browser`, borrowed only for the lookup.
+fn browser_of(service: &Service, browser: u32) -> Option<cef::Browser> {
+    service
+        .0
+        .borrow()
+        .browsers
+        .get(&browser)
+        .and_then(|b| b.cef.clone())
+}
+
+/// Runs `code` in the page's main frame (no reload).
+fn run_script(cef: &cef::Browser, code: &str) {
+    if let Some(frame) = cef.main_frame() {
+        frame.execute_java_script(Some(&code.into()), Some(&"vma://script".into()), 0);
+    }
+}
+
+/// The script that adds `css` to the page (a `<style>` at the end of its head).
+fn style_script(css: &str) -> String {
+    // JSON is a valid JavaScript string literal.
+    let text = serde_json::to_string(css).unwrap_or_else(|_| "\"\"".into());
+    format!(
+        "(() => {{ const s = document.createElement(\"style\"); s.textContent = {text}; \
+         (document.head || document.documentElement).appendChild(s); }})();"
+    )
 }
 
 fn fail(service: &Service, browser: u32, reason: String) {

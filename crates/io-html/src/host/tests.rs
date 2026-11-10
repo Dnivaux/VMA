@@ -148,7 +148,11 @@ fn fake_helper(addr: SocketAddr, token: &str, script: &Script, killed: &AtomicBo
                         }
                     }
                     ToHelper::Quit => return,
-                    ToHelper::BeginFrame { .. } => {}
+                    ToHelper::BeginFrame { .. }
+                    | ToHelper::Script { .. }
+                    | ToHelper::Navigate { .. }
+                    | ToHelper::Back { .. }
+                    | ToHelper::Forward { .. } => {}
                 }
             }
             Err(protocol::ReadError::Io(e))
@@ -300,7 +304,7 @@ impl Rig {
     fn open(&mut self, input: u32) {
         let lost = &mut self.lost;
         self.host
-            .open(InputId(input), "file:///page.html", None, &mut |e| {
+            .open(InputId(input), "file:///page.html", None, None, &mut |e| {
                 lost.push(e)
             });
     }
@@ -375,7 +379,9 @@ fn a_missing_helper_refuses_html_inputs_with_its_reason() {
         FAST,
     );
     let mut lost = Vec::new();
-    host.open(InputId(3), "file:///page.html", None, &mut |e| lost.push(e));
+    host.open(InputId(3), "file:///page.html", None, None, &mut |e| {
+        lost.push(e)
+    });
     for _ in 0..20 {
         host.tick(Instant::now(), &mut |e| lost.push(e));
         std::thread::sleep(Duration::from_millis(2));
@@ -599,4 +605,55 @@ fn master_ticks_reach_the_helper_as_begin_frames_latest_first() {
     });
     let after: Vec<u64> = rig.launcher.script.begun.lock().unwrap()[begun..].to_vec();
     assert!(after.len() < 4 && after.last() == Some(&203), "{after:?}");
+}
+
+#[test]
+fn page_actions_reach_the_open_page_and_navigate_is_kept() {
+    let mut rig = Rig::new();
+    rig.open(1);
+    rig.until("pictures", |r| r.feeds.count(InputId(1)) > 0);
+    rig.host.page(
+        InputId(1),
+        PageAction::Script(data_event_script(r#"{"score":[3,1]}"#)),
+    );
+    rig.host.page(
+        InputId(1),
+        PageAction::Navigate("file:///other.html".into()),
+    );
+    rig.host.page(InputId(1), PageAction::Back);
+    rig.host.page(InputId(9), PageAction::Reload);
+    rig.until("received", |r| {
+        r.launcher
+            .script
+            .received
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|m| matches!(m, ToHelper::Back { .. }))
+    });
+    let received = rig.launcher.script.received.lock().unwrap().clone();
+    assert!(received.contains(&ToHelper::Script {
+        browser: 1,
+        code: r#"window.dispatchEvent(new CustomEvent("vma-data", { detail: ({"score":[3,1]}) }));"#
+            .into()
+    }));
+    assert!(received.contains(&ToHelper::Navigate {
+        browser: 1,
+        url: "file:///other.html".into()
+    }));
+    // A new helper opens the page navigated to.
+    rig.launcher.script.die.store(true, Ordering::Release);
+    rig.until("lost", |r| !r.lost_reasons(1).is_empty());
+    rig.launcher.script.die.store(false, Ordering::Release);
+    rig.until("created again", |r| {
+        r.launcher
+            .script
+            .received
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|m| matches!(m, ToHelper::Create { url, .. } if url == "file:///other.html"))
+            .count()
+            == 1
+    });
 }

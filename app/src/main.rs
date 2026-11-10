@@ -229,6 +229,7 @@ impl<'a> App<'a> {
             script(vma_engine::InputSpec::Html {
                 url: vma_engine::HtmlUrl::new(url.clone()),
                 size: None,
+                css: None,
             })?;
         }
         if soak_options.is_some() && inputs.is_empty() {
