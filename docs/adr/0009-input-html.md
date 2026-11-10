@@ -101,6 +101,17 @@ Sortie : un rapport, code 0 si tout tient. Machine de dev (Linux, release), CEF 
 - **Copie** d'une image 1080p (7,9 Mio) : ≈ 0,7 ms (p99 0,9 ms), 396 Mio/s par input à 50 i/s.
 - **Démarrage** : contexte CEF ≈ 40 ms, première image de la page ≈ 80 ms.
 
+**CI (runs 42784279830 et 42788150087, 1080p50, sans écran)** :
+- Ubuntu 24.04 : 1000 / 1000 sur 20 s, 3000 / 3000 sur 60 s, latence p99 ≤ 1,8 ms, ≈ 120 Mio par
+  navigateur, 11–12 % d'un cœur.
+- Windows : compile (wrapper C++ par cmake + Ninja), tourne sans écran, alpha prémultiplié.
+  **3000 / 3000 sur 60 s après 5 s de chauffe** (pas de l'horloge 17–24 ms, latence p99 3,2 ms).
+  Mais **une rafale de ticks sans image dans les ~3 premières secondes** après la création du
+  navigateur, à chacun des 3 runs : 6, 12 puis 7 ticks consécutifs (le processus de rendu figé
+  140 à 255 ms, puis il reprend sans sauter d'étape), alors que nos `BeginFrame` partent à
+  l'heure (retard ≤ 0,8 ms) ; rien sur la sortie d'erreur de Chromium. Cause non trouvée
+  (démarrage de Chromium sous Windows, antivirus du runner ?). Non vu sous Linux.
+
 Ce que l'essai a montré, et qui change la mise en œuvre (pas la décision) :
 1. **`--run-all-compositor-stages-before-draw`** (option de Chromium pour le rendu déterministe
    du mode *headless*) : sans elle, le compositeur de Chromium produit l'image d'un tick sans
