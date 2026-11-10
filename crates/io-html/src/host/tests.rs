@@ -19,6 +19,8 @@ struct Script {
     crash: Mutex<Vec<u32>>,
     /// `Create`, `Reload` and `Close` received, in order.
     received: Mutex<Vec<ToHelper>>,
+    /// Ticks of the `BeginFrame` received.
+    begun: Mutex<Vec<u64>>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -96,6 +98,10 @@ fn fake_helper(addr: SocketAddr, token: &str, script: &Script, killed: &AtomicBo
         }
         match protocol::read::<ToHelper>(&mut input, &mut line) {
             Ok(message) => {
+                if let ToHelper::BeginFrame { tick } = message {
+                    script.begun.lock().unwrap().push(tick);
+                    continue;
+                }
                 if !matches!(message, ToHelper::Release { .. }) {
                     script.received.lock().unwrap().push(message.clone());
                 }
@@ -142,6 +148,7 @@ fn fake_helper(addr: SocketAddr, token: &str, script: &Script, killed: &AtomicBo
                         }
                     }
                     ToHelper::Quit => return,
+                    ToHelper::BeginFrame { .. } => {}
                 }
             }
             Err(protocol::ReadError::Io(e))
@@ -261,10 +268,13 @@ struct Rig {
     feeds: TestFeeds,
     launcher: FakeLauncher,
     lost: Vec<HtmlEvent>,
+    /// The master's ticks (the fake paints on its own clock, it only counts them).
+    tick: crossbeam_channel::Sender<u64>,
 }
 
 impl Rig {
     fn new() -> Self {
+        let (tick, ticks) = crossbeam_channel::bounded(4);
         let feeds = TestFeeds::default();
         let launcher = FakeLauncher::default();
         let host = HtmlHost::with_launcher(
@@ -275,6 +285,7 @@ impl Rig {
             feeds.clone(),
             small(),
             FrameRate::FPS_50,
+            ticks,
             FAST,
         );
         Self {
@@ -282,6 +293,7 @@ impl Rig {
             feeds,
             launcher,
             lost: Vec::new(),
+            tick,
         }
     }
 
@@ -359,6 +371,7 @@ fn a_missing_helper_refuses_html_inputs_with_its_reason() {
         feeds.clone(),
         small(),
         FrameRate::FPS_50,
+        crossbeam_channel::never(),
         FAST,
     );
     let mut lost = Vec::new();
@@ -558,4 +571,32 @@ fn a_page_that_stops_painting_does_not_get_the_helper_killed() {
     rig.until("three silences", |_| Instant::now() >= quiet);
     assert_eq!(rig.lost.len(), 1, "{:?}", rig.lost);
     assert_eq!(rig.launches(), 1);
+}
+
+#[test]
+fn master_ticks_reach_the_helper_as_begin_frames_latest_first() {
+    let mut rig = Rig::new();
+    rig.open(1);
+    rig.until("connected", |r| r.feeds.count(InputId(1)) > 0);
+    for tick in 100..104 {
+        rig.tick.send(tick).unwrap();
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    rig.until("four begin-frames", |r| {
+        r.launcher.script.begun.lock().unwrap().len() >= 4
+    });
+    assert_eq!(
+        *rig.launcher.script.begun.lock().unwrap(),
+        [100, 101, 102, 103]
+    );
+    // A backlog goes as its latest tick only.
+    let begun = rig.launcher.script.begun.lock().unwrap().len();
+    for tick in 200..204 {
+        rig.tick.try_send(tick).unwrap();
+    }
+    rig.until("the latest", |r| {
+        r.launcher.script.begun.lock().unwrap().last() == Some(&203)
+    });
+    let after: Vec<u64> = rig.launcher.script.begun.lock().unwrap()[begun..].to_vec();
+    assert!(after.len() < 4 && after.last() == Some(&203), "{after:?}");
 }

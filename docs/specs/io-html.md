@@ -61,12 +61,20 @@ démarre sans lui, et un plantage de Chromium ne fait tomber que les inputs HTML
   qui ne trouve pas d'emplacement libre est jetée et comptée côté `vma-html` (`vma` en
   retard).
 
-## 4. Cadence
-Étape 5 : `vma-html` envoie `SendExternalBeginFrame` à chaque navigateur à la cadence donnée
-par `Create`, sur sa propre horloge (comme la sonde de l'étape 4). **Étape 6** : le tick du
-maître les pilote (ADR 0009 § 4, D5). Options de Chromium fixées par `vma-html` (essai de
-l'étape 4) : `--ozone-platform=headless` (Linux), `--run-all-compositor-stages-before-draw`,
-`--disable-gpu`.
+## 4. Cadence (étape 6)
+Une image de la page par tick du maître (ADR 0009 § 4) :
+1. le thread de rendu, au réveil de chaque tick *n* et avant tout le reste, fait un `try_send`
+   de *n* sur `IoPort::html_ticks` (4 places) ; plein → tick jeté et compté
+   (`RenderStatsSnapshot::html_ticks_dropped`), jamais d'attente ;
+2. le thread `vma-html-ticks` de l'application (dans `HtmlHost`) l'envoie à `vma-html`
+   (`BeginFrame { tick }`) ; en retard, il n'envoie que le dernier tick reçu ;
+3. `vma-html` fait un `SendExternalBeginFrame` par navigateur (plusieurs `BeginFrame` en
+   attente comptent pour un ; ceux d'avant l'initialisation de CEF sont ignorés) : la page
+   avance d'une étape, peint, l'image part dans le feed ;
+4. elle est montrée au tick *n + 1* : latence d'une période (mesurée : 18,7 ms à 50 i/s).
+Les navigateurs ne peignent que sur ces `BeginFrame` (plus d'horloge propre à `vma-html`).
+Options de Chromium fixées par `vma-html` (essai de l'étape 4) : `--ozone-platform=headless`
+(Linux), `--run-all-compositor-stages-before-draw`, `--disable-gpu`.
 
 ## 5. Pannes (ADR 0009 § 6)
 Chacune met l'input « signal perdu » avec sa raison ; il repasse en direct avec un **nouveau
@@ -94,7 +102,9 @@ jamais).
 | **D7** avec le vrai `vma-html` (Linux) : processus de rendu tué → perdu, rechargé, nouveau feed ; `vma-html` tué → relancé, en direct | `tests/real_helper.rs` | job CI `html` (Linux) |
 | **D4 / D7** avec le moteur réel : la page en overlay sur le Program, incrustée avec son alpha (128, 0, 127 sur du bleu), bleu où la page est vide ; `vma-html` tué → perdu, de nouveau en direct et incrusté, **0 tick manqué** | `io-gst/tests/html.rs` | job CI `html` (Linux, lavapipe) |
 | `InputSpec::Html` : schémas, nom, identifiants jamais écrits | voir [`commands.md`](commands.md) | CI |
+| *(étape 6)* Les ticks du maître arrivent à `vma-html` en `BeginFrame`, un retard ne passe que le dernier | `host::tests::master_ticks_reach_the_helper_as_begin_frames_latest_first` | CI |
+| **D5** (BRIEF « sans saccade ») : page animée (une barre qui avance d'une colonne sur 16 à chaque `requestAnimationFrame`) en overlay, **chaque image du Program** relue sur une sortie pendant 60 s après 3 s de chauffe : chaque image montre l'étape suivante et une seule ; feed de l'input sans image répétée ni sautée ; latence p99 ≤ 2 images ; 0 tick manqué | `io-gst/tests/html.rs::an_animated_page_shows_one_new_step_per_program_picture` (`VMA_D5_SECS`, `VMA_D5_RATE`) | job CI `html` (Linux, lavapipe : 50 sur 60 s, 59,94 sur 20 s) ; machine de dev : 50 / 60 s (3000 / 3000), 25, 29,97, 59,94, 60 / 20 s, 0 fausse |
 
-Hors étape 5 : cadence par le tick (6), données vers la page et UI d'ajout (7), son (9), UI
+Hors étapes 5 et 6 : données vers la page et UI d'ajout (7), son (9), UI
 grisée sans `vma-html` (D7, avec l'UI d'ajout à l'étape 7). Jalon visible : `vma --html
 page.html`, puis le bouton **1** de sa vignette.

@@ -89,6 +89,22 @@ impl Feeds {
     }
 }
 
+/// A master clock of `rate` (the render thread's ticks), until its receiver is dropped.
+fn ticker(rate: FrameRate) -> crossbeam_channel::Receiver<u64> {
+    let (tx, rx) = crossbeam_channel::bounded(4);
+    std::thread::spawn(move || {
+        let start = Instant::now();
+        for n in 0u64.. {
+            let at = start + Duration::from_secs_f64(n as f64 / rate.as_f64());
+            std::thread::sleep(at.saturating_duration_since(Instant::now()));
+            if let Err(crossbeam_channel::TrySendError::Disconnected(_)) = tx.try_send(n) {
+                return;
+            }
+        }
+    });
+    rx
+}
+
 fn helper() -> Option<HtmlStatus> {
     let status = locate_helper();
     if status.is_available() {
@@ -128,6 +144,7 @@ impl Rig {
             feeds.clone(),
             Resolution::HD_1080,
             FrameRate::FPS_50,
+            ticker(FrameRate::FPS_50),
         );
         Self {
             host,
@@ -188,7 +205,7 @@ fn a_transparent_page_reaches_the_feed_with_its_alpha_at_the_master_rate() {
         last.half
     );
     assert_eq!(last.corner, [0, 0, 0, 0], "transparent background");
-    // The page animates every frame: about 50 pictures per second on the helper's clock.
+    // The page animates every frame: one picture per master tick, 50 per second.
     let per_second = (pictures.len() - start) as f64 / 3.0;
     assert!(
         (45.0..=55.0).contains(&per_second),

@@ -20,6 +20,7 @@ pub struct RenderStats {
     device_lost_reason: OnceLock<String>,
     outputs_read: AtomicU64,
     output_dropped: AtomicU64,
+    html_ticks_dropped: AtomicU64,
 }
 
 /// Point-in-time copy of [`RenderStats`].
@@ -47,6 +48,9 @@ pub struct RenderStatsSnapshot {
     /// Rendered frames not read back for the outputs: every readback buffer still in use
     /// (the outputs lag 3 frames or more, ADR 0006 § 1).
     pub output_dropped: u64,
+    /// Ticks not passed on to the HTML inputs (`vma-io` behind): their pages missed a
+    /// begin-frame (Phase 4 step 6). 0 in normal operation.
+    pub html_ticks_dropped: u64,
 }
 
 /// CPU time of one rendered tick, per phase (render thread, not GPU execution time).
@@ -136,6 +140,10 @@ impl RenderStats {
         self.output_dropped.fetch_add(1, Ordering::Relaxed);
     }
 
+    pub(crate) fn record_html_tick_drop(&self) {
+        self.html_ticks_dropped.fetch_add(1, Ordering::Relaxed);
+    }
+
     pub(crate) fn record_gpu_error(&self) {
         self.gpu_errors.fetch_add(1, Ordering::Relaxed);
     }
@@ -186,6 +194,7 @@ impl RenderStats {
             device_lost_ticks: self.device_lost_ticks.load(Ordering::Relaxed),
             outputs_read: self.outputs_read.load(Ordering::Relaxed),
             output_dropped: self.output_dropped.load(Ordering::Relaxed),
+            html_ticks_dropped: self.html_ticks_dropped.load(Ordering::Relaxed),
         }
     }
 }

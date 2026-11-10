@@ -65,8 +65,9 @@ impl Connect {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ToHelper {
-    /// Opens an off-screen browser on `url`, `width` × `height`, painting at `rate_num /
-    /// rate_den` images per second into the shared frames at `frames`.
+    /// Opens an off-screen browser on `url`, `width` × `height`, painting into the shared
+    /// frames at `frames` on each [`ToHelper::BeginFrame`] (the master rate, `rate_num /
+    /// rate_den`, is the page's frame rate hint).
     Create {
         browser: u32,
         url: String,
@@ -87,6 +88,11 @@ pub enum ToHelper {
     Release {
         browser: u32,
         slot: u8,
+    },
+    /// Master tick `tick` starts: every browser paints its next picture (ADR 0009 § 4). The
+    /// browsers paint only on these.
+    BeginFrame {
+        tick: u64,
     },
     /// Closes every browser and exits.
     Quit,

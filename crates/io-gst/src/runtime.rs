@@ -223,6 +223,7 @@ impl IoRuntime {
             },
             port.format.resolution,
             port.format.rate,
+            port.html_ticks.clone(),
         );
         let stop = Arc::new(AtomicBool::new(false));
         let devices = DeviceList::default();

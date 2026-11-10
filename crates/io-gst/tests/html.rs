@@ -1,6 +1,8 @@
-//! HTML input with the real engine and the real `vma-html` (Phase 4 step 5, D4 and D7): a page
-//! with a transparent background in overlay over the Program, keyed with its alpha; `vma-html`
-//! killed → the input is lost then live again, and the Program never misses a tick.
+//! HTML input with the real engine and the real `vma-html` (Phase 4 steps 5 and 6):
+//! - D4 / D7: a page with a transparent background in overlay over the Program, keyed with its
+//!   alpha; `vma-html` killed → the input is lost then live again, the Program misses no tick;
+//! - D5: an animated page in overlay, every Program picture read on an output: each shows the
+//!   page's next step, and only one, for 60 s (`VMA_D5_SECS`) at 50 (`VMA_D5_RATE=num/den`).
 //!
 //! Needs the helper: `VMA_HTML=…/vma-html` (built with `--features cef`). Without it the test
 //! passes with a note, unless `VMA_REQUIRE_HTML` is set (CI job `html`, Linux).
@@ -18,8 +20,8 @@ use std::time::{Duration, Instant};
 use vma_compositor::headless;
 use vma_core::{AlphaMode, FrameRate, InputId, OverlayChannel, PixelFormat, Resolution, Rgb8};
 use vma_engine::{
-    Command, EngineConfig, FrameReader, HtmlUrl, InputSpec, InputStatus, Journal, RenderEngine,
-    Source,
+    Command, EngineConfig, FrameReader, HtmlUrl, InputSpec, InputStatus, Journal, OutputConsumer,
+    OutputFrame, RenderEngine, Source,
 };
 use vma_io_gst::IoRuntime;
 
@@ -64,10 +66,14 @@ fn program_pixel(
 }
 
 fn page_url() -> String {
+    page_file("overlay", PAGE)
+}
+
+fn page_file(name: &str, page: &str) -> String {
     let dir = std::env::temp_dir().join(format!("vma-io-html-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
-    let path = dir.join("overlay.html");
-    std::fs::write(&path, PAGE).unwrap();
+    let path = dir.join(format!("{name}.html"));
+    std::fs::write(&path, page).unwrap();
     let p = path.to_string_lossy().replace('\\', "/");
     if p.starts_with('/') {
         format!("file://{p}")
@@ -217,4 +223,167 @@ fn helper_pid() -> Option<u32> {
         let cmd = std::fs::read(format!("/proc/{pid}/cmdline")).ok()?;
         (ppid == me && String::from_utf8_lossy(&cmd).contains("--vma-connect")).then_some(pid)
     })
+}
+
+/// D5's page: at each `requestAnimationFrame`, a white bar moves to the next of 16 columns
+/// (20 px wide, rows 60 to 120); everything else transparent.
+const STEPS: &str = r#"<!doctype html><html><head><style>
+html, body { margin: 0; background: transparent; overflow: hidden; }
+#bar { position: absolute; top: 60px; width: 20px; height: 60px; background: #fff; }
+</style></head><body><div id="bar"></div><script>
+const bar = document.getElementById("bar"); let n = 0;
+function f() { bar.style.left = (20 * (n % 16)) + "px"; n += 1; requestAnimationFrame(f); }
+requestAnimationFrame(f);
+</script></body></html>"#;
+
+/// Output test double: frame index and the column of the white bar (`None`: no bar, or two).
+struct Steps(crossbeam_channel::Sender<(u64, Option<u32>)>);
+
+impl OutputConsumer for Steps {
+    fn consume(&mut self, frame: std::sync::Arc<OutputFrame>) {
+        let w = frame.luma_stride();
+        let luma = frame.luma();
+        let lit: Vec<u32> = (0..16u32)
+            .filter(|c| luma[90 * w + (c * 20 + 10) as usize] > 128)
+            .collect();
+        let column = (lit.len() == 1).then(|| lit[0]);
+        let _ = self.0.send((frame.index, column));
+    }
+}
+
+/// D5 (BRIEF « sans saccade »): one new step of the page per Program picture, none repeated
+/// or skipped, the HTML input's feed neither repeats nor drops, latency p99 ≤ 2 pictures.
+#[test]
+fn an_animated_page_shows_one_new_step_per_program_picture() {
+    let io_status = vma_io_html::locate_helper();
+    if !io_status.is_available() {
+        if std::env::var_os("VMA_REQUIRE_HTML").is_some() {
+            panic!("vma-html required (VMA_REQUIRE_HTML): {io_status:?}");
+        }
+        eprintln!("note: test skipped, no vma-html ({io_status:?}); set VMA_HTML");
+        return;
+    }
+    let secs: u64 = std::env::var("VMA_D5_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(60);
+    let gpu = pollster::block_on(headless::request_gpu()).expect("GPU adapter required");
+    // Any master rate: `VMA_D5_RATE=num/den` (50 by default).
+    let rate = std::env::var("VMA_D5_RATE")
+        .ok()
+        .and_then(|r| {
+            let (n, d) = r.split_once('/').unwrap_or((&r, "1"));
+            FrameRate::new(n.parse().ok()?, d.parse().ok()?).ok()
+        })
+        .unwrap_or(FrameRate::FPS_50);
+    let config = EngineConfig {
+        rate,
+        resolution: Resolution::new(320, 180).unwrap(),
+        ..EngineConfig::default()
+    };
+    let (mut engine, _readers) = RenderEngine::spawn(
+        gpu.device.clone(),
+        gpu.queue.clone(),
+        config,
+        Journal::Disabled,
+    )
+    .unwrap();
+    let io = IoRuntime::start(engine.take_io_port().unwrap()).unwrap();
+    let commands = engine.commands();
+    let send = |command| commands.send(Source::Script, command).unwrap();
+    let state = engine.state();
+    send(Command::AddInput {
+        spec: InputSpec::Color { color: Rgb8::BLACK },
+        name: None,
+    });
+    send(Command::AddInput {
+        spec: InputSpec::Html {
+            url: HtmlUrl::new(page_file("steps", STEPS)),
+            size: None,
+        },
+        name: None,
+    });
+    assert!(wait_for(Duration::from_secs(2), || state
+        .load()
+        .inputs
+        .len()
+        == 2));
+    let page = state.load().inputs[1].id;
+    assert!(
+        wait_for(Duration::from_secs(30), || matches!(
+            state.load().input(page).map(|i| i.status),
+            Some(InputStatus::Live { source: Some(_) })
+        )),
+        "HTML input never live"
+    );
+    let one = OverlayChannel::new(1).unwrap();
+    send(Command::SetOverlayTransition {
+        channel: one,
+        effect: vma_engine::Effect::Cut,
+        duration_ms: 0,
+    });
+    send(Command::OverlayIn {
+        channel: one,
+        input: page,
+    });
+    let (tx, rx) = crossbeam_channel::unbounded();
+    let hub = engine.outputs();
+    hub.attach(vma_core::OutputId(1), Box::new(Steps(tx)))
+        .unwrap();
+
+    // Warm-up: 3 s (page loaded, overlay in, V8 settled; Windows' startup stall, ROADMAP ⏸).
+    let warm = Instant::now() + Duration::from_secs(3);
+    while Instant::now() < warm {
+        let _ = rx.recv_timeout(Duration::from_millis(50));
+    }
+    let _ = rx.try_iter().count();
+    let stats = engine.input_stats().get(page).unwrap();
+    let before = stats.snapshot();
+    let missed = engine.clock_stats().missed();
+
+    let total = secs * u64::from(rate.num()) / u64::from(rate.den());
+    let mut seen: Vec<(u64, Option<u32>)> = Vec::with_capacity(total as usize);
+    let deadline = Instant::now() + Duration::from_secs(secs + 10);
+    while (seen.len() as u64) < total && Instant::now() < deadline {
+        if let Ok(frame) = rx.recv_timeout(Duration::from_millis(100)) {
+            seen.push(frame);
+        }
+    }
+    let after = stats.snapshot();
+    assert_eq!(seen.len() as u64, total, "output frames received");
+
+    let mut bad = Vec::new();
+    for pair in seen.windows(2) {
+        let [(i, a), (j, b)] = [pair[0], pair[1]];
+        let ok = j == i + 1 && matches!((a, b), (Some(a), Some(b)) if b == (a + 1) % 16);
+        if !ok {
+            bad.push(format!("{i} {a:?} → {j} {b:?}"));
+        }
+    }
+    let repeated = after.repeated - before.repeated;
+    let skipped = after.skipped - before.skipped;
+    let frame = rate.frame_duration();
+    eprintln!(
+        "D5: {} pictures, {} bad; feed repeated {repeated}, skipped {skipped}; latency p50 \
+         {:?} p99 {:?} max {:?}; ticks missed {}",
+        seen.len(),
+        bad.len(),
+        after.latency.p50,
+        after.latency.p99,
+        after.latency.max,
+        engine.clock_stats().missed() - missed
+    );
+    assert!(
+        bad.is_empty(),
+        "{} pictures off, first: {:?}",
+        bad.len(),
+        &bad[..bad.len().min(10)]
+    );
+    assert_eq!((repeated, skipped), (0, 0), "HTML feed");
+    assert!(
+        after.latency.p99 <= frame * 2,
+        "latency p99 {:?}",
+        after.latency.p99
+    );
+    drop(io);
 }

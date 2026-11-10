@@ -152,6 +152,9 @@ pub struct RenderEngine {
     io_port: Option<IoPort>,
 }
 
+/// Capacity of [`IoPort::html_ticks`].
+const HTML_TICKS: usize = 4;
+
 /// What `vma-io` needs from the engine: the requests of `vma-control` (open, close, play…),
 /// a way to report events, and the feed registry. Taken once ([`RenderEngine::take_io_port`]).
 #[derive(Debug)]
@@ -170,6 +173,10 @@ pub struct IoPort {
     /// The master ticks in stream time: a network input releases each picture just before
     /// the tick it is due on.
     pub ticks: TickGrid,
+    /// Index of every master tick, as it starts (Phase 4 step 6): the HTML inputs paint one
+    /// picture per tick (ADR 0009 § 4). Bounded; a tick that finds it full is dropped and
+    /// counted ([`RenderStatsSnapshot::html_ticks_dropped`](crate::RenderStatsSnapshot)).
+    pub html_ticks: crossbeam_channel::Receiver<u64>,
 }
 
 /// The single consumer of one output's frames (typically the UI).
@@ -239,6 +246,8 @@ impl RenderEngine {
         let stream_clock = config
             .stream_clock
             .unwrap_or_else(|| StreamClock::new(Instant::now(), 0));
+        // A few ticks of slack: `vma-io` passes them on at once (Phase 4 step 6).
+        let (html_ticks_tx, html_ticks_rx) = crossbeam_channel::bounded(HTML_TICKS);
         let ticks = TickGrid {
             origin_ns: stream_clock.at(clock.origin_instant()),
             rate: config.rate,
@@ -316,6 +325,7 @@ impl RenderEngine {
             active_outputs,
             sync: config.sync_test.then(|| SyncTest::for_rate(config.rate)),
             audio: audio_ticks,
+            html_ticks: html_ticks_tx,
             stream_clock,
             sequencer: Sequencer::new(plan_reader),
             sources: SourceTable::new(sources_rx, retired_tx),
@@ -386,6 +396,7 @@ impl RenderEngine {
                     outputs: outputs.clone(),
                     headphones: Some(headphones),
                     ticks,
+                    html_ticks: html_ticks_rx,
                 }),
             },
             Readers {
@@ -586,6 +597,8 @@ struct RenderWorker {
     stats: Arc<RenderStats>,
     stop: Arc<AtomicBool>,
     audio: TickSender,
+    /// To the HTML inputs (`vma-io`): never blocks.
+    html_ticks: crossbeam_channel::Sender<u64>,
     stream_clock: StreamClock,
 }
 
@@ -604,6 +617,14 @@ impl RenderWorker {
         while !self.stop.load(Ordering::Acquire) {
             let tick = self.clock.wait_next();
             let started = Instant::now();
+            // First, so the pages start painting this tick's picture as early as possible:
+            // it is shown at the next tick (ADR 0009 § 4). Only `vma-io` disconnected (never
+            // started) is silent.
+            if let Err(crossbeam_channel::TrySendError::Full(_)) =
+                self.html_ticks.try_send(tick.index)
+            {
+                self.stats.record_html_tick_drop();
+            }
             // Resolved on every tick, even one that renders nothing, so transitions keep
             // their timing. Plan first, then the sources it may reference (see `sources.rs`).
             let composition = self.sequencer.tick(tick.index, &self.feedback);

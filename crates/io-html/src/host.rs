@@ -57,6 +57,9 @@ impl HtmlStatus {
 
 static INSTANCES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
+/// Longest wait to write a message to the helper.
+const WRITE_TIMEOUT: Duration = Duration::from_millis(200);
+
 /// Name of the helper's executable.
 pub const HELPER: &str = if cfg!(windows) {
     "vma-html.exe"
@@ -292,6 +295,7 @@ pub struct HtmlHost<F: HtmlFeeds> {
     next_browser: u32,
     helper: Helper,
     process: Option<Box<dyn HelperProcess>>,
+    relay: TickRelay,
     launches: u32,
     relaunch_at: Instant,
     last_launch: Option<Instant>,
@@ -309,16 +313,30 @@ impl<F: HtmlFeeds> std::fmt::Debug for HtmlHost<F> {
 }
 
 impl<F: HtmlFeeds> HtmlHost<F> {
-    /// HTML inputs of size `program` by default, painted at `rate`. Launches the helper of
-    /// `status` with [`ProcessLauncher`].
-    pub fn new(status: HtmlStatus, feeds: F, program: Resolution, rate: FrameRate) -> Self {
+    /// HTML inputs of size `program` by default, one picture per master tick read from
+    /// `ticks` (at `rate`). Launches the helper of `status` with [`ProcessLauncher`].
+    pub fn new(
+        status: HtmlStatus,
+        feeds: F,
+        program: Resolution,
+        rate: FrameRate,
+        ticks: Receiver<u64>,
+    ) -> Self {
         let launcher = match &status {
             HtmlStatus::Available { helper } => {
                 Some(Box::new(ProcessLauncher::new(helper)) as Box<dyn Launcher>)
             }
             HtmlStatus::Unavailable { .. } => None,
         };
-        Self::with_launcher(status, launcher, feeds, program, rate, Timings::default())
+        Self::with_launcher(
+            status,
+            launcher,
+            feeds,
+            program,
+            rate,
+            ticks,
+            Timings::default(),
+        )
     }
 
     /// Any launcher and delays (tests).
@@ -328,6 +346,7 @@ impl<F: HtmlFeeds> HtmlHost<F> {
         feeds: F,
         program: Resolution,
         rate: FrameRate,
+        ticks: Receiver<u64>,
         timings: Timings,
     ) -> Self {
         let now = Instant::now();
@@ -344,6 +363,7 @@ impl<F: HtmlFeeds> HtmlHost<F> {
             next_browser: 1,
             helper: Helper::Down,
             process: None,
+            relay: TickRelay::start(ticks),
             launches: 0,
             relaunch_at: now,
             last_launch: None,
@@ -530,6 +550,9 @@ impl<F: HtmlFeeds> HtmlHost<F> {
     fn connect(&self, stream: TcpStream, token: String) -> io::Result<Connection> {
         stream.set_nonblocking(false)?;
         stream.set_nodelay(true)?;
+        // A stuck helper must not hold the tick relay or the picture thread for long: it is
+        // killed after `Timings::silence` anyway (a write cut short ends the connection).
+        stream.set_write_timeout(Some(WRITE_TIMEOUT))?;
         let writer = Arc::new(Mutex::new(stream.try_clone()?));
         let (control, control_rx) = crossbeam_channel::unbounded();
         let (events_tx, events) = crossbeam_channel::unbounded();
@@ -572,6 +595,7 @@ impl<F: HtmlFeeds> HtmlHost<F> {
                 Event::Gone(reason) => return Some(reason),
                 Event::Ready => {
                     connection.ready = true;
+                    self.relay.connect(Some(Arc::clone(&connection.writer)));
                     tracing::info!("vma-html connected");
                     self.create_pending(emit);
                 }
@@ -692,6 +716,7 @@ impl<F: HtmlFeeds> HtmlHost<F> {
     /// The helper is gone: every input lost, helper launched again later.
     fn fail_all(&mut self, now: Instant, reason: String, emit: &mut impl FnMut(HtmlEvent)) {
         tracing::warn!(%reason, "vma-html lost");
+        self.relay.connect(None);
         self.kill();
         if let Helper::Running { connection, .. } =
             std::mem::replace(&mut self.helper, Helper::Down)
@@ -720,6 +745,7 @@ impl<F: HtmlFeeds> HtmlHost<F> {
     }
 
     fn stop_helper(&mut self, now: Instant) {
+        self.relay.connect(None);
         match std::mem::replace(&mut self.helper, Helper::Down) {
             Helper::Running { connection, .. } => {
                 connection.send(&ToHelper::Quit);
@@ -909,6 +935,73 @@ impl<F: HtmlFeeds> PictureThread<F> {
         };
         if let Err(e) = sent {
             tracing::debug!(error = %e, "release not sent");
+        }
+    }
+}
+
+/// Passes the master ticks on to the helper as `BeginFrame` (thread `vma-html-ticks`): the
+/// render thread's `try_send` never waits for it. A backlog (this thread late) is sent as its
+/// latest tick only: a page paints at most once per tick.
+#[derive(Debug)]
+struct TickRelay {
+    target: Arc<Mutex<Option<Arc<Mutex<TcpStream>>>>>,
+    stop: Arc<std::sync::atomic::AtomicBool>,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl TickRelay {
+    fn start(ticks: Receiver<u64>) -> Self {
+        let target: Arc<Mutex<Option<Arc<Mutex<TcpStream>>>>> = Arc::default();
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (t, s) = (Arc::clone(&target), Arc::clone(&stop));
+        let thread = std::thread::Builder::new()
+            .name("vma-html-ticks".into())
+            .spawn(move || relay(&ticks, &t, &s))
+            .map_err(|e| tracing::error!(error = %e, "no tick relay: HTML pages will not paint"))
+            .ok();
+        Self {
+            target,
+            stop,
+            thread,
+        }
+    }
+
+    /// Where the ticks go from now on (`None`: nowhere).
+    fn connect(&self, writer: Option<Arc<Mutex<TcpStream>>>) {
+        if let Ok(mut target) = self.target.lock() {
+            *target = writer;
+        }
+    }
+}
+
+impl Drop for TickRelay {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        if let Some(thread) = self.thread.take()
+            && thread.join().is_err()
+        {
+            tracing::error!("tick relay panicked");
+        }
+    }
+}
+
+fn relay(
+    ticks: &Receiver<u64>,
+    target: &Mutex<Option<Arc<Mutex<TcpStream>>>>,
+    stop: &std::sync::atomic::AtomicBool,
+) {
+    while !stop.load(Ordering::Acquire) {
+        let tick = match ticks.recv_timeout(Duration::from_millis(100)) {
+            Ok(tick) => ticks.try_iter().last().unwrap_or(tick),
+            Err(crossbeam_channel::RecvTimeoutError::Timeout) => continue,
+            Err(crossbeam_channel::RecvTimeoutError::Disconnected) => return,
+        };
+        let writer = target.lock().ok().and_then(|t| t.clone());
+        if let Some(writer) = writer
+            && let Ok(mut writer) = writer.lock()
+            && let Err(e) = protocol::write(&mut *writer, &ToHelper::BeginFrame { tick })
+        {
+            tracing::debug!(error = %e, "begin-frame not sent");
         }
     }
 }

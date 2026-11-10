@@ -277,13 +277,17 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y mesa-vulkan-drivers libvulkan1 \
             libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev gstreamer1.0-plugins-base
-      - name: HTML input in overlay with the real engine and vma-html (Linux)
+      - name: HTML input in overlay with the real engine and vma-html, D5 (Linux)
         if: always() && runner.os == 'Linux'
         env:
           VMA_HTML: ${{ github.workspace }}/target/release/vma-html
           VMA_REQUIRE_HTML: "1"
           WGPU_BACKEND: vulkan
-        run: cargo test --release --locked -p vma-io-gst --test html -- --nocapture
+        run: |
+          cargo test --release --locked -p vma-io-gst --test html -- --nocapture --test-threads=1
+          # D5 at 59.94 too (20 s).
+          VMA_D5_RATE=60000/1001 VMA_D5_SECS=20 \
+            cargo test --release --locked -p vma-io-gst --test html an_animated -- --nocapture
       - name: Upload the probe report
         if: always()
         uses: actions/upload-artifact@v4

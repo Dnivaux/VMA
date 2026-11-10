@@ -3,9 +3,10 @@
 //!
 //! One off-screen browser per HTML input. Each paint goes into a free slot of the input's
 //! shared frames, announced by `Frame`; a paint that finds no free slot is dropped (the
-//! application is behind). The browsers are driven by `SendExternalBeginFrame` at the rate the
-//! application gave, on this process's own clock (Phase 4 step 5; the master's ticks drive them
-//! from step 6). `Alive` every 250 ms tells the application this process is not stuck.
+//! application is behind). The browsers paint on the master's ticks only: each `BeginFrame`
+//! from the application becomes one `SendExternalBeginFrame` per browser (ADR 0009 § 4, Phase
+//! 4 step 6); several waiting at once count as one, the latest. `Alive` every 250 ms tells the
+//! application this process is not stuck.
 //!
 //! Everything runs on the main thread, which is CEF's UI thread, except one thread that reads
 //! the application's messages and hands them over through a channel.
@@ -37,8 +38,6 @@ struct Browser {
     frames: SharedFrames,
     free: Vec<u8>,
     seq: u64,
-    period: Duration,
-    next_frame: Instant,
     /// Paints dropped for want of a free slot.
     dropped: u64,
 }
@@ -236,11 +235,19 @@ fn serve(service: &Service, events: &Shared, incoming: &Receiver<Option<ToHelper
     let mut quit_by: Option<Instant> = None;
     let mut alive_at = Instant::now();
     let mut due = Vec::new();
+    // The latest master tick not yet passed on to the browsers.
+    let mut begin: Option<u64> = None;
     loop {
         cef::do_message_loop_work();
 
         loop {
             match incoming.try_recv() {
+                // Before CEF is ready there is nothing to paint: dropped, not queued.
+                Ok(Some(ToHelper::BeginFrame { tick })) => {
+                    if service.0.borrow().context_ready {
+                        begin = Some(tick);
+                    }
+                }
                 Ok(Some(message)) => pending.push(message),
                 Ok(None) | Err(TryRecvError::Disconnected) => {
                     // The application is gone: nobody to paint for.
@@ -268,16 +275,13 @@ fn serve(service: &Service, events: &Shared, incoming: &Receiver<Option<ToHelper
                 alive_at = now + ALIVE_PERIOD;
                 inner.send(&FromHelper::Alive);
             }
-            for b in inner.browsers.values_mut() {
-                if now >= b.next_frame {
-                    b.next_frame += b.period;
-                    if b.next_frame <= now {
-                        b.next_frame = now + b.period;
-                    }
-                    if let Some(host) = b.cef.as_ref().and_then(ImplBrowser::host) {
-                        due.push(host);
-                    }
-                }
+            if begin.take().is_some() {
+                due.extend(
+                    inner
+                        .browsers
+                        .values()
+                        .filter_map(|b| b.cef.as_ref().and_then(ImplBrowser::host)),
+                );
             }
             inner.broken
         };
@@ -321,7 +325,6 @@ fn handle(service: &Service, events: &Shared, message: ToHelper) {
             if rate_num == 0 || rate_den == 0 {
                 return fail(service, browser, "cadence invalide".into());
             }
-            let period = Duration::from_secs_f64(f64::from(rate_den) / f64::from(rate_num));
             service.0.borrow_mut().browsers.insert(
                 browser,
                 Browser {
@@ -331,8 +334,6 @@ fn handle(service: &Service, events: &Shared, message: ToHelper) {
                     frames,
                     free: (0..SLOTS).filter_map(|s| u8::try_from(s).ok()).collect(),
                     seq: 0,
-                    period,
-                    next_frame: Instant::now(),
                     dropped: 0,
                 },
             );
@@ -388,6 +389,8 @@ fn handle(service: &Service, events: &Shared, message: ToHelper) {
             }
         }
         ToHelper::Quit => close_all(service),
+        // Taken by `serve` as they arrive.
+        ToHelper::BeginFrame { .. } => {}
     }
 }
 
