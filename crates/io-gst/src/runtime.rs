@@ -474,6 +474,10 @@ impl Worker {
                 let events = &self.port.events;
                 self.outputs.stop(output, &mut |e| send(events, e));
             }
+            IoRequest::LoadStinger { slot, file } => {
+                tracing::warn!(%slot, file = %file.display(), "stingers not loaded yet");
+            }
+            IoRequest::UnloadStinger { slot } => tracing::debug!(%slot, "stinger emptied"),
             IoRequest::Html { input, action } => {
                 let action = match action {
                     HtmlAction::Data(json) => PageAction::Script(data_event_script(&json)),

@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicU64, Ordering, fence};
 
 use vma_core::{InputId, OverlayChannel};
 
-use crate::command::{Effect, MixDomain};
+use crate::command::{Effect, MixDomain, StingerSlot};
 
 /// How a planned transition progresses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,6 +28,8 @@ pub struct PlanTransition {
     pub to: InputId,
     pub effect: Effect,
     pub progress: PlanProgress,
+    /// Stinger: the tick (from its first) at which the Program cuts from `from` to `to`.
+    pub cut: u32,
 }
 
 /// Fade to black of the outputs as the render thread sees it.
@@ -64,7 +66,27 @@ pub struct RenderPlan {
     pub overlays: [PlanOverlay; OverlayChannel::COUNT],
 }
 
-const WORDS: usize = 8 + OverlayChannel::COUNT;
+const WORDS: usize = 9 + OverlayChannel::COUNT;
+
+/// Effect as 3 bits: Fade 0, Cut 1, stinger *n* `1 + n`.
+fn encode_effect(effect: Effect) -> u64 {
+    match effect {
+        Effect::Fade => 0,
+        Effect::Cut => 1,
+        Effect::Stinger(slot) => 1 + u64::from(slot.number()),
+    }
+}
+
+fn decode_effect(bits: u64) -> Effect {
+    match bits {
+        1 => Effect::Cut,
+        2.. => u8::try_from(bits - 1)
+            .ok()
+            .and_then(StingerSlot::new)
+            .map_or(Effect::Fade, Effect::Stinger),
+        0 => Effect::Fade,
+    }
+}
 
 fn encode_overlay(o: &PlanOverlay) -> u64 {
     let input = o.input.map_or(0, |i| u64::from(i.0) + 1);
@@ -86,6 +108,7 @@ fn decode_overlay(w: u64) -> PlanOverlay {
 impl RenderPlan {
     fn encode(&self) -> [u64; WORDS] {
         let id = |i: Option<InputId>| i.map_or(0, |i| u64::from(i.0) + 1);
+        let cut = self.transition.map_or(0, |t| u64::from(t.cut));
         let (t_id, from, to, bits) = match self.transition {
             None => (0, 0, 0, 0),
             Some(t) => {
@@ -93,10 +116,7 @@ impl RenderPlan {
                     PlanProgress::Timed { frames } => (frames, 0, 0),
                     PlanProgress::Manual { value } => (0, value, 1),
                 };
-                let effect = match t.effect {
-                    Effect::Fade => 0,
-                    Effect::Cut => 1,
-                };
+                let effect = encode_effect(t.effect);
                 let bits =
                     u64::from(frames) | (u64::from(value) << 32) | (effect << 40) | (manual << 48);
                 (t.id, id(t.from), id(Some(t.to)), bits)
@@ -118,6 +138,7 @@ impl RenderPlan {
             u64::from(self.ftb.black)
                 | (u64::from(self.ftb.frames) << 1)
                 | (u64::from(self.fullscreen) << 40),
+            cut,
             o1,
             o2,
             o3,
@@ -140,6 +161,7 @@ impl RenderPlan {
             to,
             bits,
             ftb,
+            cut,
             o1,
             o2,
             o3,
@@ -150,11 +172,7 @@ impl RenderPlan {
                 id: t_id,
                 from: id(from),
                 to,
-                effect: if (bits >> 40) & 0xff == 1 {
-                    Effect::Cut
-                } else {
-                    Effect::Fade
-                },
+                effect: decode_effect((bits >> 40) & 0xff),
                 progress: if (bits >> 48) & 0xff == 1 {
                     PlanProgress::Manual {
                         value: ((bits >> 32) & 0xff) as u8,
@@ -164,6 +182,7 @@ impl RenderPlan {
                         frames: (bits & 0xffff_ffff) as u32,
                     }
                 },
+                cut: u32::try_from(cut).unwrap_or(u32::MAX),
             }),
             _ => None,
         };
@@ -293,16 +312,18 @@ mod tests {
                 id: u64::from(n) + 1,
                 from: (!n.is_multiple_of(4)).then_some(InputId(n + 2)),
                 to: InputId(n + 3),
-                effect: if n.is_multiple_of(5) {
-                    Effect::Cut
-                } else {
-                    Effect::Fade
+                effect: match n % 5 {
+                    0 => Effect::Cut,
+                    1 => Effect::Stinger(StingerSlot::new(1).unwrap()),
+                    2 => Effect::Stinger(StingerSlot::new(2).unwrap()),
+                    _ => Effect::Fade,
                 },
                 progress: if n.is_multiple_of(6) {
                     PlanProgress::Manual { value: n as u8 }
                 } else {
                     PlanProgress::Timed { frames: n * 7 }
                 },
+                cut: n * 3,
             }),
             domain: if n.is_multiple_of(7) {
                 MixDomain::Linear
@@ -337,8 +358,9 @@ mod tests {
                 id: u64::MAX,
                 from: None,
                 to: InputId(0),
-                effect: Effect::Fade,
+                effect: Effect::Stinger(StingerSlot::new(2).unwrap()),
                 progress: PlanProgress::Timed { frames: u32::MAX },
+                cut: u32::MAX,
             }),
             ftb: PlanFtb {
                 black: true,

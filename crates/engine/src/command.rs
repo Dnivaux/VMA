@@ -154,6 +154,14 @@ pub enum Command {
         effect: Effect,
         duration_ms: u32,
     },
+    /// Stinger `slot` (Phase 4 step 8): its file (`None` empties the slot; a new one is
+    /// preloaded by `vma-io`) and where it cuts from A to B, in ms from its start (`None`: half
+    /// the file). Refused while that stinger plays.
+    SetStinger {
+        slot: StingerSlot,
+        file: Option<PathBuf>,
+        cut_point_ms: Option<u32>,
+    },
     // HTML inputs (Phase 4 step 7, `phase-4.md` § 5). Refused for any other input. None
     // reloads the page except `HtmlReload` and `SetHtmlUrl`; all are journaled in full.
     /// DOM event `vma-data` in the page, `detail` = this JSON (checked).
@@ -558,12 +566,52 @@ fn html_name(url: &str) -> String {
         .to_owned()
 }
 
-/// Transition effect available in Phase 1 (Wipe, Stinger… in Phase 4).
+/// Transition effect: Fade and Cut (Phase 1), Stinger (Phase 4, ADR 0010 § 5): a video
+/// with alpha played over the Program, which cuts from A to B under it at the stinger's cut
+/// point; it lasts as long as the file (the setting's duration is not used).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 pub enum Effect {
     #[default]
     Fade,
     Cut,
+    Stinger(StingerSlot),
+}
+
+/// One of the two stinger slots (`phase-4.md` Q7), 1 or 2. Written as its number; any other
+/// number is refused when read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
+#[serde(transparent)]
+pub struct StingerSlot(u8);
+
+impl StingerSlot {
+    pub const COUNT: usize = 2;
+    pub const ALL: [Self; Self::COUNT] = [Self(1), Self(2)];
+
+    pub fn new(number: u8) -> Option<Self> {
+        (1..=2).contains(&number).then_some(Self(number))
+    }
+
+    pub fn number(self) -> u8 {
+        self.0
+    }
+
+    /// 0 or 1.
+    pub fn index(self) -> usize {
+        usize::from(self.0.saturating_sub(1)).min(Self::COUNT - 1)
+    }
+}
+
+impl fmt::Display for StingerSlot {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "stinger {}", self.0)
+    }
+}
+
+impl<'de> Deserialize<'de> for StingerSlot {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let n = u8::deserialize(deserializer)?;
+        Self::new(n).ok_or_else(|| serde::de::Error::custom(format!("no stinger {n} (1–2)")))
+    }
 }
 
 /// Where a Fade mixes (ADR 0001 amendment 1, ADR 0005).
@@ -597,7 +645,8 @@ impl TransitionSetting {
     };
 
     /// Duration in frames at `rate`, or `None` when the transition is instantaneous (Cut
-    /// effect or zero duration): `round(duration × rate)`, at least 1.
+    /// effect or zero duration): `round(duration × rate)`, at least 1. A stinger's length is
+    /// its file's (`State`), not this.
     pub fn frames(self, rate: FrameRate) -> Option<u32> {
         if self.effect == Effect::Cut || self.duration_ms == 0 {
             return None;

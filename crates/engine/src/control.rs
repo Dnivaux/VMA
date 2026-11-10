@@ -14,7 +14,7 @@ use arc_swap::{ArcSwap, ArcSwapOption};
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, TrySendError};
 
 use crate::audio_plan::AudioPlanWriter;
-use crate::command::{Command, CommandId, Source};
+use crate::command::{Command, CommandId, Source, StingerSlot};
 use crate::feed::{Attach, FeedReader, FeedStats};
 use crate::journal::{JournalLine, JournalSender, Origin, Outcome, utc_rfc3339};
 use crate::plan::PlanWriter;
@@ -143,6 +143,21 @@ pub enum IoEvent {
     },
     /// The sound of a sound-only input flows.
     AudioLive { input: InputId },
+    /// Stinger `slot` holds `file`, preloaded: `frames` pictures at `rate`.
+    StingerReady {
+        slot: StingerSlot,
+        file: std::path::PathBuf,
+        frames: u64,
+        rate: vma_core::FrameRate,
+        resolution: vma_core::Resolution,
+        alpha: vma_core::AlphaMode,
+    },
+    /// `file` could not be preloaded in stinger `slot`.
+    StingerFailed {
+        slot: StingerSlot,
+        file: std::path::PathBuf,
+        reason: String,
+    },
     /// Run `run` of an output started (`IoRequest::StartOutput`).
     OutputRunning {
         output: OutputId,
@@ -372,6 +387,28 @@ impl Controller {
                     frame: self.feedback.last_frame(),
                     attempts,
                 });
+            }
+            IoEvent::StingerReady {
+                slot,
+                file,
+                frames,
+                rate,
+                resolution,
+                alpha,
+            } => {
+                tracing::info!(%slot, file = %file.display(), frames, %rate, "stinger ready");
+                self.event(Event::StingerReady {
+                    slot,
+                    file,
+                    frames,
+                    rate,
+                    resolution,
+                    alpha,
+                });
+            }
+            IoEvent::StingerFailed { slot, file, reason } => {
+                tracing::warn!(%slot, file = %file.display(), %reason, "stinger not loaded");
+                self.event(Event::StingerFailed { slot, file, reason });
             }
             IoEvent::AudioLive { input } => {
                 tracing::info!(%input, "sound input live");

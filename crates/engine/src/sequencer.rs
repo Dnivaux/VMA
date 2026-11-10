@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use vma_core::{InputId, OverlayChannel};
 
-use crate::command::{Effect, MixDomain};
+use crate::command::{Effect, MixDomain, StingerSlot};
 use crate::plan::{PlanFtb, PlanOverlay, PlanProgress, PlanReader, RenderPlan};
 
 /// A level at its end (fixed point: exact at both ends, linear in between): FTB fully black,
@@ -35,6 +35,14 @@ pub struct OverlayShown {
     pub opacity: f32,
 }
 
+/// The stinger on one tick: transition `id` of stinger `slot`, its `tick`-th (0 = first).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StingerShown {
+    pub slot: StingerSlot,
+    pub id: u64,
+    pub tick: u64,
+}
+
 /// What the Program output shows on one tick: `from` mixed towards `to` by `mix`
 /// (0 = `from` alone, 1 = `to` alone). `None` is black.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -53,6 +61,8 @@ pub struct Composition {
     pub fullscreen: bool,
     /// Overlay channels visible on this tick, in the order of [`OverlayChannel::ALL`].
     pub overlays: [Option<OverlayShown>; OverlayChannel::COUNT],
+    /// The stinger playing over the Program (under the overlays), if one is.
+    pub stinger: Option<StingerShown>,
 }
 
 impl Composition {
@@ -238,8 +248,11 @@ impl Sequencer {
             fade_to_black: ftb_ratio(ftb),
             fullscreen: plan.fullscreen,
             overlays,
+            stinger: None,
         };
         if let Some(t) = plan.transition {
+            // Ticks since the first one of a timed transition.
+            let mut elapsed = None;
             let progress = match t.progress {
                 PlanProgress::Manual { value } => f32::from(value) / 255.0,
                 PlanProgress::Timed { frames } => {
@@ -254,6 +267,7 @@ impl Sequencer {
                     };
                     // Tick k since the start shows (k + 1) / frames; from k = frames - 1 on,
                     // `to` alone until control publishes the swap.
+                    elapsed = Some(frame.saturating_sub(start));
                     let shown = frame.saturating_sub(start).saturating_add(1);
                     if shown >= u64::from(frames) {
                         feedback.done_id.store(t.id, Ordering::Release);
@@ -266,10 +280,26 @@ impl Sequencer {
             composition.from = t.from;
             composition.to = Some(t.to);
             composition.effect = t.effect;
-            composition.mix = match t.effect {
-                Effect::Fade => progress,
-                // A Cut on the T-Bar switches half-way.
-                Effect::Cut => {
+            composition.mix = match (t.effect, elapsed) {
+                (Effect::Fade, _) => progress,
+                // Its k-th tick shows picture k; the Program cuts to `to` under it at tick
+                // `cut` (ADR 0010 § 5). The picture after the last is none: `to` alone.
+                (Effect::Stinger(slot), Some(k)) => {
+                    let frames = match t.progress {
+                        PlanProgress::Timed { frames } => u64::from(frames),
+                        PlanProgress::Manual { .. } => 0,
+                    };
+                    if k < frames {
+                        composition.stinger = Some(StingerShown {
+                            slot,
+                            id: t.id,
+                            tick: k,
+                        });
+                    }
+                    if k >= u64::from(t.cut) { 1.0 } else { 0.0 }
+                }
+                // A Cut — or a stinger on the T-Bar — switches half-way.
+                (Effect::Cut | Effect::Stinger(_), _) => {
                     if progress >= 0.5 {
                         1.0
                     } else {
@@ -318,12 +348,65 @@ mod tests {
                 to: B,
                 effect: Effect::Fade,
                 progress: PlanProgress::Timed { frames },
+                cut: 0,
             }),
             domain: MixDomain::Gamma,
             ftb: PlanFtb::default(),
             fullscreen: false,
             overlays: Default::default(),
         }
+    }
+
+    /// D8 (timing): the stinger's k-th tick shows its picture k over A, then over B from the
+    /// cut tick; done on its last tick; nothing of it after.
+    #[test]
+    fn a_stinger_shows_picture_k_at_tick_k_and_cuts_at_its_cut_tick() {
+        let (writer, reader) = plan_channel();
+        let mut sequencer = Sequencer::new(reader);
+        let feedback = RenderFeedback::default();
+        let slot = StingerSlot::new(2).unwrap();
+        let mut plan = timed(9, 10);
+        if let Some(t) = &mut plan.transition {
+            t.effect = Effect::Stinger(slot);
+            t.cut = 4;
+        }
+        writer.publish(&plan);
+        for k in 0..10u64 {
+            let c = sequencer.tick(100 + k, &feedback);
+            assert_eq!(
+                c.stinger,
+                Some(StingerShown {
+                    slot,
+                    id: 9,
+                    tick: k
+                }),
+                "tick {k}"
+            );
+            assert_eq!(c.mix, if k >= 4 { 1.0 } else { 0.0 }, "tick {k}");
+            assert_eq!((c.from, c.to), (Some(A), Some(B)));
+            assert_eq!(feedback.done(), (k == 9).then_some(9), "tick {k}");
+        }
+        assert_eq!(feedback.started(), Some((9, 100)));
+        let after = sequencer.tick(110, &feedback);
+        assert_eq!(
+            (after.stinger, after.mix),
+            (None, 1.0),
+            "B alone until the swap"
+        );
+        // A skipped tick still counts: the stinger keeps to the master's time.
+        let mut plan = timed(10, 10);
+        if let Some(t) = &mut plan.transition {
+            t.effect = Effect::Stinger(slot);
+        }
+        writer.publish(&plan);
+        assert_eq!(
+            sequencer.tick(200, &feedback).stinger.map(|s| s.tick),
+            Some(0)
+        );
+        assert_eq!(
+            sequencer.tick(203, &feedback).stinger.map(|s| s.tick),
+            Some(3)
+        );
     }
 
     #[test]

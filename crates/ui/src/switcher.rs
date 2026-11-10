@@ -1101,6 +1101,8 @@ fn describe_effect(effect: Effect) -> &'static str {
     match effect {
         Effect::Fade => "Fade",
         Effect::Cut => "Cut",
+        Effect::Stinger(slot) if slot.number() == 1 => "Stinger 1",
+        Effect::Stinger(_) => "Stinger 2",
     }
 }
 
@@ -1112,6 +1114,7 @@ fn describe(setting: TransitionSetting) -> String {
             let secs = f64::from(setting.duration_ms) / 1000.0;
             format!("Fade {}", format!("{secs} s").replace('.', ","))
         }
+        Effect::Stinger(_) => describe_effect(setting.effect).to_owned(),
     }
 }
 

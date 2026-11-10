@@ -3,6 +3,8 @@
 //! Only `vma-control` owns a mutable [`State`]: commands and render events are applied one
 //! at a time, in order, so a journal replay gives the same state back.
 
+use std::path::PathBuf;
+
 use serde::{Deserialize, Serialize};
 use vma_audio::{MAX_GAIN_DB, SoloMode};
 use vma_core::{
@@ -12,7 +14,7 @@ use vma_core::{
 use crate::audio_plan::{AudioPlan, PlanInput};
 use crate::command::{
     AutoPlay, Command, Db, DeviceId, Effect, InputSpec, MAX_AUDIO_DELAY_MS, MAX_HTML_TEXT,
-    MAX_TRANSITION_MS, MixDomain, TRANSITION_BUTTONS, TransitionSetting,
+    MAX_TRANSITION_MS, MixDomain, StingerSlot, TRANSITION_BUTTONS, TransitionSetting,
 };
 use crate::output_spec::{InvalidSpec, MAX_OUTPUTS, OutputSpec, RecordSpec, STREAM_SLOTS};
 use crate::plan::{PlanFtb, PlanOverlay, PlanProgress, PlanTransition, RenderPlan};
@@ -388,6 +390,16 @@ pub enum Rejection {
     DelayOutOfRange(u32),
     #[error("{0} is not an HTML input")]
     NotHtml(InputId),
+    #[error("{0} has no file")]
+    StingerEmpty(StingerSlot),
+    #[error("{0} is still loading")]
+    StingerLoading(StingerSlot),
+    #[error("{0} could not be loaded: {1}")]
+    StingerFailed(StingerSlot, String),
+    #[error("the cut point {cut_ms} ms is past the end of the stinger ({duration_ms} ms)")]
+    CutPointBeyondEnd { cut_ms: u32, duration_ms: u32 },
+    #[error("{0} is playing")]
+    StingerInUse(StingerSlot),
     #[error("the data for the page is not valid JSON: {0}")]
     InvalidJson(String),
 }
@@ -433,6 +445,16 @@ pub enum IoRequest {
     /// Play the headphones on `device` (`None`: the system's default).
     SetMonitor {
         device: Option<DeviceId>,
+    },
+    /// Preload `file` in stinger `slot` (replacing what it held), and keep it ready for
+    /// every play (Phase 4 step 8).
+    LoadStinger {
+        slot: StingerSlot,
+        file: PathBuf,
+    },
+    /// Empty stinger `slot`.
+    UnloadStinger {
+        slot: StingerSlot,
     },
     /// Something for the page of an HTML input.
     Html {
@@ -502,6 +524,104 @@ pub enum Event {
     DeviceLost { frame: u64 },
     /// The grace period after the loss is over: every output is finalised.
     DeviceLostGraceOver,
+    /// `vma-io` preloaded `file` in stinger `slot`: `frames` pictures at `rate`.
+    StingerReady {
+        slot: StingerSlot,
+        file: PathBuf,
+        frames: u64,
+        rate: FrameRate,
+        resolution: Resolution,
+        alpha: AlphaMode,
+    },
+    /// `file` could not be preloaded in stinger `slot`.
+    StingerFailed {
+        slot: StingerSlot,
+        file: PathBuf,
+        reason: String,
+    },
+}
+
+/// A stinger slot: its file, cut point and preloading (Phase 4 step 8).
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct StingerState {
+    pub file: Option<PathBuf>,
+    /// From the stinger's start; `None`: half its length.
+    pub cut_point_ms: Option<u32>,
+    pub status: StingerStatus,
+}
+
+/// Where the preloading of a stinger is.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum StingerStatus {
+    #[default]
+    Empty,
+    Loading,
+    Ready {
+        frames: u64,
+        rate: FrameRate,
+        resolution: Resolution,
+        alpha: AlphaMode,
+    },
+    Failed {
+        reason: String,
+    },
+}
+
+/// A stinger as played at the master rate: `frames` ticks, Program cut from A to B at tick
+/// `cut` (counted from its first tick).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StingerTiming {
+    pub frames: u32,
+    pub cut: u32,
+}
+
+impl StingerState {
+    /// Length of the file, in ms (`None` until it is ready).
+    pub fn duration_ms(&self) -> Option<u32> {
+        let StingerStatus::Ready { frames, rate, .. } = self.status else {
+            return None;
+        };
+        let ms = u128::from(frames) * 1000 * u128::from(rate.den()) / u128::from(rate.num());
+        Some(u32::try_from(ms).unwrap_or(u32::MAX))
+    }
+
+    /// Cut point in ms: the one set, or half the file.
+    pub fn cut_ms(&self) -> Option<u32> {
+        let duration = self.duration_ms()?;
+        Some(self.cut_point_ms.unwrap_or(duration / 2))
+    }
+
+    /// Its timing at master rate `master`, or why it cannot play.
+    pub fn timing(&self, slot: StingerSlot, master: FrameRate) -> Result<StingerTiming, Rejection> {
+        let (frames, rate) = match &self.status {
+            StingerStatus::Ready { frames, rate, .. } => (*frames, *rate),
+            StingerStatus::Empty => return Err(Rejection::StingerEmpty(slot)),
+            StingerStatus::Loading => return Err(Rejection::StingerLoading(slot)),
+            StingerStatus::Failed { reason } => {
+                return Err(Rejection::StingerFailed(slot, reason.clone()));
+            }
+        };
+        let duration_ms = self.duration_ms().unwrap_or(0);
+        let cut_ms = self.cut_ms().unwrap_or(0);
+        if cut_ms > duration_ms {
+            return Err(Rejection::CutPointBeyondEnd {
+                cut_ms,
+                duration_ms,
+            });
+        }
+        // Ticks covering the file: ceil(frames × master / rate).
+        let num = u128::from(frames) * u128::from(master.num()) * u128::from(rate.den());
+        let den = u128::from(master.den()) * u128::from(rate.num());
+        let ticks = u32::try_from(num.div_ceil(den)).unwrap_or(u32::MAX).max(1);
+        // The tick of the cut point, rounded; at the latest the last tick.
+        let num = u128::from(cut_ms) * u128::from(master.num());
+        let den = u128::from(master.den()) * 1000;
+        let cut = u32::try_from((2 * num + den) / (2 * den)).unwrap_or(u32::MAX);
+        Ok(StingerTiming {
+            frames: ticks,
+            cut: cut.min(ticks - 1),
+        })
+    }
 }
 
 /// The whole mixer state, versioned. Readers get immutable snapshots (`StateReader`).
@@ -533,6 +653,9 @@ pub struct State {
     /// The overlay channels, in the order of [`OverlayChannel::ALL`].
     #[serde(default)]
     pub overlays: [OverlayState; OverlayChannel::COUNT],
+    /// The stinger slots, in the order of [`StingerSlot::ALL`].
+    #[serde(default)]
+    pub stingers: [StingerState; StingerSlot::COUNT],
     next_input: u32,
     next_transition: u64,
     next_output: u32,
@@ -598,6 +721,7 @@ impl State {
             device_lost: None,
             audio: AudioState::default(),
             overlays: Default::default(),
+            stingers: Default::default(),
             next_input: 1,
             next_transition: 1,
             next_output: Self::DEFAULT_RECORDING.0 + 1,
@@ -631,6 +755,28 @@ impl State {
         }
     }
 
+    /// The stinger of `slot`.
+    pub fn stinger(&self, slot: StingerSlot) -> &StingerState {
+        let [one, two] = &self.stingers;
+        if slot.index() == 0 { one } else { two }
+    }
+
+    fn stinger_mut(&mut self, slot: StingerSlot) -> &mut StingerState {
+        let [one, two] = &mut self.stingers;
+        if slot.index() == 0 { one } else { two }
+    }
+
+    /// Tick of the cut of a stinger transition (0 for other effects).
+    fn stinger_cut(&self, effect: Effect) -> u32 {
+        match effect {
+            Effect::Stinger(slot) => self
+                .stinger(slot)
+                .timing(slot, self.format.rate)
+                .map_or(0, |t| t.cut),
+            Effect::Fade | Effect::Cut => 0,
+        }
+    }
+
     /// What the render thread needs from this state.
     pub fn plan(&self) -> RenderPlan {
         let transition = self.transition.map(|t| match t {
@@ -647,6 +793,7 @@ impl State {
                 to,
                 effect,
                 progress: PlanProgress::Timed { frames },
+                cut: self.stinger_cut(effect),
             },
             TransitionState::Fader {
                 id,
@@ -660,6 +807,7 @@ impl State {
                 to,
                 effect,
                 progress: PlanProgress::Manual { value },
+                cut: 0,
             },
         });
         RenderPlan {
@@ -782,6 +930,35 @@ impl State {
     pub fn apply_event(&mut self, event: &Event) -> Vec<IoRequest> {
         let mut io = Vec::new();
         let changed = match event {
+            Event::StingerReady {
+                slot,
+                file,
+                frames,
+                rate,
+                resolution,
+                alpha,
+            } => {
+                let stinger = self.stinger_mut(*slot);
+                // A load of a file the slot no longer holds is ignored.
+                stinger.file.as_ref() == Some(file) && {
+                    stinger.status = StingerStatus::Ready {
+                        frames: *frames,
+                        rate: *rate,
+                        resolution: *resolution,
+                        alpha: *alpha,
+                    };
+                    true
+                }
+            }
+            Event::StingerFailed { slot, file, reason } => {
+                let stinger = self.stinger_mut(*slot);
+                stinger.file.as_ref() == Some(file) && {
+                    stinger.status = StingerStatus::Failed {
+                        reason: reason.clone(),
+                    };
+                    true
+                }
+            }
             Event::TransitionStarted { id, frame } => match &mut self.transition {
                 Some(TransitionState::Timed {
                     id: current,
@@ -940,6 +1117,7 @@ impl State {
                 let setting = self.button(*button)?;
                 self.require_idle()?;
                 let to = self.preview.ok_or(Rejection::NoPreview)?;
+                self.playable(setting)?;
                 Ok(self.start(setting, to, Ending::Swap))
             }
             Command::QuickPlay { input } => {
@@ -954,6 +1132,7 @@ impl State {
                         (*i, Ending::Direct)
                     }
                 };
+                self.playable(self.quick_play)?;
                 Ok(self.start(self.quick_play, to, ending))
             }
             Command::SetFader { value } => self.set_fader(*value),
@@ -992,6 +1171,11 @@ impl State {
                 }
                 Ok(Change::changed())
             }
+            Command::SetStinger {
+                slot,
+                file,
+                cut_point_ms,
+            } => self.set_stinger(*slot, file.as_ref(), *cut_point_ms),
             Command::HtmlData { input, json } => {
                 if json.len() > MAX_HTML_TEXT {
                     return Err(Rejection::InvalidInput(InvalidSpec::HtmlTooLong));
@@ -1526,9 +1710,29 @@ impl State {
     }
 
     /// Starts a transition with `setting` (a Cut effect or a zero duration cuts at once).
+    /// Checks that `setting` can run now (a stinger must be ready).
+    fn playable(&self, setting: TransitionSetting) -> Result<(), Rejection> {
+        match setting.effect {
+            Effect::Stinger(slot) => self
+                .stinger(slot)
+                .timing(slot, self.format.rate)
+                .map(|_| ()),
+            Effect::Fade | Effect::Cut => Ok(()),
+        }
+    }
+
     fn start(&mut self, setting: TransitionSetting, to: InputId, ending: Ending) -> Change {
         let from = self.program;
-        let Some(frames) = setting.frames(self.format.rate) else {
+        let frames = match setting.effect {
+            // Checked by `playable`: as long as the file.
+            Effect::Stinger(slot) => self
+                .stinger(slot)
+                .timing(slot, self.format.rate)
+                .ok()
+                .map(|t| t.frames),
+            Effect::Fade | Effect::Cut => setting.frames(self.format.rate),
+        };
+        let Some(frames) = frames else {
             return self.cut(from, to, ending);
         };
         let mut io = Vec::new();
@@ -1660,6 +1864,54 @@ impl State {
             .ok_or(Rejection::UnknownInput(input))
     }
 
+    fn set_stinger(
+        &mut self,
+        slot: StingerSlot,
+        file: Option<&PathBuf>,
+        cut_point_ms: Option<u32>,
+    ) -> Result<Change, Rejection> {
+        if matches!(
+            self.transition,
+            Some(TransitionState::Timed { effect: Effect::Stinger(s), .. }) if s == slot
+        ) {
+            return Err(Rejection::StingerInUse(slot));
+        }
+        let current = self.stinger(slot);
+        let same_file = current.file.as_ref() == file;
+        // A cut point past the end of a file already loaded is refused now; for a new file,
+        // when a transition uses it (its length is not known yet).
+        if same_file
+            && let (Some(cut_ms), Some(duration_ms)) = (cut_point_ms, current.duration_ms())
+            && cut_ms > duration_ms
+        {
+            return Err(Rejection::CutPointBeyondEnd {
+                cut_ms,
+                duration_ms,
+            });
+        }
+        let mut io = Vec::new();
+        let stinger = self.stinger_mut(slot);
+        if !same_file {
+            stinger.file = file.cloned();
+            stinger.status = match file {
+                Some(file) => {
+                    io.push(IoRequest::LoadStinger {
+                        slot,
+                        file: file.clone(),
+                    });
+                    StingerStatus::Loading
+                }
+                None => {
+                    io.push(IoRequest::UnloadStinger { slot });
+                    StingerStatus::Empty
+                }
+            };
+        }
+        let changed = !same_file || stinger.cut_point_ms != cut_point_ms;
+        stinger.cut_point_ms = cut_point_ms;
+        Ok(Change { changed, io })
+    }
+
     /// `action` for the page of HTML input `input`; no change to the state.
     fn html_action(&mut self, input: InputId, action: HtmlAction) -> Result<Change, Rejection> {
         if !matches!(self.input_mut(input)?.spec, InputSpec::Html { .. }) {
@@ -1768,6 +2020,211 @@ mod tests {
             })
             .unwrap();
         state.inputs.last().unwrap().id
+    }
+
+    fn sting(n: u8) -> StingerSlot {
+        StingerSlot::new(n).unwrap()
+    }
+
+    /// `file` in stinger `slot`, reported ready by `vma-io`: `frames` at `rate`.
+    fn ready_stinger(s: &mut State, n: u8, file: &str, frames: u64, rate: FrameRate) {
+        s.apply(&Command::SetStinger {
+            slot: sting(n),
+            file: Some(file.into()),
+            cut_point_ms: None,
+        })
+        .unwrap();
+        s.apply_event(&Event::StingerReady {
+            slot: sting(n),
+            file: file.into(),
+            frames,
+            rate,
+            resolution: Resolution::HD_1080,
+            alpha: AlphaMode::Straight,
+        });
+    }
+
+    /// D8 (rules): a stinger is preloaded on `SetStinger`, plays only once ready (refused
+    /// with the reason otherwise), lasts as long as its file at the master rate, cuts at
+    /// half by default or at its cut point, cannot change while it plays.
+    #[test]
+    fn a_stinger_plays_once_preloaded_for_the_length_of_its_file() {
+        let mut s = state();
+        let a = color(&mut s, 1);
+        let b = color(&mut s, 2);
+        s.apply(&Command::SetPreview { input: b }).unwrap();
+        assert_eq!(s.program, Some(a));
+        s.apply(&Command::SetTransition {
+            button: 2,
+            effect: Effect::Stinger(sting(1)),
+            duration_ms: 0,
+        })
+        .unwrap();
+        assert_eq!(
+            refused(&mut s, Command::Transition { button: 2 }),
+            Rejection::StingerEmpty(sting(1))
+        );
+        let io = s
+            .apply(&Command::SetStinger {
+                slot: sting(1),
+                file: Some("wipe.webm".into()),
+                cut_point_ms: None,
+            })
+            .unwrap();
+        assert_eq!(
+            io,
+            [IoRequest::LoadStinger {
+                slot: sting(1),
+                file: "wipe.webm".into()
+            }]
+        );
+        assert_eq!(s.stinger(sting(1)).status, StingerStatus::Loading);
+        assert_eq!(
+            refused(&mut s, Command::Transition { button: 2 }),
+            Rejection::StingerLoading(sting(1))
+        );
+        // A report for another file (replaced meanwhile) changes nothing.
+        let before = s.clone();
+        s.apply_event(&Event::StingerFailed {
+            slot: sting(1),
+            file: "old.webm".into(),
+            reason: "gone".into(),
+        });
+        assert_eq!(s, before);
+        s.apply_event(&Event::StingerFailed {
+            slot: sting(1),
+            file: "wipe.webm".into(),
+            reason: "no decoder".into(),
+        });
+        assert_eq!(
+            refused(&mut s, Command::Transition { button: 2 }),
+            Rejection::StingerFailed(sting(1), "no decoder".into())
+        );
+        // 2 s at 50 fps.
+        ready_stinger(&mut s, 1, "wipe.webm", 100, FrameRate::FPS_50);
+        let timing = s
+            .stinger(sting(1))
+            .timing(sting(1), FrameRate::FPS_50)
+            .unwrap();
+        assert_eq!(
+            timing,
+            StingerTiming {
+                frames: 100,
+                cut: 50
+            }
+        );
+        s.apply(&Command::Transition { button: 2 }).unwrap();
+        assert!(matches!(
+            s.transition,
+            Some(TransitionState::Timed { effect: Effect::Stinger(n), frames: 100, from: Some(f), to, .. })
+                if n == sting(1) && f == a && to == b
+        ));
+        let plan = s.plan().transition.unwrap();
+        assert_eq!((plan.cut, plan.effect), (50, Effect::Stinger(sting(1))));
+        assert_eq!(
+            refused(
+                &mut s,
+                Command::SetStinger {
+                    slot: sting(1),
+                    file: None,
+                    cut_point_ms: None
+                }
+            ),
+            Rejection::StingerInUse(sting(1))
+        );
+        // The other slot can change meanwhile.
+        s.apply(&Command::SetStinger {
+            slot: sting(2),
+            file: Some("other.mov".into()),
+            cut_point_ms: Some(300),
+        })
+        .unwrap();
+        assert_eq!(refused(&mut s, Command::Cut), Rejection::TransitionRunning);
+    }
+
+    #[test]
+    fn a_stinger_cut_point_is_set_in_ms_and_checked_against_its_length() {
+        let mut s = state();
+        ready_stinger(&mut s, 2, "s.mov", 50, FrameRate::FPS_25);
+        // Same file, new cut point: no reload.
+        let io = s
+            .apply(&Command::SetStinger {
+                slot: sting(2),
+                file: Some("s.mov".into()),
+                cut_point_ms: Some(400),
+            })
+            .unwrap();
+        assert!(io.is_empty());
+        assert!(matches!(
+            s.stinger(sting(2)).status,
+            StingerStatus::Ready { .. }
+        ));
+        assert_eq!(
+            s.stinger(sting(2)).timing(sting(2), FrameRate::FPS_50),
+            Ok(StingerTiming {
+                frames: 100,
+                cut: 20
+            })
+        );
+        assert_eq!(
+            refused(
+                &mut s,
+                Command::SetStinger {
+                    slot: sting(2),
+                    file: Some("s.mov".into()),
+                    cut_point_ms: Some(2_001)
+                }
+            ),
+            Rejection::CutPointBeyondEnd {
+                cut_ms: 2_001,
+                duration_ms: 2_000
+            }
+        );
+        // A 25 fps file at 59.94: 120 ticks for its 2 s; the cut at the end is the last tick.
+        s.apply(&Command::SetStinger {
+            slot: sting(2),
+            file: Some("s.mov".into()),
+            cut_point_ms: Some(2_000),
+        })
+        .unwrap();
+        assert_eq!(
+            s.stinger(sting(2)).timing(sting(2), FrameRate::FPS_59_94),
+            Ok(StingerTiming {
+                frames: 120,
+                cut: 119
+            })
+        );
+        // Emptied.
+        let io = s
+            .apply(&Command::SetStinger {
+                slot: sting(2),
+                file: None,
+                cut_point_ms: None,
+            })
+            .unwrap();
+        assert_eq!(io, [IoRequest::UnloadStinger { slot: sting(2) }]);
+        assert_eq!(s.stinger(sting(2)).status, StingerStatus::Empty);
+    }
+
+    #[test]
+    fn stinger_commands_and_effects_are_written_with_the_slot_number() {
+        let set = Command::SetStinger {
+            slot: sting(2),
+            file: Some("w.webm".into()),
+            cut_point_ms: Some(500),
+        };
+        let json = serde_json::to_string(&set).unwrap();
+        assert_eq!(
+            json,
+            r#"{"SetStinger":{"slot":2,"file":"w.webm","cut_point_ms":500}}"#
+        );
+        assert_eq!(serde_json::from_str::<Command>(&json).unwrap(), set);
+        assert_eq!(
+            serde_json::to_string(&Effect::Stinger(sting(1))).unwrap(),
+            r#"{"Stinger":1}"#
+        );
+        assert!(serde_json::from_str::<Effect>(r#"{"Stinger":3}"#).is_err());
+        assert!(StingerSlot::new(0).is_none() && StingerSlot::new(3).is_none());
     }
 
     /// D9 (HTML, rules): each page command goes to `vma-io` for an HTML input only, data must
