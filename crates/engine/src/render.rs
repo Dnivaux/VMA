@@ -153,6 +153,9 @@ pub struct RenderEngine {
     io_port: Option<IoPort>,
 }
 
+/// An encoding this long is logged with its phases (a quarter of a 50p tick).
+const SLOW_ENCODE: Duration = Duration::from_millis(5);
+
 /// Capacity of [`IoPort::html_ticks`].
 const HTML_TICKS: usize = 4;
 
@@ -755,6 +758,7 @@ impl RenderWorker {
         // Pictures taken since the last rendered tick, before the passes that draw them.
         self.sources.encode_uploads(&mut encoder);
         self.stingers.encode_uploads(&mut encoder);
+        let uploaded = Instant::now();
         let frame = composition.frame;
         let space = match composition.domain {
             MixDomain::Gamma => MixSpace::Gamma,
@@ -786,6 +790,7 @@ impl RenderWorker {
                 mixer.encode_keyed(&self.queue, &mut encoder, &mix, &keys, target.view());
             }
         }
+        let mixed = Instant::now();
         // After the Program mixer, which wrote the Program this stage reads.
         let mut output = Duration::ZERO;
         let attached = self.active_outputs.any();
@@ -844,8 +849,25 @@ impl RenderWorker {
             }
         }
 
+        let painted = Instant::now();
         let commands = encoder.finish();
         let submitting = Instant::now();
+        // A slow tick says where its time went (rare: formatting the line allocates).
+        if submitting - encoding > SLOW_ENCODE {
+            let ms = |d: Duration| d.as_secs_f64() * 1e3;
+            tracing::warn!(
+                frame,
+                total_ms = ms(submitting - encoding),
+                uploads_ms = ms(uploaded - encoding),
+                mixers_ms = ms(mixed - uploaded),
+                output_ms = ms(output),
+                thumbnails_ms = ms(painted.saturating_duration_since(mixed) - output),
+                finish_ms = ms(submitting - painted),
+                stinger = composition.stinger.map(|s| s.tick),
+                overlays = composition.overlays.iter().flatten().count(),
+                "slow tick encode"
+            );
+        }
         self.stats.gpu_submitted();
         self.queue.submit([commands]);
         let stats = Arc::clone(&self.stats);
