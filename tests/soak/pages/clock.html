@@ -1,0 +1,13 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><style>
+html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; font-family: sans-serif; }
+#clock { position: absolute; right: 3%; top: 4%; padding: 0.6vh 1vw; font-size: 4vh; color: #fff;
+         background: rgba(220, 220, 220, 0.5); font-variant-numeric: tabular-nums; }
+</style></head><body><div id="clock">00:00.00</div><script>
+const clock = document.getElementById("clock"); const t0 = performance.now();
+(function f(t) {
+  const cs = Math.floor(((t || t0) - t0) / 10), two = (v) => String(v).padStart(2, "0");
+  clock.textContent = `${two(Math.floor(cs / 6000) % 60)}:${two(Math.floor(cs / 100) % 60)}.${two(cs % 100)}`;
+  requestAnimationFrame(f);
+})();
+</script></body></html>

@@ -1,0 +1,9 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><style>
+html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; font-family: sans-serif; }
+#bar { position: absolute; bottom: 6%; width: 30%; height: 7%; background: rgba(235, 235, 235, 0.85);
+       color: #fff; font-size: 4vh; line-height: 7vh; text-indent: 2vw; }
+</style></head><body><div id="bar">VMA — soak D11</div><script>
+const bar = document.getElementById("bar"); let n = 0;
+(function f() { n = (n + 1) % 600; bar.style.left = (n / 600 * 70) + "%"; requestAnimationFrame(f); })();
+</script></body></html>

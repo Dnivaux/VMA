@@ -27,6 +27,13 @@ Options :
   --html <page>          ajoute un input HTML (page rendue hors écran, avec son alpha) au
                          démarrage : une adresse http(s):// ou file://, ou un fichier
                          (répétable ; exige vma-html à côté de vma, ou VMA_HTML)
+  --overlay-image <png>  ajoute cette image (avec alpha) au démarrage
+  --overlays             met en overlay 1 à 4, au démarrage, les inputs HTML puis l'image
+                         de --overlay-image (soak D11 de la Phase 4)
+  --stinger <fichier>    charge ce fichier dans le stinger 1 et le règle sur le bouton 2 ;
+                         pendant le soak, une transition sur trois est ce stinger
+  --html-data            pendant le soak, envoie une donnée par seconde au dernier input
+                         HTML (événement « vma-data » : n, score)
   --spin-margin-us <µs>  marge d'attente active de l'horloge maître (défaut : 1000)
   --record <dossier>     enregistre le Program dès le démarrage, dans ce dossier
                          (sans l'option : bouton « Enregistrer », dossier Vidéos)
@@ -65,6 +72,12 @@ pub struct Options {
     pub inputs: Vec<Synthetic>,
     /// HTML inputs added at start-up (addresses).
     pub html: Vec<String>,
+    /// An image added at start-up (`--overlay-image`).
+    pub overlay_image: Option<PathBuf>,
+    /// HTML inputs then the overlay image keyed in overlays 1–4 at start-up.
+    pub overlays: bool,
+    /// A stinger file for slot 1, on button 2.
+    pub stinger: Option<PathBuf>,
     pub spin_margin: Option<Duration>,
     /// Record from start-up into this folder.
     pub record: Option<PathBuf>,
@@ -113,6 +126,10 @@ pub struct SoakOptions {
     pub report: PathBuf,
     /// Read this stream back and measure beep − flash (B1).
     pub sync_check: Option<String>,
+    /// Send data to the last HTML input every second (D11).
+    pub html_data: bool,
+    /// One transition in three is stinger 1 (button 2).
+    pub stinger: bool,
 }
 
 /// Environment variable holding the stream key, to keep it out of the command line.
@@ -141,6 +158,10 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> anyhow::Result<Options> 
     let mut resolution = Resolution::HD_1080;
     let mut inputs = 0usize;
     let mut html = Vec::new();
+    let mut overlay_image = None;
+    let mut overlays = false;
+    let mut stinger = None;
+    let mut html_data = false;
     let mut input_rates: Option<Vec<FrameRate>> = None;
     let mut input_resolution = None;
     let mut spin_margin = None;
@@ -176,6 +197,12 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> anyhow::Result<Options> 
             "--resolution" => resolution = parse_resolution(&value::<String>(&mut args, &arg)?)?,
             "--inputs" => inputs = value(&mut args, &arg)?,
             "--html" => html.push(html_address(&value::<String>(&mut args, &arg)?)?),
+            "--overlay-image" => {
+                overlay_image = Some(PathBuf::from(value::<String>(&mut args, &arg)?));
+            }
+            "--overlays" => overlays = true,
+            "--stinger" => stinger = Some(PathBuf::from(value::<String>(&mut args, &arg)?)),
+            "--html-data" => html_data = true,
             "--input-rates" => {
                 let raw: String = value(&mut args, &arg)?;
                 input_rates = Some(
@@ -236,6 +263,8 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> anyhow::Result<Options> 
             hostile,
             report: report.unwrap_or_else(|| PathBuf::from("soak-report.md")),
             sync_check: sync_check.clone(),
+            html_data,
+            stinger: stinger.is_some(),
         }),
         None if hostile || report.is_some() || sync_check.is_some() => {
             bail!("--hostile, --report et --sync-check exigent --soak")
@@ -290,6 +319,9 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> anyhow::Result<Options> 
         resolution,
         inputs,
         html,
+        overlay_image,
+        overlays,
+        stinger,
         spin_margin,
         record,
         fullscreen,
@@ -485,8 +517,18 @@ mod tests {
                 hostile: true,
                 report: PathBuf::from("r.md"),
                 sync_check: None,
+                html_data: false,
+                stinger: false,
             })
         );
+        let o = parse_str(
+            "--soak 60 --html https://x.example/a.html --overlay-image o.png --overlays \
+             --stinger s.mov --html-data",
+        )
+        .unwrap();
+        assert!(o.overlays && o.soak.as_ref().is_some_and(|s| s.html_data && s.stinger));
+        assert_eq!(o.overlay_image, Some(PathBuf::from("o.png")));
+        assert_eq!(o.stinger, Some(PathBuf::from("s.mov")));
     }
 
     #[test]

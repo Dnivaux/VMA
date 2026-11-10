@@ -75,6 +75,8 @@ pub struct SoakContext {
     pub stream_key: vma_engine::Secret,
     /// The master ticks on the shared clock (C14 diagnosis).
     pub ticks: TickGrid,
+    /// The engine's feeds: what the render thread did with the stinger (D11).
+    pub feeds: vma_engine::FeedRegistry,
 }
 
 #[derive(Debug)]
@@ -219,11 +221,21 @@ fn sync_clock(spec: &InputSpec) -> Option<(vma_core::FrameRate, i32)> {
 }
 
 /// The next transition between sync sources: the input after the one on air goes to
-/// Preview now, the transition goes at `at_ns`, then `to` is on air.
+/// Preview now, the transition goes at `at_ns`, then `to` is on air. A stinger (D11) is a cut
+/// at `at_ns`, its command `cut_ns` earlier (its cut point).
 struct Planned {
     at_ns: u64,
     fade: bool,
     to: (InputId, (vma_core::FrameRate, i32)),
+    stinger_cut_ns: Option<u64>,
+}
+
+/// Stinger 1, if it can play now: its cut point in ns.
+fn stinger_ready(state: &State) -> Option<u64> {
+    let slot = vma_engine::StingerSlot::new(1)?;
+    let stinger = state.stinger(slot);
+    stinger.timing(slot, state.format.rate).ok()?;
+    Some(u64::from(stinger.cut_ms()?) * 1_000_000)
 }
 
 /// The sync source on air and its clock (the first one when none is).
@@ -258,8 +270,15 @@ fn on_air_flashes(on_air: &[(u64, (vma_core::FrameRate, i32))], from_ns: u64, to
     flashes
 }
 
-/// Plans the next transition when every input is a sync source: sets the Preview.
-fn plan_sync_transition(state: &State, commands: &CommandSender, now_ns: u64) -> Option<Planned> {
+/// Plans the next transition between the sync sources (the others, HTML and images in
+/// overlay, are not on Program): sets the Preview. `stinger`: this one is stinger 1, if it is
+/// ready.
+fn plan_sync_transition(
+    state: &State,
+    commands: &CommandSender,
+    now_ns: u64,
+    stinger: bool,
+) -> Option<Planned> {
     let sources: Vec<_> = state
         .inputs
         .iter()
@@ -281,7 +300,12 @@ fn plan_sync_transition(state: &State, commands: &CommandSender, now_ns: u64) ->
         .first()
         .filter(|b| b.effect == vma_engine::Effect::Fade)
         .map_or(0, |b| u64::from(b.duration_ms) * 1_000_000);
-    let (at_ns, fade) = plan_transition(now_ns, from.1, next.1, fade.max(1))?;
+    let stinger_cut_ns = stinger.then(|| stinger_ready(state)).flatten();
+    let (at_ns, fade) = match stinger_cut_ns {
+        // Its cut, like a Cut, between the flashes; its command that much earlier.
+        Some(cut_ns) => plan_transition(now_ns + cut_ns, from.1, next.1, u64::MAX)?,
+        None => plan_transition(now_ns, from.1, next.1, fade.max(1))?,
+    };
     commands
         .send(Source::Script, Command::SetPreview { input: next.0 })
         .ok()?;
@@ -289,6 +313,7 @@ fn plan_sync_transition(state: &State, commands: &CommandSender, now_ns: u64) ->
         at_ns,
         fade,
         to: *next,
+        stinger_cut_ns,
     })
 }
 /// Acceptance A10: arrival → Program within 2 master frames.
@@ -360,6 +385,10 @@ fn run(
     let mut step = 0u64;
     let mut transitions = 0u64;
     let mut fades = 0u64;
+    let mut stingers = 0u64;
+    let mut data_sent = 0u64;
+    // D11: what the HTML feeds and the stinger had done at the end of the warm-up.
+    let mut phase4_warm: Option<Phase4Warm> = None;
     let mut planned: Option<Planned> = None;
     let mut last_transition = started;
     let clock = soak.config.stream_clock;
@@ -422,28 +451,58 @@ fn run(
         }
         if audio_warm.is_none() && started.elapsed() >= Duration::from_secs(SYNC_WARM_UP_S) {
             audio_warm = Some(soak.audio.inputs());
+            phase4_warm = Some(Phase4Warm::now(soak));
+        }
+        // D11: a data update a second for the last HTML input (its page shows it).
+        if options.html_data
+            && step.is_multiple_of(STEPS_PER_SECOND)
+            && let Some(page) = soak
+                .state
+                .load()
+                .inputs
+                .iter()
+                .rev()
+                .find(|i| matches!(i.spec, InputSpec::Html { .. }))
+                .map(|i| i.id)
+        {
+            let n = step / STEPS_PER_SECOND;
+            let json = format!(r#"{{"n": {n}, "score": [{}, {}]}}"#, n % 10, (n / 10) % 10);
+            if soak
+                .commands
+                .send(Source::Script, Command::HtmlData { input: page, json })
+                .is_ok()
+            {
+                data_sent += 1;
+            }
         }
         if let (true, Some(clock)) = (soak.transitions && sync_sources, clock) {
             if planned.is_none() && last_transition.elapsed() >= STEP * TRANSITION_STEPS as u32 {
-                planned = plan_sync_transition(&soak.state.load(), &soak.commands, clock.now());
+                // D11: one transition in three is the stinger.
+                let stinger = options.stinger && transitions % 3 == 2;
+                planned =
+                    plan_sync_transition(&soak.state.load(), &soak.commands, clock.now(), stinger);
             }
-            if let Some(p) = planned.as_ref()
-                && clock.at(Instant::now() + STEP) >= p.at_ns
+            let command_ns = planned
+                .as_ref()
+                .map(|p| p.at_ns.saturating_sub(p.stinger_cut_ns.unwrap_or(0)));
+            if let (Some(p), Some(command_ns)) = (planned.as_ref(), command_ns)
+                && clock.at(Instant::now() + STEP) >= command_ns
             {
                 // On time, not on the next step.
                 std::thread::sleep(
                     clock
-                        .instant(p.at_ns)
+                        .instant(command_ns)
                         .saturating_duration_since(Instant::now()),
                 );
-                let command = if p.fade {
-                    Command::Transition { button: 1 }
-                } else {
-                    Command::Cut
+                let command = match (p.stinger_cut_ns, p.fade) {
+                    (Some(_), _) => Command::Transition { button: 2 },
+                    (None, true) => Command::Transition { button: 1 },
+                    (None, false) => Command::Cut,
                 };
                 if soak.commands.send(Source::Script, command).is_ok() {
                     transitions += 1;
                     fades += u64::from(p.fade);
+                    stingers += u64::from(p.stinger_cut_ns.is_some());
                     changes.push(Change {
                         at_ns: p.at_ns,
                         to: p.to.0,
@@ -455,13 +514,20 @@ fn run(
                 last_transition = Instant::now();
             }
         } else if soak.transitions && step > 0 && step.is_multiple_of(TRANSITION_STEPS) {
-            let command = if (step / TRANSITION_STEPS) % 2 == 1 {
+            let k = step / TRANSITION_STEPS;
+            let stinger = options.stinger
+                && k.is_multiple_of(3)
+                && stinger_ready(&soak.state.load()).is_some();
+            let command = if stinger {
+                Command::Transition { button: 2 }
+            } else if k % 2 == 1 {
                 Command::Transition { button: 1 }
             } else {
                 Command::Cut
             };
             if soak.commands.send(Source::Script, command).is_ok() {
                 transitions += 1;
+                stingers += u64::from(stinger);
             }
         }
         if let (true, Some(clock)) = (sync_sources, clock) {
@@ -578,6 +644,9 @@ fn run(
         reconnections: &reconnections,
         sync: sync.as_ref(),
         sync_diagnosis: sync_diagnosis.as_deref(),
+        phase4_warm: phase4_warm.as_ref(),
+        stingers,
+        data_sent,
     };
     let (report, passed) = report(options, soak, &run);
     if let Some(dir) = options
@@ -618,6 +687,125 @@ struct Run<'a> {
     sync: Option<&'a Result<vma_io_gst::SyncSnapshot, String>>,
     /// Sync sources: the pairs out of sync, placed (see `sync_diagnosis`).
     sync_diagnosis: Option<&'a str>,
+    /// D11: the HTML feeds and the stinger at the end of the warm-up.
+    phase4_warm: Option<&'a Phase4Warm>,
+    /// Stinger transitions sent.
+    stingers: u64,
+    /// Data updates sent to an HTML input.
+    data_sent: u64,
+}
+
+/// One master period of the soak's 50 ms steps, a second.
+const STEPS_PER_SECOND: u64 = 20;
+
+/// D11: the counters of the HTML feeds and of the stinger at the end of the warm-up (the
+/// pages load and settle before it).
+#[derive(Debug)]
+struct Phase4Warm {
+    html: Vec<(InputId, vma_engine::FeedStatsSnapshot)>,
+    stinger: Option<vma_engine::SequenceStatsSnapshot>,
+}
+
+impl Phase4Warm {
+    fn now(soak: &SoakContext) -> Self {
+        let state = soak.state.load();
+        Self {
+            html: state
+                .inputs
+                .iter()
+                .filter(|i| matches!(i.spec, InputSpec::Html { .. }))
+                .filter_map(|i| Some((i.id, soak.input_stats.get(i.id)?.snapshot())))
+                .collect(),
+            stinger: vma_engine::StingerSlot::new(1)
+                .and_then(|slot| soak.feeds.stinger_stats(slot)),
+        }
+    }
+}
+
+/// D11 « Habillage » section: overlays, HTML inputs (D5 over the whole run: no picture
+/// repeated nor skipped since the warm-up), stinger (no picture repeated). `None` when the
+/// soak has none of them.
+fn phase4_report(soak: &SoakContext, run: &Run<'_>, state: &State) -> Option<(String, bool)> {
+    let overlays: Vec<String> = state
+        .overlays
+        .iter()
+        .zip(vma_core::OverlayChannel::ALL)
+        .filter_map(|(o, channel)| {
+            let input = state.input(o.input?)?;
+            Some(format!("{} : {}", channel.number(), input.name))
+        })
+        .collect();
+    let html: Vec<_> = state
+        .inputs
+        .iter()
+        .filter(|i| matches!(i.spec, InputSpec::Html { .. }))
+        .collect();
+    let stinger = vma_engine::StingerSlot::new(1).and_then(|slot| soak.feeds.stinger_stats(slot));
+    if overlays.is_empty() && html.is_empty() && stinger.is_none() {
+        return None;
+    }
+    let mut s = String::new();
+    let mut passed = true;
+    let _ = writeln!(
+        s,
+        "## Habillage (D11)
+Overlays : {}. Données envoyées à la page : {} ; transitions stinger : {}.
+",
+        if overlays.is_empty() {
+            "aucun".to_owned()
+        } else {
+            overlays.join(" · ")
+        },
+        run.data_sent,
+        run.stingers
+    );
+    if !html.is_empty() {
+        let _ = writeln!(
+            s,
+            "### Inputs HTML (D5 sur toute la durée)
+Depuis la fin de la chauffe ({SYNC_WARM_UP_S} s) : une image de la page par tick, aucune répétée ni sautée.
+
+| Input | Reçues | Montrées | **Répétées** | **Sautées** | Upload occupé |
+|---|---|---|---|---|---|"
+        );
+        for input in html {
+            let Some(now) = soak.input_stats.get(input.id).map(|s| s.snapshot()) else {
+                continue;
+            };
+            let warm = run
+                .phase4_warm
+                .and_then(|w| w.html.iter().find(|(id, _)| *id == input.id))
+                .map(|(_, s)| *s);
+            let since = |f: fn(&vma_engine::FeedStatsSnapshot) -> u64| {
+                f(&now).saturating_sub(warm.as_ref().map_or(0, f))
+            };
+            let (repeated, skipped) = (since(|s| s.repeated), since(|s| s.skipped));
+            passed &= warm.is_some() && repeated == 0 && skipped == 0;
+            let _ = writeln!(
+                s,
+                "| {} | {} | {} | **{repeated}** | **{skipped}** | {} |",
+                input.name,
+                since(|s| s.received),
+                since(|s| s.shown),
+                since(|s| s.upload_busy)
+            );
+        }
+        let _ = writeln!(s);
+    }
+    if let Some(now) = stinger {
+        let warm = run.phase4_warm.and_then(|w| w.stinger).unwrap_or_default();
+        let repeated = now.repeated.saturating_sub(warm.repeated);
+        passed &= repeated == 0 && (run.stingers == 0 || now.plays > warm.plays);
+        let _ = writeln!(
+            s,
+            "### Stinger 1
+Depuis la fin de la chauffe : {} passages, {} images montrées, **{repeated}** répétées (image pas encore décodée).
+",
+            now.plays.saturating_sub(warm.plays),
+            now.shown.saturating_sub(warm.shown)
+        );
+    }
+    Some((s, passed))
 }
 
 /// B1 on what the analyser saw over `elapsed`: every |beep − flash| within one frame, one
@@ -890,6 +1078,8 @@ fn report(options: &SoakOptions, soak: &SoakContext, run: &Run<'_>) -> (String, 
     };
     let audio = audio_report(soak, run, &state, distribution.audio_late);
     let audio_ok = audio.as_ref().is_none_or(|a| a.passed);
+    let phase4 = phase4_report(soak, run, &state);
+    let phase4_ok = phase4.as_ref().is_none_or(|(_, ok)| *ok);
     let passed = end == End::Completed
         && c.missed == 0
         && r.gpu_dropped == 0
@@ -897,7 +1087,8 @@ fn report(options: &SoakOptions, soak: &SoakContext, run: &Run<'_>) -> (String, 
         && inputs_ok
         && outputs_ok
         && sync_ok
-        && audio_ok;
+        && audio_ok
+        && phase4_ok;
     let mode = if options.hostile { "hostile" } else { "calme" };
     let ms = |d: Duration| format!("{:.3} ms", d.as_secs_f64() * 1000.0);
 
@@ -923,6 +1114,8 @@ fn report(options: &SoakOptions, soak: &SoakContext, run: &Run<'_>) -> (String, 
                 "❌ ÉCHEC (sortie en erreur ou reconnectée, ou images perdues par une sortie)",
             (false, End::Completed) if !audio_ok =>
                 "❌ ÉCHEC (son : trou, retard du mélange ou reprise de la lecture d'un input)",
+            (false, End::Completed) if !phase4_ok =>
+                "❌ ÉCHEC (habillage : page HTML répétée ou sautée, ou image du stinger répétée)",
             (false, End::Completed) if !sync_ok =>
                 "❌ ÉCHEC (synchro : décalage son / image de plus d'une image, flux relu interrompu ou flashs manquants)",
             (false, End::Completed) => "❌ ÉCHEC (images manquées ou répétées)",
@@ -1201,6 +1394,9 @@ fn report(options: &SoakOptions, soak: &SoakContext, run: &Run<'_>) -> (String, 
         }
     }
 
+    if let Some((text, _)) = &phase4 {
+        s.push_str(text);
+    }
     let _ = writeln!(
         s,
         "## UI (thread principal)\n| Mesure | Valeur |\n|---|---|"

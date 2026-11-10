@@ -232,6 +232,34 @@ impl<'a> App<'a> {
                 css: None,
             })?;
         }
+        if let Some(path) = &options.overlay_image {
+            script(vma_engine::InputSpec::Image { path: path.clone() })?;
+        }
+        // `--stinger`: stinger 1, on transition button 2 (Phase 4, D11).
+        if let Some(file) = &options.stinger {
+            let slot = vma_engine::StingerSlot::new(1).context("stinger slot")?;
+            for command in [
+                vma_engine::Command::SetStinger {
+                    slot,
+                    file: Some(file.clone()),
+                    cut_point_ms: None,
+                },
+                vma_engine::Command::SetTransition {
+                    button: 2,
+                    effect: vma_engine::Effect::Stinger(slot),
+                    duration_ms: 0,
+                },
+            ] {
+                engine
+                    .commands()
+                    .send(vma_engine::Source::Script, command)?;
+            }
+        }
+        // `--overlays`: the HTML inputs, then the image, in overlays 1 to 4.
+        if options.overlays {
+            let expected = options.html.len() + usize::from(options.overlay_image.is_some());
+            key_overlays(&engine, expected.min(4))?;
+        }
         if soak_options.is_some() && inputs.is_empty() {
             script(vma_engine::InputSpec::TestSource {
                 rate: config.rate,
@@ -328,6 +356,7 @@ impl<'a> App<'a> {
                     audio: engine.audio_stats(),
                     stream_key: stream_key.clone(),
                     ticks: engine.ticks(),
+                    feeds: engine.feeds(),
                 },
             )
         });
@@ -382,6 +411,30 @@ fn wait_for<T>(
 /// `--sync-inputs`: the mixer at work, as in a show. The Master follows the video (only the
 /// sound on air is heard, and measured); the first half of the inputs is sent to bus A, the
 /// other to bus B, both at −10 dB (their beeps add up).
+/// The HTML inputs, then the images, in overlays 1 to 4 (the default transition), once the
+/// `expected` ones are all there.
+fn key_overlays(engine: &RenderEngine, expected: usize) -> anyhow::Result<()> {
+    let keyed = wait_for(engine, "--overlays", |s| {
+        let html = s
+            .inputs
+            .iter()
+            .filter(|i| matches!(i.spec, vma_engine::InputSpec::Html { .. }));
+        let images = s
+            .inputs
+            .iter()
+            .filter(|i| matches!(i.spec, vma_engine::InputSpec::Image { .. }));
+        let ids: Vec<_> = html.chain(images).map(|i| i.id).take(4).collect();
+        (expected > 0 && ids.len() >= expected).then_some(ids)
+    })?;
+    for (channel, input) in vma_core::OverlayChannel::ALL.into_iter().zip(keyed) {
+        engine.commands().send(
+            vma_engine::Source::Script,
+            vma_engine::Command::OverlayIn { channel, input },
+        )?;
+    }
+    Ok(())
+}
+
 fn mix_sync_inputs(engine: &RenderEngine, count: usize) -> anyhow::Result<()> {
     use vma_engine::{Command, Db};
     let inputs = wait_for(engine, "--sync-inputs", |s| {

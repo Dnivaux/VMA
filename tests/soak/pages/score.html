@@ -1,0 +1,11 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><style>
+html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; font-family: sans-serif; }
+#score { position: absolute; left: 3%; top: 4%; padding: 0.6vh 1vw; font-size: 5vh; color: #fff;
+         background: rgba(230, 230, 230, 0.6); }
+#dot { position: absolute; left: 3%; top: 12%; width: 1vh; height: 1vh; background: #fff; }
+</style></head><body><div id="score">0 – 0</div><div id="dot"></div><script>
+const score = document.getElementById("score"), dot = document.getElementById("dot"); let n = 0;
+window.addEventListener("vma-data", (e) => { score.textContent = `${e.detail.score[1]} – ${e.detail.score[0]} (${e.detail.n})`; });
+(function f() { n = (n + 1) % 200; dot.style.left = (3 + n / 10) + "%"; requestAnimationFrame(f); })();
+</script></body></html>

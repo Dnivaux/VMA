@@ -354,6 +354,8 @@ pub struct FeedRegistry {
     rings: crate::audio::RingAttacher,
     stingers: crossbeam_channel::Sender<crate::sequence::StingerAttach>,
     stinger_sounds: crate::audio::StingerSounds,
+    /// What the render thread did with each stinger (reports).
+    stinger_stats: Arc<std::sync::Mutex<[Option<Arc<crate::SequenceStats>>; 2]>>,
 }
 
 impl FeedRegistry {
@@ -374,7 +376,14 @@ impl FeedRegistry {
             rings,
             stingers,
             stinger_sounds,
+            stinger_stats: Arc::default(),
         }
+    }
+
+    /// What the render thread did with the ring of stinger `slot` (`None`: never loaded).
+    pub fn stinger_stats(&self, slot: crate::StingerSlot) -> Option<crate::SequenceStatsSnapshot> {
+        let stats = self.stinger_stats.lock().ok()?;
+        stats.get(slot.index())?.as_ref().map(|s| s.snapshot())
     }
 
     /// The sound of stinger `slot`, decoded in full: 48 kHz stereo, interleaved, from its
@@ -421,7 +430,13 @@ impl FeedRegistry {
         self.stingers
             .try_send((slot, Some(reader)))
             .map_err(stinger_error)?;
-        Ok(crate::StingerSink::new(writer))
+        let sink = crate::StingerSink::new(writer);
+        if let Ok(mut stats) = self.stinger_stats.lock()
+            && let Some(entry) = stats.get_mut(slot.index())
+        {
+            *entry = Some(sink.stats());
+        }
+        Ok(sink)
     }
 
     /// Empties stinger `slot` (after the play in progress, if one is).
