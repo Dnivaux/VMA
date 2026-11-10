@@ -355,6 +355,16 @@ impl StingerSink {
         self.writer.store(index, |frame| frame.stage_packed(data))
     }
 
+    /// [`Self::push_packed`] for a picture given as planes (one per plane of the format,
+    /// with their row strides).
+    pub fn push(
+        &mut self,
+        index: u64,
+        planes: &[vma_compositor::Plane<'_>],
+    ) -> Result<Result<(), Refused>, FrameError> {
+        self.writer.store(index, |frame| frame.stage(planes))
+    }
+
     /// The file is over: the next pictures are those of the next play.
     pub fn next_play(&mut self) {
         self.writer.next_play();

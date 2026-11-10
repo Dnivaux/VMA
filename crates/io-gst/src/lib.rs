@@ -28,6 +28,7 @@ mod outputs;
 mod pipeline;
 mod runtime;
 pub mod still;
+mod stinger;
 mod supervisor;
 mod sync;
 mod sync_source;

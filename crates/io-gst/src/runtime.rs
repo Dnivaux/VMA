@@ -225,6 +225,14 @@ impl IoRuntime {
             port.format.rate,
             port.html_ticks.clone(),
         );
+        let stingers = crate::stinger::Stingers::new(
+            port.feeds.clone(),
+            port.events.clone(),
+            gstreamer
+                .clone()
+                .err()
+                .map(|e| IoError::GstreamerUnavailable(e).to_string()),
+        );
         let stop = Arc::new(AtomicBool::new(false));
         let devices = DeviceList::default();
         let infos = Infos::default();
@@ -264,6 +272,7 @@ impl IoRuntime {
             ndi_sources: ndi_sources.clone(),
             ndi_monitor: None,
             html: html_host,
+            stingers,
             headphones,
             devices_at: Instant::now(),
             infos: Arc::clone(&infos),
@@ -374,6 +383,7 @@ struct Worker {
     ndi_sources: NdiSourceList,
     ndi_monitor: Option<NdiMonitor>,
     html: HtmlHost<HtmlFeedsOf>,
+    stingers: crate::stinger::Stingers,
     headphones: Option<Headphones>,
     devices_at: Instant,
     infos: Infos,
@@ -474,10 +484,8 @@ impl Worker {
                 let events = &self.port.events;
                 self.outputs.stop(output, &mut |e| send(events, e));
             }
-            IoRequest::LoadStinger { slot, file } => {
-                tracing::warn!(%slot, file = %file.display(), "stingers not loaded yet");
-            }
-            IoRequest::UnloadStinger { slot } => tracing::debug!(%slot, "stinger emptied"),
+            IoRequest::LoadStinger { slot, file } => self.stingers.load(slot, &file),
+            IoRequest::UnloadStinger { slot } => self.stingers.unload(slot),
             IoRequest::Html { input, action } => {
                 let action = match action {
                     HtmlAction::Data(json) => PageAction::Script(data_event_script(&json)),
