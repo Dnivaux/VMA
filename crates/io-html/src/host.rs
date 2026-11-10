@@ -292,9 +292,12 @@ enum Helper {
         connection: Connection,
         since: Instant,
     },
-    /// `Quit` sent; killed at `until` if still running.
+    /// `Quit` sent; killed at `until` if still running. The connection stays open until
+    /// then: closing a socket with data still to read resets it (Windows), and the helper
+    /// could lose the last `Close` and the `Quit`.
     Stopping {
         until: Instant,
+        connection: Option<Connection>,
     },
 }
 
@@ -486,11 +489,17 @@ impl<F: HtmlFeeds> HtmlHost<F> {
 
     /// Starts, watches and restarts the helper; reports losses through `emit`.
     pub fn tick(&mut self, now: Instant, emit: &mut impl FnMut(HtmlEvent)) {
-        if let Helper::Stopping { until } = self.helper {
+        if let Helper::Stopping { until, .. } = self.helper {
             let exited = self.process.as_mut().is_none_or(|p| p.exited().is_some());
             if exited || now >= until {
                 self.kill();
-                self.helper = Helper::Down;
+                if let Helper::Stopping {
+                    connection: Some(connection),
+                    ..
+                } = std::mem::replace(&mut self.helper, Helper::Down)
+                {
+                    connection.close();
+                }
             }
             return;
         }
@@ -796,9 +805,9 @@ impl<F: HtmlFeeds> HtmlHost<F> {
         match std::mem::replace(&mut self.helper, Helper::Down) {
             Helper::Running { connection, .. } => {
                 connection.send(&ToHelper::Quit);
-                connection.close();
                 self.helper = Helper::Stopping {
                     until: now + self.timings.quit,
+                    connection: Some(connection),
                 };
             }
             Helper::Starting { .. } => self.kill(),
@@ -812,7 +821,7 @@ impl<F: HtmlFeeds> Drop for HtmlHost<F> {
         self.inputs.clear();
         self.stop_helper(Instant::now());
         // `vma-io` stops: give the helper the time to close its browsers, then kill it.
-        if let Helper::Stopping { until } = self.helper {
+        if let Helper::Stopping { until, .. } = self.helper {
             while let Some(process) = self.process.as_mut() {
                 if process.exited().is_some() || Instant::now() >= until {
                     break;
@@ -821,6 +830,13 @@ impl<F: HtmlFeeds> Drop for HtmlHost<F> {
             }
         }
         self.kill();
+        if let Helper::Stopping {
+            connection: Some(connection),
+            ..
+        } = std::mem::replace(&mut self.helper, Helper::Down)
+        {
+            connection.close();
+        }
     }
 }
 
