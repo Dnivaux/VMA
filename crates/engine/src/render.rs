@@ -10,6 +10,7 @@ use crate::journal::{self, Journal, JournalStats};
 use crate::outputs::{self, ActiveOutputs, Delivery, OutputHub, OutputSettings, SyncTest};
 use crate::plan::plan_channel;
 use crate::readback::{RING, Ring, RingWriter};
+use crate::sequence::{STINGER_CAPACITY, StingerTable};
 use crate::sequencer::{Composition, OverlayShown, RenderFeedback, Sequencer};
 use crate::sources::{RenderSource, SOURCE_CAPACITY, SourceTable};
 use crate::state::{Format, State};
@@ -273,12 +274,16 @@ impl RenderEngine {
         let (sources_tx, sources_rx) = crossbeam_channel::bounded(SOURCE_CAPACITY);
         let (retired_tx, retired_rx) = crossbeam_channel::bounded(SOURCE_CAPACITY);
         let (attach_tx, attach_rx) = crossbeam_channel::bounded(ATTACH_CAPACITY);
+        let (stingers_tx, stingers_rx) = crossbeam_channel::bounded(STINGER_CAPACITY);
+        let (retired_stingers_tx, retired_stingers_rx) =
+            crossbeam_channel::bounded(STINGER_CAPACITY);
         let feeds = FeedRegistry::new(
             device.clone(),
             queue.clone(),
             FramePipelines::new(&device),
             attach_tx,
             rings,
+            stingers_tx,
         );
         let ((io_tx, io_requests), (io_events, io_events_rx)) = io_channels();
         let (mut controller, state) = Controller::new(
@@ -304,6 +309,7 @@ impl RenderEngine {
                 commands: command_rx,
                 attach: attach_rx,
                 retired: retired_rx,
+                retired_stingers: retired_stingers_rx,
                 io_events: io_events_rx,
             },
             Arc::clone(&stop),
@@ -329,6 +335,7 @@ impl RenderEngine {
             stream_clock,
             sequencer: Sequencer::new(plan_reader),
             sources: SourceTable::new(sources_rx, retired_tx),
+            stingers: StingerTable::new(stingers_rx, retired_stingers_tx),
             feedback: Arc::clone(&feedback),
             stats: Arc::clone(&render_stats),
             stop: Arc::clone(&stop),
@@ -593,6 +600,8 @@ struct RenderWorker {
     fullscreen: Output,
     sequencer: Sequencer,
     sources: SourceTable,
+    /// The stinger rings (ADR 0010 § 5).
+    stingers: StingerTable,
     feedback: Arc<RenderFeedback>,
     stats: Arc<RenderStats>,
     stop: Arc<AtomicBool>,
@@ -646,6 +655,9 @@ impl RenderWorker {
             // Every feed takes its latest picture once per tick, rendered or not, so the
             // per-input statistics count master ticks.
             self.sources.advance(started);
+            // The stinger's picture for this tick, rendered or not (it keeps to time).
+            self.stingers
+                .advance(composition.stinger, self.clock.rate());
             // The sound follows the pictures shown, whatever the GPU does (ADR 0007 § 5).
             let ideal = started
                 .checked_sub(tick.woke_at.saturating_sub(tick.scheduled))
@@ -739,6 +751,7 @@ impl RenderWorker {
             });
         // Pictures taken since the last rendered tick, before the passes that draw them.
         self.sources.encode_uploads(&mut encoder);
+        self.stingers.encode_uploads(&mut encoder);
         let frame = composition.frame;
         let space = match composition.domain {
             MixDomain::Gamma => MixSpace::Gamma,
@@ -752,7 +765,10 @@ impl RenderWorker {
         };
         let preview = Mix::single(self.source(composition.preview, frame));
         let program_keys = Keys {
-            stinger: None,
+            stinger: self.stingers.current(composition.stinger).map(|frame| Key {
+                source: Source::Frame(frame),
+                opacity: 1.0,
+            }),
             overlays: composition.overlays.map(|o| self.key(o, frame)),
         };
         let with_thumbnails = frame.is_multiple_of(2);

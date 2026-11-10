@@ -352,6 +352,7 @@ pub struct FeedRegistry {
     pipelines: FramePipelines,
     attach: crossbeam_channel::Sender<Attach>,
     rings: crate::audio::RingAttacher,
+    stingers: crossbeam_channel::Sender<crate::sequence::StingerAttach>,
 }
 
 impl FeedRegistry {
@@ -361,6 +362,7 @@ impl FeedRegistry {
         pipelines: FramePipelines,
         attach: crossbeam_channel::Sender<Attach>,
         rings: crate::audio::RingAttacher,
+        stingers: crossbeam_channel::Sender<crate::sequence::StingerAttach>,
     ) -> Self {
         Self {
             device,
@@ -368,7 +370,45 @@ impl FeedRegistry {
             pipelines,
             attach,
             rings,
+            stingers,
         }
+    }
+
+    /// Creates the ring of stinger `slot` for a file of `length` pictures at `rate`, and hands
+    /// it to the render thread, which takes it at the end of the play in progress (if one
+    /// is). Allocates [`crate::STINGER_RING`] pictures of GPU memory.
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_stinger(
+        &self,
+        slot: crate::StingerSlot,
+        pixel: PixelFormat,
+        resolution: Resolution,
+        color: ColorInfo,
+        alpha: AlphaMode,
+        rate: FrameRate,
+        length: u64,
+    ) -> Result<crate::StingerSink, FeedError> {
+        let slots = std::array::from_fn(|_| {
+            InputFrame::new(
+                &self.device,
+                &self.queue,
+                &self.pipelines,
+                pixel,
+                resolution,
+                color,
+                alpha,
+            )
+        });
+        let (writer, reader) = crate::sequence::sequence(slots, length, rate);
+        self.stingers
+            .try_send((slot, Some(reader)))
+            .map_err(stinger_error)?;
+        Ok(crate::StingerSink::new(writer))
+    }
+
+    /// Empties stinger `slot` (after the play in progress, if one is).
+    pub fn remove_stinger(&self, slot: crate::StingerSlot) -> Result<(), FeedError> {
+        self.stingers.try_send((slot, None)).map_err(stinger_error)
     }
 
     /// A ring for the sound of `input` (ADR 0007 § 2), mixed by `vma-audio` from the next
@@ -422,6 +462,13 @@ impl FeedRegistry {
                 crossbeam_channel::TrySendError::Disconnected(_) => FeedError::Stopped,
             })?;
         Ok(FrameSink { writer, source })
+    }
+}
+
+fn stinger_error<T>(e: crossbeam_channel::TrySendError<T>) -> FeedError {
+    match e {
+        crossbeam_channel::TrySendError::Full(_) => FeedError::Busy,
+        crossbeam_channel::TrySendError::Disconnected(_) => FeedError::Stopped,
     }
 }
 

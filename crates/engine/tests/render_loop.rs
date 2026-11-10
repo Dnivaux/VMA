@@ -1155,3 +1155,163 @@ fn flooding_producer_never_tears_nor_misses() {
     assert_eq!(clock.missed - missed_before, 0, "missed frames");
     assert_eq!(spawned.engine.render_stats().snapshot().gpu_errors, 0);
 }
+
+/// Output test double: frame index, and the luma of the left half (where the stinger is
+/// transparent: the Program) and of the right half (the stinger's grey).
+struct Halves(crossbeam_channel::Sender<(u64, u8, u8)>);
+
+impl OutputConsumer for Halves {
+    fn consume(&mut self, frame: std::sync::Arc<OutputFrame>) {
+        let w = frame.luma_stride();
+        let row = &frame.luma()[90 * w..91 * w];
+        let _ = self.0.send((frame.index, row[w / 4], row[3 * w / 4]));
+    }
+}
+
+/// Grey of stinger picture `k`, and back from an output's luma (NV12, limited range).
+fn stinger_grey(k: u64) -> u8 {
+    20 + 10 * k as u8
+}
+
+fn picture_from_luma(y: u8) -> Option<u64> {
+    let grey = (f64::from(y) - 16.0) * 255.0 / 219.0;
+    let k = ((grey - 20.0) / 10.0).round();
+    ((0.0..=19.0).contains(&k) && (grey - 20.0 - 10.0 * k).abs() < 3.0).then_some(k as u64)
+}
+
+/// D8 end to end: a stinger of 20 pictures, cut point 200 ms (tick 10), played over a cut
+/// from black to white: on the outputs, its tick k shows its picture k, the Program under it
+/// is A before the cut tick and B from it, the stinger is gone after its last picture and the
+/// Program stays B; none repeated.
+#[test]
+fn a_stinger_plays_picture_by_picture_and_cuts_at_its_tick() {
+    use vma_engine::{Effect, IoEvent, StingerSlot};
+    let mut spawned = spawn_with_journal(
+        FrameRate::FPS_50,
+        Resolution::new(320, 180).unwrap(),
+        Journal::Disabled,
+    );
+    let port = spawned.engine.take_io_port().unwrap();
+    let commands = spawned.engine.commands();
+    let feedback = spawned.engine.feedback();
+    let send = |command| commands.send(Source::Ui, command).unwrap();
+    let state = spawned.engine.state();
+    for color in [Rgb8::BLACK, Rgb8::WHITE] {
+        send(Command::AddInput {
+            spec: InputSpec::Color { color },
+            name: None,
+        });
+    }
+    assert!(wait_for(Duration::from_secs(2), || state
+        .load()
+        .inputs
+        .len()
+        == 2));
+    let b = state.load().inputs[1].id;
+    send(Command::SetPreview { input: b });
+
+    // `vma-io`'s part: the ring, and a producer that fills it from the file.
+    let one = StingerSlot::new(1).unwrap();
+    let mut sink = port
+        .feeds
+        .create_stinger(
+            one,
+            vma_core::PixelFormat::Rgba,
+            Resolution::new(320, 180).unwrap(),
+            vma_core::ColorInfo::RGB_FULL,
+            vma_core::AlphaMode::Straight,
+            FrameRate::FPS_50,
+            20,
+        )
+        .unwrap();
+    let stats = sink.stats();
+    let producer = std::thread::spawn(move || {
+        for k in 0..20u64 {
+            let grey = stinger_grey(k);
+            let picture: Vec<u8> = (0..180)
+                .flat_map(|_| {
+                    (0..320).flat_map(move |x| {
+                        if x < 160 {
+                            [0, 0, 0, 0]
+                        } else {
+                            [grey, grey, grey, 255]
+                        }
+                    })
+                })
+                .collect();
+            while sink.push_packed(k, &picture).unwrap().is_err() {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }
+        sink
+    });
+    send(Command::SetStinger {
+        slot: one,
+        file: Some("wipe.webm".into()),
+        cut_point_ms: Some(200),
+    });
+    port.events
+        .send(IoEvent::StingerReady {
+            slot: one,
+            file: "wipe.webm".into(),
+            frames: 20,
+            rate: FrameRate::FPS_50,
+            resolution: Resolution::new(320, 180).unwrap(),
+            alpha: vma_core::AlphaMode::Straight,
+        })
+        .unwrap();
+    send(Command::SetTransition {
+        button: 1,
+        effect: Effect::Stinger(one),
+        duration_ms: 0,
+    });
+    assert!(wait_for(Duration::from_secs(2), || matches!(
+        state.load().stinger(one).status,
+        vma_engine::StingerStatus::Ready { .. }
+    )));
+    // Preloaded: the first 16 pictures in the ring before the transition.
+    std::thread::sleep(Duration::from_millis(200));
+
+    let (tx, rx) = crossbeam_channel::unbounded();
+    let hub = spawned.engine.outputs();
+    hub.attach(vma_core::OutputId(1), Box::new(Halves(tx)))
+        .unwrap();
+    assert!(wait_for(Duration::from_secs(2), || hub.active() > 0));
+    send(Command::Transition { button: 1 });
+    assert!(wait_for(Duration::from_secs(2), || feedback
+        .started()
+        .is_some()));
+    let (_, t0) = feedback.started().unwrap();
+    let mut seen = Vec::new();
+    assert!(
+        wait_for(Duration::from_secs(5), || {
+            seen.extend(rx.try_iter());
+            seen.last().is_some_and(|f: &(u64, u8, u8)| f.0 >= t0 + 25)
+        }),
+        "no output frames"
+    );
+    let at = |n: u64| *seen.iter().find(|f| f.0 == n).expect("frame delivered");
+    let (black, white) = (16u8, 235u8);
+    for k in 0..20 {
+        let (_, left, right) = at(t0 + k);
+        assert_eq!(
+            picture_from_luma(right),
+            Some(k),
+            "tick {k}: stinger picture"
+        );
+        let program = if k >= 10 { white } else { black };
+        assert!(left.abs_diff(program) <= 2, "tick {k}: Program {left}");
+    }
+    for n in t0 + 20..t0 + 25 {
+        let (_, left, right) = at(n);
+        assert!(
+            left.abs_diff(white) <= 2 && right.abs_diff(white) <= 2,
+            "after: B alone"
+        );
+    }
+    let s = state.load();
+    assert_eq!(s.program, Some(b), "Program = B at the end");
+    assert_eq!(stats.snapshot().repeated, 0);
+    assert_eq!(stats.snapshot().plays, 1);
+    drop(producer.join().unwrap());
+}

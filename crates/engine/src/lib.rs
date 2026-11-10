@@ -19,6 +19,7 @@ mod outputs;
 mod plan;
 mod readback;
 mod render;
+mod sequence;
 mod sequencer;
 mod sources;
 mod state;
@@ -52,11 +53,15 @@ pub use outputs::{
 };
 pub use plan::{PlanFtb, PlanOverlay, PlanProgress, PlanReader, PlanTransition, RenderPlan};
 pub use render::{EngineConfig, EngineError, FrameReader, IoPort, Readers, RenderEngine};
+pub use sequence::{
+    RING as STINGER_RING, Refused, SequenceStats, SequenceStatsSnapshot, StingerSink,
+};
 pub use sequencer::{Composition, OnAir, OverlayShown, RenderFeedback, Sequencer, StingerShown};
 pub use state::{
     AudioState, BusState, Ending, Event, FadeToBlack, Format, HtmlAction, InputAudio, InputState,
     InputStatus, IoRequest, MAX_INPUTS, MAX_NAME_CHARS, Monitor, OutputState, OutputStatus,
-    OverlayState, Playback, Rejection, SourceFormat, State, TransitionState,
+    OverlayState, Playback, Rejection, SourceFormat, State, StingerState, StingerStatus,
+    StingerTiming, TransitionState,
 };
 pub use stats::{RenderCpuSummary, RenderStats, RenderStatsSnapshot};
 pub use timeline::{Timeline, Timelines};

@@ -618,6 +618,9 @@ pub(crate) struct ControlInputs {
     pub(crate) attach: Receiver<Attach>,
     /// Feeds the render thread no longer uses: dropped (GPU textures freed) here.
     pub(crate) retired: Receiver<FeedReader>,
+    /// Stinger rings replaced or emptied: dropped here too.
+    pub(crate) retired_stingers:
+        Receiver<crate::sequence::SequenceReader<vma_compositor::InputFrame>>,
     /// Events from `vma-io`.
     pub(crate) io_events: Receiver<IoEvent>,
 }
@@ -645,6 +648,9 @@ pub(crate) fn spawn(
                 }
                 // Dropping a retired feed frees its textures on this thread.
                 for retired in inputs.retired.try_iter() {
+                    drop(retired);
+                }
+                for retired in inputs.retired_stingers.try_iter() {
                     drop(retired);
                 }
                 controller.flush_sources();
