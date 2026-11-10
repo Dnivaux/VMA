@@ -32,9 +32,11 @@ trap 'kill "$server" 2>/dev/null; rm -rf "$work"' EXIT
 gst-launch-1.0 -q videotestsrc pattern=white num-buffers=1 \
     ! video/x-raw,width=480,height=120 ! videoconvert ! video/x-raw,format=RGBA \
     ! alpha alpha=0.5 ! pngenc snapshot=true ! filesink location="$work/panel.png" || exit 1
-gst-launch-1.0 -q videotestsrc pattern=ball num-buffers=50 \
-    ! video/x-raw,width=1920,height=1080,framerate=50/1 ! videoconvert \
-    ! alpha method=custom target-r=0 target-g=0 target-b=0 ! video/x-raw,format=RGBA \
+# The background drawn transparent by the source itself: keyed by `alpha method=custom`, it
+# stayed opaque black, and every stinger hid a second of the Program (and one white picture
+# of a flash when it ended on one).
+gst-launch-1.0 -q videotestsrc pattern=ball background-color=0x00000000 num-buffers=50 \
+    ! video/x-raw,width=1920,height=1080,framerate=50/1,format=RGBA \
     ! avenc_png ! qtmux ! filesink location="$work/stinger.mov" || exit 1
 
 cat > "$work/mediamtx.yml" <<YML

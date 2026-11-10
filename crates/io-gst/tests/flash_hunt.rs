@@ -9,6 +9,10 @@
 //! Dressed like the D11 soak (`VMA_HUNT_DRESSED=1`, with `VMA_HTML` and `VMA_HUNT_STINGER`, a
 //! stinger file): the 3 pages of `tests/soak/pages` and `VMA_HUNT_PANEL` (a PNG) in overlays
 //! 1–4, a data update a second, one Cut in three a stinger. Slow ticks are logged (`warn`).
+//! The stinger must be transparent around its picture (as `tests/soak/phase4-d11.sh` makes
+//! it): an opaque one hides the flashes under it. `VMA_HUNT_CUT_MS` / `VMA_HUNT_STINGER_MS`:
+//! when a Cut / a stinger's command goes after a flash; `VMA_HUNT_SWAP`: Cuts swap Preview and
+//! Program, as the soaks do.
 
 // Test code: panicking on failure is the intended behaviour.
 #![allow(
@@ -154,6 +158,21 @@ fn every_flash_reaches_the_outputs_whole() {
             now.stinger(vma_engine::StingerSlot::new(1).unwrap()).status,
         );
     }
+    // When a Cut goes, in ms after a flash (`VMA_HUNT_CUT_MS`, half-way by default).
+    let cut_ms: u64 = std::env::var("VMA_HUNT_CUT_MS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(500);
+    // `VMA_HUNT_SWAP`: Preview / Program swapped by `Cut`, as the soaks do.
+    let swap = std::env::var_os("VMA_HUNT_SWAP").is_some();
+    if swap {
+        send(Command::SetPreview { input: inputs[1] });
+    }
+    // When a stinger's command goes, in ms after a flash (`VMA_HUNT_STINGER_MS`).
+    let stinger_ms: u64 = std::env::var("VMA_HUNT_STINGER_MS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(60);
     let mut cuts = 0u64;
     let mut data_at = Instant::now();
     let lumas = Arc::new(Mutex::new(Vec::new()));
@@ -180,7 +199,11 @@ fn every_flash_reaches_the_outputs_whole() {
             let stinger = dressed && cuts.is_multiple_of(3);
             // The cut half-way between two flashes; a stinger cuts at its cut point (half its
             // second), so its command goes at the flash.
-            let offset = if stinger { 60_000_000 } else { 500_000_000 };
+            let offset = if stinger {
+                stinger_ms * 1_000_000
+            } else {
+                cut_ms * 1_000_000
+            };
             let at = clock.instant(flash + offset);
             std::thread::sleep(at.saturating_duration_since(Instant::now()));
             on_air = (on_air + 1) % inputs.len();
@@ -189,9 +212,17 @@ fn every_flash_reaches_the_outputs_whole() {
                     input: inputs[on_air],
                 });
                 send(Command::Transition { button: 2 });
+            } else if swap {
+                // Like the soaks: the next one already in Preview, a Cut swaps them.
+                send(Command::Cut);
             } else {
                 send(Command::CutDirect {
                     input: inputs[on_air],
+                });
+            }
+            if swap {
+                send(Command::SetPreview {
+                    input: inputs[(on_air + 1) % inputs.len()],
                 });
             }
             next_cut = Instant::now() + Duration::from_secs(4);
