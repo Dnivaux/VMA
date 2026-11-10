@@ -34,6 +34,7 @@ use vma_audio::{
 use vma_core::{AudioBus, FrameRate, InputId};
 
 use crate::audio_plan::{AudioPlan, AudioPlanReader};
+use crate::command::StingerSlot;
 use crate::outputs::audio_sample_at;
 use crate::state::MAX_INPUTS;
 
@@ -88,6 +89,8 @@ pub(crate) struct AudioTick {
     pub(crate) on_air: OnAir,
     /// The inputs that show a dated picture, with its stream time.
     pub(crate) shown: [Option<(InputId, u64)>; MAX_INPUTS],
+    /// The stinger playing and its tick (0 = first): its sound goes to the Master.
+    pub(crate) stinger: Option<(StingerSlot, u64)>,
 }
 
 impl AudioTick {
@@ -97,6 +100,7 @@ impl AudioTick {
             tick_ns,
             on_air,
             shown: [None; MAX_INPUTS],
+            stinger: None,
         }
     }
 
@@ -420,7 +424,15 @@ pub(crate) struct AudioMix {
     /// The latest tick mixed.
     last_tick: Option<AudioTick>,
     silence: Box<[f32]>,
+    /// The sound of each stinger slot, decoded in full (48 kHz stereo, interleaved).
+    stingers: [Option<Arc<[f32]>>; StingerSlot::COUNT],
+    stinger_block: Box<[f32]>,
     stats: Arc<AudioStats>,
+}
+
+/// Strip of stinger `slot` in the mixer, after the inputs'.
+fn stinger_strip(slot: StingerSlot) -> usize {
+    MAX_INPUTS + slot.index()
 }
 
 /// Where the sound of the buses can be read, by output sample index.
@@ -449,7 +461,7 @@ impl AudioMix {
             slots: (0..MAX_INPUTS).map(|_| AtomicU32::new(0)).collect(),
             params: plan.read().unwrap_or_default(),
             plan,
-            mixer: Mixer::new(MAX_INPUTS),
+            mixer: Mixer::new(MAX_INPUTS + StingerSlot::COUNT),
             buses: [master_w, a_w, b_w],
             headphones: headphones_w,
             next_sample: None,
@@ -459,6 +471,8 @@ impl AudioMix {
             newest: None,
             last_tick: None,
             silence: vec![0.0; MAX_BLOCK * CHANNELS].into_boxed_slice(),
+            stingers: [None, None],
+            stinger_block: vec![0.0; MAX_BLOCK * CHANNELS].into_boxed_slice(),
             stats,
         };
         (mix, BusReaders { master, a, b }, headphones)
@@ -475,6 +489,13 @@ impl AudioMix {
         if let Some(cell) = self.slots.get(slot) {
             cell.store(input.map_or(0, |i| i.0.wrapping_add(1)), Ordering::Release);
         }
+    }
+
+    /// The sound of stinger `slot` (`None`: none). The one replaced is dropped here: its
+    /// sender keeps it alive, so no memory is freed on this thread.
+    pub(crate) fn set_stinger(&mut self, slot: StingerSlot, sound: Option<Arc<[f32]>>) {
+        let [one, two] = &mut self.stingers;
+        *(if slot.index() == 0 { one } else { two }) = sound;
     }
 
     /// The sound of `input` now comes from `ring` (a new pipeline replaces the old one).
@@ -658,6 +679,24 @@ impl AudioMix {
                 },
             })
         });
+        // The stinger's sound for its tick k: from sample `audio_sample_at(k)` of its file,
+        // at 0 dB, to the Master only (`phase-4.md` Q7).
+        let stinger = tick.stinger.and_then(|(slot, k)| {
+            let sound = self.stingers.get(slot.index())?.as_ref()?;
+            let from = usize::try_from(audio_sample_at(self.rate, k)).ok()? * CHANNELS;
+            let block = self.stinger_block.get_mut(..len)?;
+            block.fill(0.0);
+            if let Some(source) = sound.get(from..) {
+                let n = source.len().min(len);
+                block.get_mut(..n)?.copy_from_slice(source.get(..n)?);
+            }
+            Some(StripInput {
+                slot: stinger_strip(slot),
+                samples: &*block,
+                params: StripParams::default(),
+            })
+        });
+        let inputs = inputs.chain(stinger);
         let mix = MixParams {
             buses: params.buses.map(|b| BusParams {
                 gain_db: b.gain.get(),
@@ -704,10 +743,25 @@ impl RingAttacher {
     }
 }
 
+/// Stinger sounds waiting to be taken.
+const STINGER_SOUNDS: usize = 4;
+
+/// `vma-io`'s end: the sound of a stinger, decoded in full.
+#[derive(Debug, Clone)]
+pub(crate) struct StingerSounds(Sender<(StingerSlot, Option<Arc<[f32]>>)>);
+
+impl StingerSounds {
+    /// `false` if `vma-audio` is gone or its queue is full.
+    pub(crate) fn send(&self, slot: StingerSlot, sound: Option<Arc<[f32]>>) -> bool {
+        self.0.try_send((slot, sound)).is_ok()
+    }
+}
+
 /// The ends of a running `vma-audio`.
 pub(crate) struct AudioThread {
     pub(crate) ticks: TickSender,
     pub(crate) rings: RingAttacher,
+    pub(crate) stinger_sounds: StingerSounds,
     pub(crate) buses: BusReaders,
     /// What the headphones hear, for `vma-io`.
     pub(crate) headphones: RingReader,
@@ -723,15 +777,17 @@ pub(crate) fn spawn(rate: FrameRate, plan: AudioPlanReader) -> std::io::Result<A
     let meters = mix.meters();
     let (tx, ticks) = crossbeam_channel::bounded(TICK_QUEUE);
     let (attach_tx, attach) = crossbeam_channel::bounded(ATTACH_QUEUE);
+    let (sounds_tx, sounds) = crossbeam_channel::bounded(STINGER_SOUNDS);
     let thread = std::thread::Builder::new()
         .name("vma-audio".into())
-        .spawn(move || run(&mut mix, &ticks, &attach))?;
+        .spawn(move || run(&mut mix, &ticks, &attach, &sounds))?;
     Ok(AudioThread {
         ticks: TickSender {
             tx,
             stats: Arc::clone(&stats),
         },
         rings: RingAttacher(attach_tx),
+        stinger_sounds: StingerSounds(sounds_tx),
         buses,
         headphones,
         meters,
@@ -740,12 +796,20 @@ pub(crate) fn spawn(rate: FrameRate, plan: AudioPlanReader) -> std::io::Result<A
     })
 }
 
-fn run(mix: &mut AudioMix, ticks: &Receiver<AudioTick>, attach: &Receiver<(InputId, RingReader)>) {
+fn run(
+    mix: &mut AudioMix,
+    ticks: &Receiver<AudioTick>,
+    attach: &Receiver<(InputId, RingReader)>,
+    sounds: &Receiver<(StingerSlot, Option<Arc<[f32]>>)>,
+) {
     loop {
         match ticks.recv_timeout(std::time::Duration::from_millis(100)) {
             Ok(tick) => {
                 while let Ok((input, ring)) = attach.try_recv() {
                     mix.attach(input, ring);
+                }
+                while let Ok((slot, sound)) = sounds.try_recv() {
+                    mix.set_stinger(slot, sound);
                 }
                 mix.tick(&tick);
             }
@@ -1127,6 +1191,64 @@ mod tests {
         assert!((post.rms[1] - 0.25).abs() < 1e-3, "{post:?}");
         let [_, master] = meters.read(Level::Bus(AudioBus::Master)).unwrap();
         assert!((master.peak[0] - 0.25).abs() < 1e-4, "{master:?}");
+    }
+
+    /// D8 (sound, Q7): the stinger's sound goes to the Master from its first tick, sample k
+    /// of its file in the block of the tick that shows the matching picture, at 0 dB; silent
+    /// before and after it, and on the other buses.
+    #[test]
+    fn the_sound_of_a_stinger_follows_its_pictures_on_the_master() {
+        let rate = FrameRate::FPS_50;
+        let (_writer, plan) = audio_plan_channel();
+        let (mut mix, buses, _headphones) = AudioMix::new(rate, Arc::default(), plan);
+        let slot = StingerSlot::new(2).unwrap();
+        // 10 ticks of sound (9 600 frames), each sample its own number / 1e5.
+        let sound: Arc<[f32]> = (0..9_600u32)
+            .flat_map(|i| {
+                let v = i as f32 / 1e5;
+                [v, -v]
+            })
+            .collect();
+        mix.set_stinger(slot, Some(Arc::clone(&sound)));
+        let (start, ticks) = (100u64, 10u64);
+        let mut master = Vec::new();
+        let mut a_bus = Vec::new();
+        let mut read = 0u64;
+        for n in 0..start + ticks + 10 {
+            let mut tick = AudioTick::new(n, START + n * P, OnAir::default());
+            if (start..start + ticks).contains(&n) {
+                tick.stinger = Some((slot, n - start));
+            }
+            mix.tick(&tick);
+            let written = buses.master.written();
+            let mut m = vec![0.0f32; 2 * (written - read) as usize];
+            let mut b = m.clone();
+            assert!(buses.master.read(read as i64, &mut m).is_complete());
+            buses.a.read(read as i64, &mut b);
+            master.extend(m);
+            a_bus.extend(b);
+            read = written;
+        }
+        // Tick n is mixed MIX_DELAY_TICKS later; the ring starts at the first tick's sample.
+        let first = audio_sample_at(rate, start) as usize * 2;
+        assert!(master[..first].iter().all(|&v| v == 0.0), "silent before");
+        for i in 0..9_600usize {
+            let (l, r) = (master[first + 2 * i], master[first + 2 * i + 1]);
+            let v = i as f32 / 1e5;
+            // The first block ramps from silence (the strip's gain was 0 before it).
+            if i >= 960 {
+                assert!(
+                    (l - v).abs() < 1e-6 && (r + v).abs() < 1e-6,
+                    "sample {i}: {l} {r}"
+                );
+            }
+        }
+        let after = first + 9_600 * 2;
+        assert!(
+            master[after..].iter().take(960 * 2).all(|&v| v.abs() < 0.1),
+            "silent after (one block of ramp down at most)"
+        );
+        assert!(a_bus.iter().all(|&v| v == 0.0), "Master only");
     }
 
     /// A sound-only input (microphone) is read one tick behind the tick time: its blocks,

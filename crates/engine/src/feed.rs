@@ -353,6 +353,7 @@ pub struct FeedRegistry {
     attach: crossbeam_channel::Sender<Attach>,
     rings: crate::audio::RingAttacher,
     stingers: crossbeam_channel::Sender<crate::sequence::StingerAttach>,
+    stinger_sounds: crate::audio::StingerSounds,
 }
 
 impl FeedRegistry {
@@ -363,6 +364,7 @@ impl FeedRegistry {
         attach: crossbeam_channel::Sender<Attach>,
         rings: crate::audio::RingAttacher,
         stingers: crossbeam_channel::Sender<crate::sequence::StingerAttach>,
+        stinger_sounds: crate::audio::StingerSounds,
     ) -> Self {
         Self {
             device,
@@ -371,6 +373,22 @@ impl FeedRegistry {
             attach,
             rings,
             stingers,
+            stinger_sounds,
+        }
+    }
+
+    /// The sound of stinger `slot`, decoded in full: 48 kHz stereo, interleaved, from its
+    /// first picture (`None`: silent). `vma-audio` mixes it into the Master while it plays.
+    /// Keep a clone until the next one is sent: the one replaced is dropped on `vma-audio`.
+    pub fn set_stinger_sound(
+        &self,
+        slot: crate::StingerSlot,
+        sound: Option<Arc<[f32]>>,
+    ) -> Result<(), FeedError> {
+        if self.stinger_sounds.send(slot, sound) {
+            Ok(())
+        } else {
+            Err(FeedError::Busy)
         }
     }
 

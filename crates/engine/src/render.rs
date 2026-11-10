@@ -226,6 +226,7 @@ impl RenderEngine {
         let AudioThread {
             ticks: audio_ticks,
             rings,
+            stinger_sounds,
             buses,
             headphones,
             meters: audio_meters,
@@ -284,6 +285,7 @@ impl RenderEngine {
             attach_tx,
             rings,
             stingers_tx,
+            stinger_sounds,
         );
         let ((io_tx, io_requests), (io_events, io_events_rx)) = io_channels();
         let (mut controller, state) = Controller::new(
@@ -672,6 +674,7 @@ impl RenderWorker {
                 },
             );
             self.sources.stream_times(&mut audio_tick.shown);
+            audio_tick.stinger = composition.stinger.map(|s| (s.slot, s.tick));
             self.audio.send(audio_tick);
 
             // Lost device: keep the clock (and the stats) running, render nothing; the outputs
