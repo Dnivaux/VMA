@@ -262,6 +262,14 @@ jobs:
           env -u DISPLAY -u WAYLAND_DISPLAY target/release/vma-html --vma-probe --vma-seconds=20 \
             2> probe-stderr.txt | tee probe.md
           cat probe.md >> "$GITHUB_STEP_SUMMARY"
+      # D4 and D7 with the real helper: HtmlHost launches vma-html like the application does.
+      - name: HTML input tests with the real vma-html
+        if: always()
+        shell: bash
+        env:
+          VMA_HTML: ${{ github.workspace }}/target/release/vma-html${{ runner.os == 'Windows' && '.exe' || '' }}
+          VMA_REQUIRE_HTML: "1"
+        run: cargo test --release --locked -p vma-io-html --test real_helper -- --nocapture
       - name: Upload the probe report
         if: always()
         uses: actions/upload-artifact@v4

@@ -130,6 +130,34 @@ pub fn shared_state() -> Shared {
     Rc::new(RefCell::new(ProbeState::default()))
 }
 
+/// The probe opens one browser: its number is ignored.
+impl glue::Events for RefCell<ProbeState> {
+    fn context_ready(&self) {
+        self.borrow_mut().context_ready = true;
+    }
+    fn size(&self, _: u32) -> (i32, i32) {
+        let s = self.borrow();
+        (s.width, s.height)
+    }
+    fn paint(&self, _: u32, pixels: &[u8], width: usize, height: usize) {
+        self.borrow_mut().on_paint(pixels, width, height);
+    }
+    fn loaded(&self, _: u32, http_status: i32) {
+        let mut s = self.borrow_mut();
+        s.loaded = true;
+        s.http_status = http_status;
+    }
+    fn load_failed(&self, _: u32, reason: String) {
+        self.borrow_mut().renderer_terminated = Some(reason);
+    }
+    fn renderer_gone(&self, _: u32, reason: String) {
+        self.borrow_mut().renderer_terminated = Some(reason);
+    }
+    fn closed(&self, _: u32) {
+        self.borrow_mut().closed = true;
+    }
+}
+
 /// What one `OnPaint` showed.
 #[derive(Debug, Clone, Copy)]
 struct Paint {
@@ -328,7 +356,7 @@ fn probe(
     };
     let browser = cef::browser_host_create_browser_sync(
         Some(&window_info),
-        Some(&mut glue::client(state.clone())),
+        Some(&mut glue::client(&(state.clone() as glue::Shared), 1)),
         Some(&file_url(page).as_str().into()),
         Some(&browser_settings),
         None,
@@ -358,7 +386,7 @@ fn probe(
         {
             let s = state.borrow();
             if let Some(reason) = &s.renderer_terminated {
-                break Err(format!("processus de rendu terminé : {reason}"));
+                break Err(format!("page perdue : {reason}"));
             }
             if measure_from.is_none() && s.loaded && !s.paints.is_empty() {
                 first_paint = Some(started.elapsed());

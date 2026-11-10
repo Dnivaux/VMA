@@ -1,7 +1,9 @@
-//! CEF handlers: thin wrappers that forward each callback to the probe state.
+//! CEF handlers: thin wrappers that forward each callback to [`Events`] (the probe, or the
+//! service), with the number of the browser it concerns.
 //!
 //! All the callbacks used here run on CEF's UI thread, which is our main thread (we pump CEF with
-//! `do_message_loop_work`), hence `Rc<RefCell<…>>` and no lock.
+//! `do_message_loop_work`), hence `Rc` and no lock. An [`Events`] must not be borrowed across a
+//! call into CEF: CEF may call back from inside it.
 
 // The `wrap_*!` macros of the `cef` crate expand to `unsafe` blocks (reference counting of the
 // C structures CEF calls back through). The only `unsafe` written by hand is in `on_paint`,
@@ -9,7 +11,7 @@
 #![allow(unsafe_code)]
 
 use cef::{
-    App, Browser, BrowserProcessHandler, CefString, Client, CommandLine, Frame, ImplApp,
+    App, Browser, BrowserProcessHandler, CefString, Client, CommandLine, Errorcode, Frame, ImplApp,
     ImplBrowserProcessHandler, ImplClient, ImplCommandLine, ImplFrame, ImplLifeSpanHandler,
     ImplLoadHandler, ImplRenderHandler, ImplRequestHandler, LifeSpanHandler, LoadHandler,
     PaintElementType, Rect, RenderHandler, RequestHandler, TerminationStatus, WrapApp,
@@ -18,25 +20,67 @@ use cef::{
     wrap_life_span_handler, wrap_load_handler, wrap_render_handler, wrap_request_handler,
 };
 use std::os::raw::c_int;
+use std::rc::Rc;
 
-use crate::probe::Shared;
-
-pub fn app(state: Shared) -> cef::App {
-    VmaApp::new(state)
+/// What the browsers report, on CEF's UI thread.
+pub trait Events {
+    /// CEF is initialised: browsers may be created.
+    fn context_ready(&self);
+    /// Size of the browser's view, in pixels.
+    fn size(&self, browser: u32) -> (i32, i32);
+    /// A new picture: `width` × `height` BGRA, premultiplied alpha.
+    fn paint(&self, browser: u32, pixels: &[u8], width: usize, height: usize);
+    fn loaded(&self, browser: u32, http_status: i32);
+    fn load_failed(&self, browser: u32, reason: String);
+    fn renderer_gone(&self, browser: u32, reason: String);
+    fn closed(&self, browser: u32);
 }
 
-pub fn client(state: Shared) -> Client {
+pub type Shared = Rc<dyn Events>;
+
+/// For the Chromium sub-processes: they never see a browser of ours.
+pub struct NoEvents;
+
+impl Events for NoEvents {
+    fn context_ready(&self) {}
+    fn size(&self, _: u32) -> (i32, i32) {
+        (1, 1)
+    }
+    fn paint(&self, _: u32, _: &[u8], _: usize, _: usize) {}
+    fn loaded(&self, _: u32, _: i32) {}
+    fn load_failed(&self, _: u32, _: String) {}
+    fn renderer_gone(&self, _: u32, _: String) {}
+    fn closed(&self, _: u32) {}
+}
+
+pub fn app(events: Shared) -> cef::App {
+    VmaApp::new(events)
+}
+
+/// The handlers of browser number `browser`.
+pub fn client(events: &Shared, browser: u32) -> Client {
+    let page = Page {
+        events: Rc::clone(events),
+        browser,
+    };
     VmaClient::new(
-        VmaRenderHandler::new(state.clone()),
-        VmaLoadHandler::new(state.clone()),
-        VmaLifeSpanHandler::new(state.clone()),
-        VmaRequestHandler::new(state),
+        VmaRenderHandler::new(page.clone()),
+        VmaLoadHandler::new(page.clone()),
+        VmaLifeSpanHandler::new(page.clone()),
+        VmaRequestHandler::new(page),
     )
+}
+
+/// A browser's number and where its callbacks go.
+#[derive(Clone)]
+struct Page {
+    events: Shared,
+    browser: u32,
 }
 
 wrap_app! {
     struct VmaApp {
-        state: Shared,
+        events: Shared,
     }
 
     impl App {
@@ -87,19 +131,19 @@ wrap_app! {
         }
 
         fn browser_process_handler(&self) -> Option<BrowserProcessHandler> {
-            Some(VmaBrowserProcessHandler::new(self.state.clone()))
+            Some(VmaBrowserProcessHandler::new(self.events.clone()))
         }
     }
 }
 
 wrap_browser_process_handler! {
     struct VmaBrowserProcessHandler {
-        state: Shared,
+        events: Shared,
     }
 
     impl BrowserProcessHandler {
         fn on_context_initialized(&self) {
-            self.state.borrow_mut().context_ready = true;
+            self.events.context_ready();
         }
     }
 }
@@ -133,17 +177,18 @@ wrap_client! {
 
 wrap_render_handler! {
     struct VmaRenderHandler {
-        state: Shared,
+        page: Page,
     }
 
     impl RenderHandler {
         fn view_rect(&self, _browser: Option<&mut Browser>, rect: Option<&mut Rect>) {
             if let Some(rect) = rect {
-                let state = self.state.borrow();
+                let (width, height) = self.page.events.size(self.page.browser);
                 rect.x = 0;
                 rect.y = 0;
-                rect.width = state.width;
-                rect.height = state.height;
+                // CEF requires a non-empty view.
+                rect.width = width.max(1);
+                rect.height = height.max(1);
             }
         }
 
@@ -166,14 +211,14 @@ wrap_render_handler! {
             // pixel, no padding, upper-left origin), valid for the duration of this callback; it
             // is not null (checked above) and is only read here, before returning.
             let pixels = unsafe { std::slice::from_raw_parts(buffer, w * h * 4) };
-            self.state.borrow_mut().on_paint(pixels, w, h);
+            self.page.events.paint(self.page.browser, pixels, w, h);
         }
     }
 }
 
 wrap_load_handler! {
     struct VmaLoadHandler {
-        state: Shared,
+        page: Page,
     }
 
     impl LoadHandler {
@@ -184,29 +229,47 @@ wrap_load_handler! {
             http_status_code: c_int,
         ) {
             if frame.is_some_and(|frame| frame.is_main() != 0) {
-                let mut state = self.state.borrow_mut();
-                state.loaded = true;
-                state.http_status = http_status_code;
+                self.page.events.loaded(self.page.browser, http_status_code);
             }
+        }
+
+        fn on_load_error(
+            &self,
+            _browser: Option<&mut Browser>,
+            frame: Option<&mut Frame>,
+            error_code: Errorcode,
+            error_text: Option<&CefString>,
+            failed_url: Option<&CefString>,
+        ) {
+            // Aborted: a newer navigation replaced this one, nothing failed.
+            if error_code == Errorcode::ABORTED || !frame.is_some_and(|f| f.is_main() != 0) {
+                return;
+            }
+            let text = error_text.map(ToString::to_string).unwrap_or_default();
+            let url = failed_url.map(ToString::to_string).unwrap_or_default();
+            self.page.events.load_failed(
+                self.page.browser,
+                format!("page non chargée ({text}, code {}) : {url}", error_code.get_raw()),
+            );
         }
     }
 }
 
 wrap_life_span_handler! {
     struct VmaLifeSpanHandler {
-        state: Shared,
+        page: Page,
     }
 
     impl LifeSpanHandler {
         fn on_before_close(&self, _browser: Option<&mut Browser>) {
-            self.state.borrow_mut().closed = true;
+            self.page.events.closed(self.page.browser);
         }
     }
 }
 
 wrap_request_handler! {
     struct VmaRequestHandler {
-        state: Shared,
+        page: Page,
     }
 
     impl RequestHandler {
@@ -217,8 +280,9 @@ wrap_request_handler! {
             error_code: c_int,
             _error_string: Option<&CefString>,
         ) {
-            self.state.borrow_mut().renderer_terminated =
-                Some(format!("{status:?} (code {error_code})"));
+            self.page
+                .events
+                .renderer_gone(self.page.browser, format!("{status:?} (code {error_code})"));
         }
     }
 }

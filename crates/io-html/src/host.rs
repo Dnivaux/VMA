@@ -94,6 +94,10 @@ pub trait HelperProcess: Send {
     /// How it ended, once it has.
     fn exited(&mut self) -> Option<String>;
     fn kill(&mut self);
+    /// Its process id, when it is a process.
+    fn id(&self) -> Option<u32> {
+        None
+    }
 }
 
 /// Starts the helper, told to connect to `addr` and to introduce itself with `token`.
@@ -117,12 +121,22 @@ impl ProcessLauncher {
 
 impl Launcher for ProcessLauncher {
     fn launch(&mut self, addr: SocketAddr, token: &str) -> io::Result<Box<dyn HelperProcess>> {
-        let child = std::process::Command::new(&self.helper)
-            .arg(format!("--vma-connect={addr}"))
-            .arg(format!("--vma-token={token}"))
+        let mut command = std::process::Command::new(&self.helper);
+        let connect = protocol::Connect {
+            addr,
+            token: token.to_owned(),
+        };
+        command
+            .args(connect.args())
             .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .spawn()?;
+            .stdout(std::process::Stdio::null());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            // CREATE_NO_WINDOW: no console window for the helper and its sub-processes.
+            command.creation_flags(0x0800_0000);
+        }
+        let child = command.spawn()?;
         tracing::info!(helper = %self.helper.display(), pid = child.id(), "vma-html started");
         Ok(Box::new(Process(child)))
     }
@@ -143,6 +157,10 @@ impl HelperProcess for Process {
     fn kill(&mut self) {
         let _ = self.0.kill();
         let _ = self.0.wait();
+    }
+
+    fn id(&self) -> Option<u32> {
+        Some(self.0.id())
     }
 }
 
@@ -335,6 +353,11 @@ impl<F: HtmlFeeds> HtmlHost<F> {
 
     pub fn status(&self) -> &HtmlStatus {
         &self.status
+    }
+
+    /// Process id of the running helper.
+    pub fn helper_id(&self) -> Option<u32> {
+        self.process.as_ref().and_then(|p| p.id())
     }
 
     /// Times the helper was launched.

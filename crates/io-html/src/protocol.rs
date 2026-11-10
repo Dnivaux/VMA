@@ -27,6 +27,40 @@ pub const ALIVE_PERIOD: std::time::Duration = std::time::Duration::from_millis(2
 /// Longest line accepted (a URL, a script later): protects against a peer that never ends one.
 pub const MAX_LINE: usize = 1 << 20;
 
+/// Where `vma-html` connects and how it introduces itself: its command line, written by the
+/// application ([`Connect::args`]) and read by the helper ([`Connect::from_args`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Connect {
+    pub addr: std::net::SocketAddr,
+    pub token: String,
+}
+
+impl Connect {
+    pub fn args(&self) -> [String; 2] {
+        [
+            format!("--vma-connect={}", self.addr),
+            format!("--vma-token={}", self.token),
+        ]
+    }
+
+    /// `None` without `--vma-connect`: not launched by the application.
+    pub fn from_args(args: &[String]) -> Option<Result<Self, String>> {
+        let value = |key: &str| {
+            args.iter()
+                .find_map(|a| a.strip_prefix(key).and_then(|v| v.strip_prefix('=')))
+        };
+        let addr = value("--vma-connect")?;
+        Some(match (addr.parse(), value("--vma-token")) {
+            (Ok(addr), Some(token)) if !token.is_empty() => Ok(Self {
+                addr,
+                token: token.to_owned(),
+            }),
+            (Err(_), _) => Err(format!("adresse invalide : {addr}")),
+            _ => Err("--vma-token manquant".into()),
+        })
+    }
+}
+
 /// From the application to `vma-html`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -141,6 +175,30 @@ pub fn read<T: for<'de> Deserialize<'de>>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn strings(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    #[test]
+    fn the_command_line_written_is_the_one_read() {
+        let connect = Connect {
+            addr: "127.0.0.1:4000".parse().unwrap(),
+            token: "abc".into(),
+        };
+        let mut line = vec!["vma-html".to_owned()];
+        line.extend(connect.args());
+        assert_eq!(Connect::from_args(&line), Some(Ok(connect)));
+        assert_eq!(Connect::from_args(&strings(&["--vma-probe"])), None);
+        assert!(matches!(
+            Connect::from_args(&strings(&["--vma-connect=127.0.0.1:4000"])),
+            Some(Err(_))
+        ));
+        assert!(matches!(
+            Connect::from_args(&strings(&["--vma-connect=nowhere", "--vma-token=a"])),
+            Some(Err(_))
+        ));
+    }
 
     #[test]
     fn messages_round_trip_one_per_line() {
