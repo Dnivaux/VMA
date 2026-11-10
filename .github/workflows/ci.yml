@@ -241,7 +241,17 @@ jobs:
         run: |
           ldd target/release/vma-html | tee ldd.txt
           ! grep "not found" ldd.txt
+      # Windows (2026-11-10): one burst of ticks without image ~1 s after the page's first
+      # paint (renderer stalled 120–250 ms). This run, after 5 s, tells startup from steady state.
+      - name: CEF trial probe after a 5 s warm-up (1080p50, 60 s, no display)
+        shell: bash
+        run: |
+          set -o pipefail
+          env -u DISPLAY -u WAYLAND_DISPLAY target/release/vma-html --vma-probe --vma-seconds=60 \
+            --vma-warmup=250 2> probe-long-stderr.txt | tee probe-long.md
+          cat probe-long.md >> "$GITHUB_STEP_SUMMARY"
       - name: CEF trial probe (1080p50, 20 s, no display)
+        if: always()
         shell: bash
         run: |
           set -o pipefail
@@ -255,6 +265,6 @@ jobs:
         with:
           name: cef-probe-${{ matrix.os }}
           path: |
-            probe.md
-            probe-stderr.txt
+            probe*.md
+            probe*-stderr.txt
           if-no-files-found: ignore
