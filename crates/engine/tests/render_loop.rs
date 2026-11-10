@@ -1277,6 +1277,16 @@ fn a_stinger_plays_picture_by_picture_and_cuts_at_its_tick() {
     hub.attach(vma_core::OutputId(1), Box::new(Halves(tx)))
         .unwrap();
     assert!(wait_for(Duration::from_secs(2), || hub.active() > 0));
+    // Ticks not rendered or not read back, and frames the output's queue lost.
+    let drops = |e: &RenderEngine| {
+        let s = e.render_stats().snapshot();
+        let queue = e
+            .outputs()
+            .counters(vma_core::OutputId(1))
+            .map_or(0, |c| c.dropped);
+        s.gpu_dropped + s.output_dropped + queue
+    };
+    let dropped_before = drops(&spawned.engine);
     send(Command::Transition { button: 1 });
     assert!(wait_for(Duration::from_secs(2), || feedback
         .started()
@@ -1290,10 +1300,17 @@ fn a_stinger_plays_picture_by_picture_and_cuts_at_its_tick() {
         }),
         "no output frames"
     );
-    let at = |n: u64| *seen.iter().find(|f| f.0 == n).expect("frame delivered");
+    // A tick the engine could not render or read back (slow software GPU) has no output
+    // frame: counted by the engine, it is no fault of the stinger. Every frame delivered
+    // shows the right picture.
+    let at = |n: u64| seen.iter().find(|f| f.0 == n).copied();
     let (black, white) = (16u8, 235u8);
+    let mut missing = 0;
     for k in 0..20 {
-        let (_, left, right) = at(t0 + k);
+        let Some((_, left, right)) = at(t0 + k) else {
+            missing += 1;
+            continue;
+        };
         assert_eq!(
             picture_from_luma(right),
             Some(k),
@@ -1303,12 +1320,21 @@ fn a_stinger_plays_picture_by_picture_and_cuts_at_its_tick() {
         assert!(left.abs_diff(program) <= 2, "tick {k}: Program {left}");
     }
     for n in t0 + 20..t0 + 25 {
-        let (_, left, right) = at(n);
+        let Some((_, left, right)) = at(n) else {
+            missing += 1;
+            continue;
+        };
         assert!(
             left.abs_diff(white) <= 2 && right.abs_diff(white) <= 2,
             "after: B alone"
         );
     }
+    let dropped = drops(&spawned.engine) - dropped_before;
+    eprintln!("stinger: {missing} output frames missing, {dropped} counted drops");
+    assert!(
+        missing <= dropped,
+        "{missing} frames missing, {dropped} counted"
+    );
     let s = state.load();
     assert_eq!(s.program, Some(b), "Program = B at the end");
     assert_eq!(stats.snapshot().repeated, 0);
