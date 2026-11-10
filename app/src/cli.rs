@@ -24,6 +24,9 @@ Options :
                          et un bip par seconde de leur horloge ; le Master suit la vidéo
   --input-drifts <liste> avance de leurs horloges en ppm, réparties en boucle (défaut : 0) ;
                          ex. 0,0,0,0,100,-100 (exige --sync-inputs)
+  --html <page>          ajoute un input HTML (page rendue hors écran, avec son alpha) au
+                         démarrage : une adresse http(s):// ou file://, ou un fichier
+                         (répétable ; exige vma-html à côté de vma, ou VMA_HTML)
   --spin-margin-us <µs>  marge d'attente active de l'horloge maître (défaut : 1000)
   --record <dossier>     enregistre le Program dès le démarrage, dans ce dossier
                          (sans l'option : bouton « Enregistrer », dossier Vidéos)
@@ -60,6 +63,8 @@ pub struct Options {
     pub resolution: Resolution,
     /// Synthetic inputs added at start-up.
     pub inputs: Vec<Synthetic>,
+    /// HTML inputs added at start-up (addresses).
+    pub html: Vec<String>,
     pub spin_margin: Option<Duration>,
     /// Record from start-up into this folder.
     pub record: Option<PathBuf>,
@@ -135,6 +140,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> anyhow::Result<Options> 
     let mut rate = FrameRate::DEFAULT;
     let mut resolution = Resolution::HD_1080;
     let mut inputs = 0usize;
+    let mut html = Vec::new();
     let mut input_rates: Option<Vec<FrameRate>> = None;
     let mut input_resolution = None;
     let mut spin_margin = None;
@@ -169,6 +175,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> anyhow::Result<Options> 
             }
             "--resolution" => resolution = parse_resolution(&value::<String>(&mut args, &arg)?)?,
             "--inputs" => inputs = value(&mut args, &arg)?,
+            "--html" => html.push(html_address(&value::<String>(&mut args, &arg)?)?),
             "--input-rates" => {
                 let raw: String = value(&mut args, &arg)?;
                 input_rates = Some(
@@ -282,6 +289,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> anyhow::Result<Options> 
         rate,
         resolution,
         inputs,
+        html,
         spin_margin,
         record,
         fullscreen,
@@ -297,6 +305,23 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> anyhow::Result<Options> 
 }
 
 /// `50`, `50p`, `29.97` (or `29,97`), `30000/1001`. A decimal is one of the master rates.
+/// An address as given, or a local file as a `file://` address.
+fn html_address(raw: &str) -> anyhow::Result<String> {
+    if raw.contains("://") {
+        return Ok(raw.to_owned());
+    }
+    let path = std::fs::canonicalize(raw)
+        .map_err(|e| anyhow::anyhow!("--html : page introuvable ({raw}) : {e}"))?;
+    let p = path.to_string_lossy().replace('\\', "/");
+    // Windows: `\\?\C:\…` once canonical.
+    let p = p.trim_start_matches("//?/");
+    Ok(if p.starts_with('/') {
+        format!("file://{p}")
+    } else {
+        format!("file:///{p}")
+    })
+}
+
 pub fn parse_rate(raw: &str) -> anyhow::Result<FrameRate> {
     let text = raw.trim().trim_end_matches('p').replace(',', ".");
     let bad = || anyhow::anyhow!("cadence invalide : {raw}");
@@ -543,5 +568,22 @@ mod tests {
         assert!(parse_str("--soak abc").is_err());
         assert!(parse_str("--hostile").is_err());
         assert!(parse_str("--frobnicate").is_err());
+    }
+
+    #[test]
+    fn html_pages_are_addresses_or_local_files() {
+        let o = parse_str("--html https://scores.example/board.html --html file:///tmp/a.html")
+            .unwrap();
+        assert_eq!(
+            o.html,
+            ["https://scores.example/board.html", "file:///tmp/a.html"]
+        );
+        let page = std::env::temp_dir().join(format!("vma-cli-{}.html", std::process::id()));
+        std::fs::write(&page, "<html></html>").unwrap();
+        let o = parse_str(&format!("--html {}", page.display())).unwrap();
+        assert!(o.html[0].starts_with("file:///"), "{:?}", o.html);
+        assert!(o.html[0].ends_with(&format!("vma-cli-{}.html", std::process::id())));
+        assert!(parse_str("--html /no/such/page.html").is_err());
+        let _ = std::fs::remove_file(page);
     }
 }

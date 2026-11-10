@@ -31,7 +31,7 @@ pub use audio::{
 };
 pub use audio_plan::AudioPlan;
 pub use command::{
-    AutoPlay, Command, CommandId, Db, DeviceId, Effect, InputSpec, MAX_AUDIO_DELAY_MS,
+    AutoPlay, Command, CommandId, Db, DeviceId, Effect, HtmlUrl, InputSpec, MAX_AUDIO_DELAY_MS,
     MAX_TRANSITION_MS, MixDomain, Source, SrtSource, TRANSITION_BUTTONS, TransitionSetting,
 };
 pub use control::{

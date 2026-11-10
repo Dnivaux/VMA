@@ -270,6 +270,20 @@ jobs:
           VMA_HTML: ${{ github.workspace }}/target/release/vma-html${{ runner.os == 'Windows' && '.exe' || '' }}
           VMA_REQUIRE_HTML: "1"
         run: cargo test --release --locked -p vma-io-html --test real_helper -- --nocapture
+      # D4 / D7 with the real engine (Linux): GStreamer to build vma-io, lavapipe for the GPU.
+      - name: Install GStreamer and lavapipe (Linux)
+        if: always() && runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mesa-vulkan-drivers libvulkan1 \
+            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev gstreamer1.0-plugins-base
+      - name: HTML input in overlay with the real engine and vma-html (Linux)
+        if: always() && runner.os == 'Linux'
+        env:
+          VMA_HTML: ${{ github.workspace }}/target/release/vma-html
+          VMA_REQUIRE_HTML: "1"
+          WGPU_BACKEND: vulkan
+        run: cargo test --release --locked -p vma-io-gst --test html -- --nocapture
       - name: Upload the probe report
         if: always()
         uses: actions/upload-artifact@v4

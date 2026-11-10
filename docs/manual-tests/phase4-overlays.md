@@ -25,5 +25,20 @@ trop petits pour juger de l'aspect mais suffisent pour le comportement.
 - [ ] Retirer l'input de la liste (×) pendant qu'il est en overlay : il disparaît, rien d'autre
       ne change.
 
+## Input HTML (étape 5)
+Compiler `vma-html` une fois (télécharge CEF, ≈ 300 Mo) :
+`CEF_PATH=~/.cache/vma-cef cargo build --release -p vma-io-html --features cef --bin vma-html`,
+puis `cargo run --release -- --html docs/manual-tests/html/lower-third.html` (ou une page à
+toi : `--html https://…`).
+- [ ] La vignette de l'input « lower-third » montre le bas de titre sur fond noir (vignette) ;
+      l'infobulle dit « BGRA avec alpha ».
+- [ ] Bouton **1** : le bas de titre et l'horloge en haut à droite apparaissent sur le Program,
+      le Program se voit autour et à travers le bandeau semi-transparent, sans liseré.
+- [ ] L'horloge défile régulièrement (centièmes), sans à-coup visible.
+- [ ] Sans `vma-html` (renommé) : l'input est « signal perdu » avec la raison
+      « vma-html introuvable… », le reste de VMA fonctionne.
+- [ ] Pendant que la page est en overlay, `pkill -9 -f 'vma-html --vma-connect'` : l'input est
+      perdu une à quelques secondes puis revient tout seul ; le Program ne saute pas.
+
 ## Notes
 _À compléter : versions, écran, remarques._

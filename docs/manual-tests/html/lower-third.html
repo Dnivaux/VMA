@@ -1,0 +1,46 @@
+<!doctype html>
+<!-- Page de démonstration de l'input HTML (Phase 4, étape 5) : un bas de titre qui entre en
+     glissant, fond transparent. Dessin propre à VMA. Usage : vma --html <ce fichier>. -->
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<style>
+  html, body { margin: 0; height: 100%; background: transparent; overflow: hidden;
+               font-family: sans-serif; }
+  .bar { position: absolute; left: 6%; bottom: 12%; display: flex; align-items: stretch;
+         animation: enter 0.8s ease-out both; }
+  .accent { width: 0.6vw; background: #f2a516; }
+  .text { padding: 1.2vh 2vw 1.4vh 1.4vw; background: rgba(12, 22, 40, 0.82); color: #fff; }
+  .name { font-size: 4.2vh; font-weight: bold; letter-spacing: 0.02em; }
+  .role { font-size: 2.6vh; opacity: 0.85; margin-top: 0.4vh; }
+  .clock { position: absolute; right: 4%; top: 6%; padding: 0.8vh 1vw; font-size: 3vh;
+           color: #fff; background: rgba(12, 22, 40, 0.6); font-variant-numeric: tabular-nums; }
+  @keyframes enter { from { transform: translateX(-120%); opacity: 0; }
+                     to { transform: translateX(0); opacity: 1; } }
+</style>
+</head>
+<body>
+  <div class="bar">
+    <div class="accent"></div>
+    <div class="text">
+      <div class="name">Prénom Nom</div>
+      <div class="role">Fonction — démonstration de l'input HTML</div>
+    </div>
+  </div>
+  <div class="clock" id="clock">00:00:00.00</div>
+  <script>
+    // Animation à chaque image : un compteur de centièmes, pour voir la fluidité.
+    const clock = document.getElementById("clock");
+    const t0 = performance.now();
+    function frame(t) {
+      const cs = Math.floor((t - t0) / 10);
+      const h = Math.floor(cs / 360000), m = Math.floor(cs / 6000) % 60;
+      const s = Math.floor(cs / 100) % 60, c = cs % 100;
+      const two = (v) => String(v).padStart(2, "0");
+      clock.textContent = `${two(h)}:${two(m)}:${two(s)}.${two(c)}`;
+      requestAnimationFrame(frame);
+    }
+    requestAnimationFrame(frame);
+  </script>
+</body>
+</html>

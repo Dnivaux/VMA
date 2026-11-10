@@ -59,7 +59,8 @@ fn generated_source(spec: &InputSpec) -> Option<SourceKey> {
         | InputSpec::SyncSource { .. }
         | InputSpec::AudioDevice { .. }
         | InputSpec::Srt(_)
-        | InputSpec::Ndi { .. } => None,
+        | InputSpec::Ndi { .. }
+        | InputSpec::Html { .. } => None,
     }
 }
 

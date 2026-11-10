@@ -14,6 +14,7 @@ vma-audio.workspace = true
 vma-engine.workspace = true
 vma-compositor.workspace = true
 vma-io-ndi.workspace = true
+vma-io-html.workspace = true
 arc-swap.workspace = true
 image.workspace = true
 thiserror.workspace = true

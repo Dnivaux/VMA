@@ -264,6 +264,20 @@ apportées en codant (à relire) :
   même channel repart de 0 (l'ancien disparaît, le nouveau entre avec la transition).
 - Les transitions du Program (Cut, Fade, T-Bar) ne touchent pas aux channels.
 
+## Phase 4 — Input HTML (étape 5, 2026-11-10)
+- **`InputSpec::Html { url, size }`** (`phase-4.md` § 5) : `size` absent du journal quand il
+  vaut `None` (taille du Program). Adresse en `http://`, `https://` ou `file://`, non vide
+  après le schéma (casse du schéma indifférente) ; sinon refusé (`InvalidSpec::HtmlUrl`).
+- **`HtmlUrl`** : des identifiants dans l'adresse (`https://user:pass@hôte/…`) ne sont jamais
+  écrits : journal, logs, état publié et rapports montrent `https://***@hôte/…`. Un journal
+  rejoué ouvre donc la page sans eux (comme un `Secret` relu : `***`). Un `@` après l'hôte
+  (`/@équipe/`) n'est pas un identifiant.
+- **Nom par défaut** : le nom du fichier de la page sans extension (`board.html` → `board`),
+  à défaut l'hôte, à défaut `HTML`.
+- Pas encore de son (étape 9) : pas de tranche dans le mélangeur audio.
+- Les commandes de données (`HtmlData`, `HtmlScript`, `HtmlReload`, `SetHtmlUrl`) viennent à
+  l'étape 7.
+
 ## Critères d'acceptation
 | Critère | Test |
 |---|---|
@@ -280,6 +294,7 @@ apportées en codant (à relire) :
 | *(Phase 2)* **B11** côté moteur : FTB de la durée réglée aux 6 cadences, retour, Program inchangé | `control::tests::fade_to_black_*` (temps simulé), `render_loop::fade_to_black_darkens_the_outputs_not_the_program_view` (GPU) |
 | *(Phase 2)* **B13** côté moteur : ni la clé ni la phrase de passe dans le journal, les logs (niveau TRACE) ou l'état sérialisé ; rejeu refusé sans la clé | `control::tests::secrets_never_reach_the_journal_the_logs_nor_the_published_state` |
 | *(Phase 2, étape 9)* **B14** côté état et contrôle : perte journalisée une fois, démarrages refusés, sorties qui produisent finalisées au bout du délai (pas avant, une fois), sorties en erreur ou à l'arrêt intactes | `state::tests::a_lost_gpu_refuses_starts_then_finalises_what_runs`, `control::tests::a_lost_gpu_is_journaled_and_finalises_the_outputs_after_the_grace` (temps simulé) |
+| *(Phase 4, étape 5)* Input HTML : schémas acceptés et refusés, nom par défaut, identifiants jamais écrits (journal, `Debug`), relu sans eux | `command::tests::html_inputs_take_web_and_file_addresses_only`, `html_inputs_are_named_after_their_page`, `credentials_in_an_html_address_are_never_written` |
 | *(Phase 2, étape 8)* Plein écran : en marche sans `vma-io`, une seule, réglages figés en marche, type figé, arrêt et suppression sans requête, drapeau du plan | `state::tests::the_full_screen_runs_without_io_and_sets_the_plan`, `plan::tests::encoding_round_trips` |
 | *(Phase 3, étape 4)* Audio : défauts par type d'input, chaque commande, refus sans effet (input sans son, inconnu, hors bornes), bus des sorties (figé en marche, refusé au plein écran) | `state::tests::{inputs_with_sound_get_their_default_settings, audio_commands_change_the_settings, audio_commands_are_refused_without_effect, outputs_carry_their_bus}` |
 | *(Phase 3, étape 6)* Input SRT : réglages validés, phrase de passe jamais écrite | `state::tests::srt_inputs_are_checked`, `control::tests::secrets_never_reach_the_journal_the_logs_nor_the_published_state` |

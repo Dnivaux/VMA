@@ -54,6 +54,14 @@ VMA_MEDIAMTX=…/mediamtx tests/soak/phase3-c14.sh         # C14 : 1 h, 6 source
 # GPU perdu : noir sur les sorties pendant N s (défaut 10), puis finalisation et sortie en erreur :
 cargo run --release -- --record /tmp/vma-rec --gpu-loss-grace 5
 
+# Input HTML (ADR 0009) : vma-html, compilé à part (télécharge CEF ; cache local conseillé),
+# placé à côté de vma dans target/<profil>/ ; puis la page en input au démarrage :
+CEF_PATH=~/.cache/vma-cef cargo build --release -p vma-io-html --features cef --bin vma-html
+cargo run --release -- --html page.html                   # ou http(s)://…, file://…
+target/release/vma-html --vma-probe --vma-seconds=20      # essai CEF (étape 4), rapport sur la sortie
+VMA_HTML=$PWD/target/release/vma-html VMA_REQUIRE_HTML=1 cargo test --release -p vma-io-html --test real_helper
+VMA_HTML=$PWD/target/release/vma-html VMA_REQUIRE_HTML=1 cargo test --release -p vma-io-gst --test html
+
 # Regénérer les golden frames après un changement visuel VOULU (puis relire le PNG) :
 VMA_UPDATE_GOLDEN=1 cargo test -p vma-compositor --test golden_test_pattern
 ```
@@ -71,7 +79,8 @@ Variables wgpu utiles : `WGPU_BACKEND=vulkan|dx12` ; `WGPU_ADAPTER_NAME=Intel` (
 | `crates/io-gst` | `vma-io` : pipelines d'entrée (capture, fichiers, images fixes), et de sortie (`GstOutput` + `OutputFeed` : échelle d'encodeurs, MKV / MP4), démarrées / arrêtées sur requête de `vma-control` (`outputs`). |
 | `crates/audio` | Audio temps réel sans GStreamer (ADR 0007) : anneau horodaté par input, DLL (fréquence de la source), lecture au temps de flux rééchantillonnée, `Mixer` (faders, mutes, envois Master / A / B, solo AFL / PFL au casque, audio-follow-video), vumètres. |
 | `crates/io-ndi` | NDI® (ADR 0008) : plugin `gst-plugin-ndi` enregistré statiquement, détection du runtime (`status()`), jamais embarqué. |
-| `crates/{io-html,replay,api}` | Squelettes vides pour les phases suivantes. |
+| `crates/io-html` | Input HTML (ADR 0009, `docs/specs/io-html.md`) : `HtmlHost` (lance et surveille `vma-html`, TCP local + jeton, images par mémoire partagée), sans CEF ; binaire `vma-html` (feature `cef`, hors des builds ordinaires : mode service et sonde `--vma-probe`). |
+| `crates/{replay,api}` | Squelettes vides pour les phases suivantes. |
 | `docs/adr/` | Décisions d'architecture (une par fichier, à faire valider). 0001 archi (acceptée avec amendements), 0002 décisions produit. |
 | `docs/specs/` | Une spec par module, avec critères d'acceptation. |
 | `docs/manual-tests/` | Checklists de tests sur matériel réel. |

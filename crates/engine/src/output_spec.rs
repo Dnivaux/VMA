@@ -215,6 +215,8 @@ pub enum InvalidSpec {
     Screen,
     #[error("the NDI® name is empty")]
     NdiName,
+    #[error("the page address must start with http://, https:// or file://")]
+    HtmlUrl,
 }
 
 impl OutputSpec {

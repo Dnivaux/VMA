@@ -18,6 +18,7 @@ use crate::audio_devices::{AudioDeviceList, AudioDevices, AudioInputSlot, AudioM
 use crate::devices::{CaptureDevice, DeviceList, Monitor};
 use crate::feeds::{Feeds, VideoFormat};
 use crate::headphones::{Headphones, HeadphonesStatus};
+use crate::html::HtmlFeedsOf;
 use crate::mode::CaptureMode;
 use crate::ndi::{NdiMonitor, NdiSourceList};
 use crate::output::OutputFormat;
@@ -25,6 +26,7 @@ use crate::outputs::{Activities, OutputActivity, Outputs};
 use crate::pipeline::{Capture, GstInput, Recipe};
 use crate::still::{self, StillImage};
 use crate::supervisor::retry_delay;
+use vma_io_html::{HtmlEvent, HtmlHost, HtmlStatus};
 use vma_io_ndi::NdiStatus;
 
 /// How often `vma-io` checks its pipelines (bus, watchdog, retries) without requests.
@@ -165,6 +167,7 @@ pub struct IoRuntime {
     audio_devices: AudioDeviceList,
     ndi: NdiStatus,
     ndi_sources: NdiSourceList,
+    html: HtmlStatus,
     headphones: Arc<ArcSwap<HeadphonesStatus>>,
     infos: Infos,
     activities: Activities,
@@ -207,6 +210,20 @@ impl IoRuntime {
             },
         };
         let ndi_sources = NdiSourceList::default();
+        // `vma-html` next to VMA, or `VMA_HTML` (ADR 0009 § 6): found once, at start.
+        let html = vma_io_html::locate_helper();
+        if let HtmlStatus::Unavailable { reason } = &html {
+            tracing::info!(%reason, "HTML inputs unavailable");
+        }
+        let html_host = HtmlHost::new(
+            html.clone(),
+            HtmlFeedsOf {
+                feeds: port.feeds.clone(),
+                rate: port.format.rate,
+            },
+            port.format.resolution,
+            port.format.rate,
+        );
         let stop = Arc::new(AtomicBool::new(false));
         let devices = DeviceList::default();
         let infos = Infos::default();
@@ -245,6 +262,7 @@ impl IoRuntime {
             ndi: ndi.clone(),
             ndi_sources: ndi_sources.clone(),
             ndi_monitor: None,
+            html: html_host,
             headphones,
             devices_at: Instant::now(),
             infos: Arc::clone(&infos),
@@ -261,6 +279,7 @@ impl IoRuntime {
             audio_devices,
             ndi,
             ndi_sources,
+            html,
             headphones: headphones_status,
             infos,
             activities,
@@ -288,6 +307,11 @@ impl IoRuntime {
     /// installing the runtime).
     pub fn ndi(&self) -> &NdiStatus {
         &self.ndi
+    }
+
+    /// Whether HTML inputs can be used (`vma-html` found at start).
+    pub fn html(&self) -> &HtmlStatus {
+        &self.html
     }
 
     /// The NDI® names of the sources seen on the network now (empty without the runtime).
@@ -348,6 +372,7 @@ struct Worker {
     ndi: NdiStatus,
     ndi_sources: NdiSourceList,
     ndi_monitor: Option<NdiMonitor>,
+    html: HtmlHost<HtmlFeedsOf>,
     headphones: Option<Headphones>,
     devices_at: Instant,
     infos: Infos,
@@ -387,6 +412,7 @@ impl Worker {
             for slot in &mut self.audio_inputs {
                 slot.tick(now, &mut |e| send(events, e));
             }
+            self.html.tick(now, &mut |e| send(events, html_event(e)));
             if let Some(headphones) = &mut self.headphones {
                 headphones.tick(now);
             }
@@ -424,6 +450,7 @@ impl Worker {
         match request {
             IoRequest::Open { input, spec } => self.open(input, &spec),
             IoRequest::Close { input } => {
+                self.html.close(input);
                 self.pipelines.retain(|p| p.input != input);
                 self.audio_inputs.retain(|p| p.input != input);
                 self.publish_timelines();
@@ -600,8 +627,28 @@ impl Worker {
                 // Refused with its reason, no new attempt (ADR 0008 § 3).
                 NdiStatus::Unavailable { reason } => lost(reason.clone()),
             },
+            InputSpec::Html { url, size } => {
+                let events = &self.port.events;
+                self.html.open(input, url.expose(), *size, &mut |e| {
+                    send(events, html_event(e))
+                });
+            }
             InputSpec::Color { .. } | InputSpec::TestSource { .. } => {}
         }
+    }
+}
+
+fn html_event(event: HtmlEvent) -> IoEvent {
+    match event {
+        HtmlEvent::Lost {
+            input,
+            attempts,
+            reason,
+        } => IoEvent::SignalLost {
+            input,
+            attempts,
+            reason,
+        },
     }
 }
 

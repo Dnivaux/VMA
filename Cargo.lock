@@ -4429,6 +4429,7 @@ dependencies = [
  "vma-compositor",
  "vma-core",
  "vma-engine",
+ "vma-io-html",
  "vma-io-ndi",
  "wgpu",
 ]

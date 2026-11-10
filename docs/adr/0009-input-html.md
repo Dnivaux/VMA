@@ -139,6 +139,17 @@ Ce que l'essai a montré, et qui change la mise en œuvre (pas la décision) :
    exception dans `deny.toml` : `libbz2-rs-sys` (bzip2-1.0.6), `webpki-roots`
    (CDLA-Permissive-2.0).
 
+## Mise en œuvre (étape 5, 2026-11-10) : deux écarts, à valider
+Détail dans [`io-html.md`](../specs/io-html.md).
+1. **Canal de commandes : TCP local (127.0.0.1, jeton), pas l'entrée / la sortie standard**
+   (§ 3) : les sous-processus de Chromium héritent de la sortie standard de `vma-html`, et ce
+   qu'ils y écriraient casserait les messages. Même rôle, même format (JSON, une ligne par
+   message).
+2. **`Alive` toutes les 250 ms** (§ 6) : la règle « pas d'image ni de réponse depuis 2 s alors
+   que des `BeginFrame` partent » tuerait un `vma-html` sain dont la page est statique (elle ne
+   peint qu'à ses changements) ou tombée (elle attend son rechargement), vu au test. Le délai
+   de 2 s porte donc sur tout message, `Alive` compris.
+
 ## Options écartées
 - **Lier CEF au binaire principal** : il ne démarrerait plus sans `libcef` (Linux, Windows),
   contraire à « absent → désactivé proprement » ; un plantage de CEF dans le processus

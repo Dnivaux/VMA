@@ -319,6 +319,76 @@ pub enum InputSpec {
     Ndi {
         name: String,
     },
+    /// A web page rendered off screen with its alpha (Phase 4, ADR 0009), at the master rate;
+    /// `size`: `None` = the Program's.
+    Html {
+        url: HtmlUrl,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        size: Option<Resolution>,
+    },
+}
+
+/// Address of an HTML input: `http://`, `https://` or `file://`. Credentials in it
+/// (`user:pass@`) are never written out: `Serialize` and `Debug` give `***` in their place
+/// (journal, logs, reports), like a [`Secret`]; replaying such a journal opens the page without
+/// them.
+#[derive(Clone, PartialEq, Eq)]
+pub struct HtmlUrl(String);
+
+impl HtmlUrl {
+    pub fn new(url: impl Into<String>) -> Self {
+        Self(url.into().trim().to_owned())
+    }
+
+    /// The address as given, for `vma-io` only.
+    pub fn expose(&self) -> &str {
+        &self.0
+    }
+
+    /// The address with its credentials, if any, replaced by `***`.
+    pub fn redacted(&self) -> String {
+        let Some((scheme, rest)) = self.0.split_once("://") else {
+            return self.0.clone();
+        };
+        let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+        let (authority, path) = rest.split_at(authority_end);
+        match authority.rsplit_once('@') {
+            Some((_, host)) => format!("{scheme}://***@{host}{path}"),
+            None => self.0.clone(),
+        }
+    }
+
+    fn validate(&self) -> Result<(), InvalidSpec> {
+        match self.0.split_once("://") {
+            Some((scheme, rest))
+                if !rest.is_empty()
+                    && ["http", "https", "file"]
+                        .iter()
+                        .any(|s| scheme.eq_ignore_ascii_case(s)) =>
+            {
+                Ok(())
+            }
+            _ => Err(InvalidSpec::HtmlUrl),
+        }
+    }
+}
+
+impl fmt::Debug for HtmlUrl {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "HtmlUrl({})", self.redacted())
+    }
+}
+
+impl Serialize for HtmlUrl {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.redacted())
+    }
+}
+
+impl<'de> Deserialize<'de> for HtmlUrl {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        String::deserialize(deserializer).map(Self::new)
+    }
 }
 
 /// An SRT input (`phase-3.md` § 5; same fields as an SRT output).
@@ -371,6 +441,7 @@ impl InputSpec {
             Self::AudioDevice { .. } => InputKind::AudioDevice,
             Self::Srt(_) => InputKind::Srt,
             Self::Ndi { .. } => InputKind::Ndi,
+            Self::Html { .. } => InputKind::Html,
         }
     }
 
@@ -393,6 +464,7 @@ impl InputSpec {
         match self {
             Self::Srt(s) => validate_srt(s.mode, &s.host, s.port, s.latency_ms, &s.passphrase),
             Self::Ndi { name } if name.trim().is_empty() => Err(InvalidSpec::NdiName),
+            Self::Html { url, .. } => url.validate(),
             _ => Ok(()),
         }
     }
@@ -426,8 +498,25 @@ impl InputSpec {
                 .filter(|s| !s.is_empty())
                 .unwrap_or(name)
                 .to_owned(),
+            Self::Html { url, .. } => html_name(url.expose()),
         }
     }
+}
+
+/// `https://scores.example/live/board.html?x=1` → `board`; a page without a file name gives its
+/// host; `HTML` when there is neither.
+fn html_name(url: &str) -> String {
+    let rest = url.split_once("://").map_or(url, |(_, r)| r);
+    let path = rest.split(['?', '#']).next().unwrap_or(rest);
+    let (authority, path) = path.split_once('/').unwrap_or((path, ""));
+    let file = path.rsplit('/').find(|s| !s.is_empty()).unwrap_or("");
+    let stem = file.rsplit_once('.').map_or(file, |(stem, _)| stem);
+    let host = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
+    [stem, host]
+        .into_iter()
+        .find(|s| !s.is_empty())
+        .unwrap_or("HTML")
+        .to_owned()
 }
 
 /// Transition effect available in Phase 1 (Wipe, Stinger… in Phase 4).
@@ -611,5 +700,92 @@ mod tests {
             ndi("  ").validate(),
             Err(crate::output_spec::InvalidSpec::NdiName)
         );
+    }
+
+    fn html(url: &str) -> InputSpec {
+        InputSpec::Html {
+            url: HtmlUrl::new(url),
+            size: None,
+        }
+    }
+
+    #[test]
+    fn html_inputs_take_web_and_file_addresses_only() {
+        use crate::output_spec::InvalidSpec;
+        for ok in [
+            "https://scores.example/board.html",
+            "http://127.0.0.1:8080/",
+            "file:///home/me/overlay.html",
+            "FILE:///C:/titres/bas.html",
+        ] {
+            assert_eq!(html(ok).validate(), Ok(()), "{ok}");
+        }
+        for bad in [
+            "",
+            "overlay.html",
+            "ftp://x/y",
+            "javascript:alert(1)",
+            "https://",
+        ] {
+            assert_eq!(html(bad).validate(), Err(InvalidSpec::HtmlUrl), "{bad:?}");
+        }
+        assert_eq!(html("file:///a.html").kind(), InputKind::Html);
+        assert!(!html("file:///a.html").has_audio(), "sound comes at step 9");
+    }
+
+    #[test]
+    fn html_inputs_are_named_after_their_page() {
+        assert_eq!(
+            html("https://scores.example/live/board.html?x=1#y").default_name(),
+            "board"
+        );
+        assert_eq!(
+            html("file:///home/me/bas-de-titre.html").default_name(),
+            "bas-de-titre"
+        );
+        assert_eq!(
+            html("https://user:pw@scores.example/").default_name(),
+            "scores.example"
+        );
+        assert_eq!(
+            html("https://scores.example").default_name(),
+            "scores.example"
+        );
+    }
+
+    /// Credentials in a page address never reach the journal, the logs or a report.
+    #[test]
+    fn credentials_in_an_html_address_are_never_written() {
+        let url = HtmlUrl::new("https://op:s3cret@scores.example/board.html?token=1");
+        assert_eq!(
+            url.redacted(),
+            "https://***@scores.example/board.html?token=1"
+        );
+        assert!(!format!("{url:?}").contains("s3cret"));
+        let spec = InputSpec::Html {
+            url: url.clone(),
+            size: Some(Resolution::HD_720),
+        };
+        let json = serde_json::to_string(&spec).unwrap();
+        assert!(!json.contains("s3cret"), "{json}");
+        let back: InputSpec = serde_json::from_str(&json).unwrap();
+        let InputSpec::Html { url: read, size } = back else {
+            panic!("{back:?}")
+        };
+        assert_eq!(
+            read.expose(),
+            "https://***@scores.example/board.html?token=1"
+        );
+        assert_eq!(size, Some(Resolution::HD_720));
+        assert_eq!(
+            url.expose(),
+            "https://op:s3cret@scores.example/board.html?token=1"
+        );
+        // An `@` after the host is not a credential.
+        let plain = HtmlUrl::new("https://scores.example/@team/board.html");
+        assert_eq!(plain.redacted(), plain.expose());
+        // Without a size, the field is not written (the Program's).
+        let json = serde_json::to_string(&html("file:///a.html")).unwrap();
+        assert_eq!(json, r#"{"Html":{"url":"file:///a.html"}}"#);
     }
 }

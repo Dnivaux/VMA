@@ -224,6 +224,13 @@ impl<'a> App<'a> {
         if inputs.iter().any(|i| i.sync_drift_ppm.is_some()) {
             mix_sync_inputs(&engine, inputs.len())?;
         }
+        // `--html`: HTML inputs (ADR 0009), refused with a reason if vma-html is missing.
+        for url in &options.html {
+            script(vma_engine::InputSpec::Html {
+                url: vma_engine::HtmlUrl::new(url.clone()),
+                size: None,
+            })?;
+        }
         if soak_options.is_some() && inputs.is_empty() {
             script(vma_engine::InputSpec::TestSource {
                 rate: config.rate,

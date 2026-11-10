@@ -20,6 +20,7 @@ mod clock;
 mod devices;
 mod feeds;
 mod headphones;
+mod html;
 mod mode;
 mod ndi;
 mod output;
@@ -44,6 +45,7 @@ pub use outputs::{OutputActivity, default_record_folder};
 pub use runtime::{IoOptions, IoRuntime, PipelineInfo};
 pub use sync::{AUDIO_GAP_NS, SyncAnalyser, SyncSnapshot};
 pub use sync_source::next_sync_flash_ns;
+pub use vma_io_html::HtmlStatus;
 pub use vma_io_ndi::NdiStatus;
 
 /// Errors of `io-gst`.
