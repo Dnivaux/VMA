@@ -618,6 +618,30 @@ NDI® est une marque déposée de Vizrt NDI AB. ADR 0008.
 - **Coût** : environ une demi-période du maître de latence en plus pour ces inputs (latence
   publication → tick fixe, comme SRT).
 - **Son** : il saute avec l'image sur ce glissement (ADR 0007, « Précision … étape 9 »).
+- **Relâche avancée du temps de copie** (2026-11-10, enquête D11) : « relâchée une
+  demi-période avant son tick » vaut pour le *début* de la copie dans le tampon de transfert ;
+  l'image n'est publiée qu'à la fin. Le `Pacer` mémorise la plus longue copie récente
+  (fenêtre de 15 à 30 s) et relâche d'autant plus tôt, **d'un quart de période au plus**
+  (une copie rapide ne tombe jamais près du tick précédent). Une image publiée à moins d'un
+  quart de période de son tick est journalisée (une ligne toutes les 10 s au plus par
+  input, avec le compte).
+  - **Pourquoi** : le soak D11 (et le 3ᵉ C14) avait une paire de synchro à −20 ms, un flash
+    de 2 images arrivé avec 1 seule. Reproduit sans fenêtre ni habillage
+    (`crates/io-gst/tests/flash_hunt.rs`, 2 flashs courts en 25 min) : une copie de 10,5 ms
+    sur 4 ou 5 sources à la fois, relâchée 10 ms avant le tick, manquait le tick (ce tick
+    répète l'image précédente, le suivant saute celle-ci).
+  - **Cause de la lenteur** : les tampons de transfert (`MAP_WRITE`) sont en VRAM, vue par
+    le processeur à travers le BAR ; chaque écriture traverse le lien PCIe. Avec la charge
+    légère du moteur, le pilote laisse le GPU en économie d'énergie (P5 / P8) et le lien en
+    **Gen 1** (×8 sur la machine de dev, ~2 Go/s) : une image 1080p NV12 seule prend
+    1,1 ms, six sources synchro qui copient au même instant 6 à 13 ms (15 au p99). Le même
+    moteur, GPU tenu en P0 (lien Gen 4) : 0,28 ms seule, 1,2 à 1,6 ms à six, p99 1,7 ms
+    (`crates/engine/tests/feed_speed.rs`, `crates/compositor/tests/staging_speed.rs`).
+  - **Après** : 25 min, 1 500 flashs, tous de deux images, 0 tick manqué ; copies jusqu'à
+    13,2 ms, publiées au moins 1,5 ms avant leur tick. La marge reste mince en Gen 1 avec
+    6 sources 1080p synchro : un réglage « performances maximales » du GPU (mode
+    d'alimentation du pilote) la rend large — à documenter pour les machines de
+    production.
 
 ### Critères (étape 9)
 | Critère | Test | Statut |

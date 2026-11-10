@@ -431,6 +431,8 @@ impl GstInput {
                     pacer: Pacer::new(pace),
                     clock,
                     to_release,
+                    close: 0,
+                    close_warned_ns: 0,
                 });
             }
         }
@@ -994,13 +996,21 @@ struct Paced {
     pacer: Pacer,
     clock: gst::Clock,
     to_release: Sender<Release>,
+    /// Pictures published close to their tick since the last warning, and when it was.
+    close: u64,
+    close_warned_ns: u64,
 }
+
+/// At most one warning about pictures published close to their tick per input in this time.
+const CLOSE_WARN_PERIOD_NS: u64 = 10_000_000_000;
 
 /// A picture held until its release time (the sample is reference counted: no copy).
 struct Release {
     sample: gst::Sample,
     stream_ns: Option<u64>,
     at_ns: u64,
+    /// Stream time of the tick it is to be shown on (0: none, not paced by its time).
+    tick_ns: u64,
 }
 
 /// Pictures held at most by the release thread of a paced input (a full queue makes the
@@ -1039,6 +1049,12 @@ struct Pacer {
     arrivals: Window,
     /// When the delay last changed.
     changed_at: u64,
+    /// How long handing a picture to its feed took (the copy into its transfer buffer):
+    /// the release starts that much earlier, so that the picture is *published* half a
+    /// master period before its tick.
+    deliveries: Window,
+    /// Stream time of the tick of the latest picture released.
+    last_due: u64,
 }
 
 /// Longest wait for one picture (safety: a jump of the timestamps starts afresh before).
@@ -1090,7 +1106,14 @@ impl Pacer {
             delay: None,
             arrivals: Window::default(),
             changed_at: 0,
+            deliveries: Window::default(),
+            last_due: 0,
         }
+    }
+
+    /// Handing a picture to the feed took `took_ns` (release thread, at `now_ns`).
+    fn record_delivery(&mut self, now_ns: u64, took_ns: u64) {
+        self.deliveries.record(now_ns, signed(took_ns));
     }
 
     /// When to release the picture of stream time `stream_ns` that arrived at `now_ns` (both
@@ -1129,7 +1152,11 @@ impl Pacer {
                 "paced input: late, delay set again"
             );
         }
-        due.saturating_sub(unsigned(half))
+        self.last_due = due;
+        // The longest recent copy, at most a quarter period: a picture copied faster than that
+        // is still published a quarter period after the previous tick at the earliest.
+        let copy = self.deliveries.max(0).clamp(0, half / 2);
+        due.saturating_sub(unsigned(half + copy))
     }
 
     fn set(&mut self, delay: i64, now_ns: u64) -> i64 {
@@ -1191,17 +1218,19 @@ impl<F: Feeds> Stream<F> {
             .flatten();
         if let Some(paced) = &mut self.pacer {
             let now = paced.clock.time().nseconds();
-            let at_ns = match stream_ns {
+            let (at_ns, tick_ns) = match stream_ns {
                 Some(t) => {
                     let period = caps_period_ns(caps).unwrap_or(40_000_000);
-                    paced.pacer.release_at(t, now, period)
+                    let at = paced.pacer.release_at(t, now, period);
+                    (at, paced.pacer.last_due)
                 }
-                None => now,
+                None => (now, 0),
             };
             let release = Release {
                 sample: sample.clone(),
                 stream_ns,
                 at_ns,
+                tick_ns,
             };
             return Ok(Some((paced.to_release.clone(), release)));
         }
@@ -1326,9 +1355,35 @@ fn spawn_release<F: Feeds>(
                 let Ok(mut stream) = stream.lock() else {
                     return;
                 };
+                let locked = clock.time().nseconds();
                 if let Err(e) = stream.deliver(&picture.sample, picture.stream_ns) {
                     tracing::warn!(%input, error = ?e, "paced picture refused");
                     stream.failed = true;
+                }
+                let done = clock.time().nseconds();
+                if let Some(paced) = stream.pacer.as_mut() {
+                    paced
+                        .pacer
+                        .record_delivery(done, done.saturating_sub(locked));
+                    // Published less than a quarter period before its tick: it may miss it
+                    // (that tick repeats, the next one skips it). The copy is slow when the
+                    // GPU's link is in power saving (docs/specs/io-gst.md).
+                    let quarter = paced.pacer.ticks.period_ns() / 4;
+                    if picture.tick_ns > 0 && done + quarter > picture.tick_ns {
+                        paced.close += 1;
+                        if done.saturating_sub(paced.close_warned_ns) >= CLOSE_WARN_PERIOD_NS {
+                            tracing::warn!(
+                                %input,
+                                pictures = paced.close,
+                                before_tick_ms = (picture.tick_ns as f64 - done as f64) / 1e6,
+                                copy_ms = (done - locked) as f64 / 1e6,
+                                late_wake_ms = locked.saturating_sub(picture.at_ns) as f64 / 1e6,
+                                "paced pictures published close to their tick (slow copy to the GPU)"
+                            );
+                            paced.close = 0;
+                            paced.close_warned_ns = done;
+                        }
+                    }
                 }
             }
         })
@@ -2273,6 +2328,50 @@ pub(crate) mod tests {
                 (t, published, shown, pacer.delay.unwrap())
             })
             .collect()
+    }
+
+    /// Copying a 1080p picture into its transfer buffer takes ~6 ms (seen in the soaks): the
+    /// release starts that much earlier, so the picture is published half a period before its
+    /// tick, not a few milliseconds (a slower copy then missed the tick: one picture
+    /// repeated, the next skipped, the C14 and D11 « flash one picture late »). The lead is at
+    /// most a quarter period: a quick copy never lands near the previous tick.
+    #[test]
+    fn the_release_starts_early_by_the_time_the_copy_takes() {
+        let master = FrameRate::FPS_50;
+        let ticks = TickGrid {
+            origin_ns: 1_000_000_000,
+            rate: master,
+        };
+        let period = master.frame_offset_nanos(1) as u64;
+        let (half, quarter) = (period / 2, period / 4);
+        for copy_ms in [0u64, 3, 6, 9] {
+            let mut pacer = Pacer::new(Pace::local(ticks));
+            let copy = copy_ms * 1_000_000;
+            let lead = copy.min(quarter);
+            for k in 0..2_000u64 {
+                let t = 5_000_000_000 + k * period;
+                let now = t + 3_000_000;
+                let at = pacer.release_at(t, now, period);
+                let due = pacer.last_due;
+                pacer.record_delivery(at.max(now) + copy, copy);
+                if k > 0 {
+                    assert_eq!(due - at, half + lead, "{copy_ms} ms, picture {k}");
+                }
+                // Published (released + copy) between the two ticks, a quarter period away
+                // from both at least, whatever the copy (the first one: no copy measured yet).
+                let published = at.max(now) + copy;
+                if k > 0 {
+                    assert!(
+                        published + quarter <= due,
+                        "{copy_ms} ms, {k}: too close to its tick"
+                    );
+                    assert!(
+                        published >= due - period + quarter.min(copy + half - lead),
+                        "{copy_ms} ms, {k}: too close to the previous tick"
+                    );
+                }
+            }
+        }
     }
 
     /// C9: pictures that come in pairs (an SRT receiver) are each shown on the tick their
