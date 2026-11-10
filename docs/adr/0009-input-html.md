@@ -139,8 +139,10 @@ Ce que l'essai a montré, et qui change la mise en œuvre (pas la décision) :
    exception dans `deny.toml` : `libbz2-rs-sys` (bzip2-1.0.6), `webpki-roots`
    (CDLA-Permissive-2.0).
 
-## Mise en œuvre (étape 5, 2026-11-10) : deux écarts, à valider
-Détail dans [`io-html.md`](../specs/io-html.md).
+## Mise en œuvre (étape 5, 2026-11-10) : deux écarts, retenus
+Détail dans [`io-html.md`](../specs/io-html.md). Le mainteneur a laissé le choix (2026-11-10) :
+ce qui compte est que l'opératrice retrouve le comportement de la référence ; ces deux points
+sont internes (rien ne change à l'écran ni dans les gestes), ils sont retenus.
 1. **Canal de commandes : TCP local (127.0.0.1, jeton), pas l'entrée / la sortie standard**
    (§ 3) : les sous-processus de Chromium héritent de la sortie standard de `vma-html`, et ce
    qu'ils y écriraient casserait les messages. Même rôle, même format (JSON, une ligne par

@@ -1,7 +1,7 @@
 # Spec — `io-html` : input HTML (CEF hors écran)
 
 - **Statut** : écrit à l'étape 5 de la Phase 4 (2026-11-10), d'après l'ADR 0009 (accepté) et
-  l'essai CEF de l'étape 4 ; **à relire** (deux écarts à l'ADR, § 3)
+  l'essai CEF de l'étape 4 ; les deux écarts à l'ADR (§ 3) sont retenus (2026-11-10)
 - **Références** : [`phase-4.md`](phase-4.md) (D4 à D7), ADR 0009 (input HTML), ADR 0010
   (alpha), [`io-gst.md`](io-gst.md) (feeds), [`commands.md`](commands.md) (`InputSpec::Html`)
 
