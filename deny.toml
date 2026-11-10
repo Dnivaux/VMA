@@ -40,6 +40,12 @@ exceptions = [
     # NDI® plugin of gst-plugins-rs (ADR 0008 § 5): MPL-2.0, copyleft limited to its own files,
     # used unmodified from crates.io. This crate only.
     { crate = "gst-plugin-ndi", allow = ["MPL-2.0"] },
+    # Build-time only, never in a binary: `download-cef` (build script of cef-dll-sys, feature
+    # `cef` of vma-io-html, ADR 0009) fetches the CEF archive over TLS and unpacks it.
+    # Permissive licences: bzip2's own BSD-like licence; CDLA-Permissive-2.0 for the Mozilla
+    # root certificates (data).
+    { crate = "libbz2-rs-sys", allow = ["bzip2-1.0.6"] },
+    { crate = "webpki-roots", allow = ["CDLA-Permissive-2.0"] },
 ]
 
 [bans]

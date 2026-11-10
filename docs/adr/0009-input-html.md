@@ -1,6 +1,6 @@
 # ADR 0009 — Input HTML : CEF hors écran dans un processus auxiliaire
 
-- **Statut** : **accepté** le 2026-11-09 par le mainteneur (avec la spec de la Phase 4)
+- **Statut** : **accepté** le 2026-11-09 par le mainteneur (avec la spec de la Phase 4) ; mesures de l'essai (étape 4) ajoutées le 2026-11-10
 - **Date** : 2026-11-09
 - **Contexte** : BRIEF §2.4 (une entrée qui tombe ne fait jamais tomber le programme), §2.6
   (licences), §4 (Phase 4 : page web hors écran avec alpha, 50 fps, données sans rechargement),
@@ -66,12 +66,67 @@
 
 ## À vérifier (étape 4 de la spec, point d'arrêt si une hypothèse tombe)
 - Le rendu hors écran tourne **sans écran** (CI Linux : plateforme *headless* de Chromium ou
-  Xvfb ; CI Windows).
+  Xvfb ; CI Windows). → **Oui** sous Linux, avec `--ozone-platform=headless` (sans lui,
+  Chromium cherche un serveur d'affichage et `CefInitialize` échoue) ; Windows : job CI.
 - `OnPaint` donne l'alpha d'une page à fond transparent, et sous quelle forme (prémultiplié
-  attendu) ; `AlphaMode` de l'input en conséquence.
-- **Une image par `BeginFrame`**, et `requestAnimationFrame` cadencé par eux (D5).
-- Coût : CPU, mémoire par navigateur, copie 1080p50 entre processus.
-- Compilation et `cargo deny` du job CEF sur les 2 OS.
+  attendu) ; `AlphaMode` de l'input en conséquence. → **Prémultiplié** : `AlphaMode::Premultiplied`.
+- **Une image par `BeginFrame`**, et `requestAnimationFrame` cadencé par eux (D5). → **Oui**, avec
+  `--run-all-compositor-stages-before-draw`.
+- Coût : CPU, mémoire par navigateur, copie 1080p50 entre processus. → Mesuré, ci-dessous.
+- Compilation et `cargo deny` du job CEF sur les 2 OS. → Job CI `html`, `cargo deny` avec la
+  feature `cef`.
+
+## Mesures de l'essai (étape 4, 2026-11-10)
+Sonde `vma-html --vma-probe` (crate `io-html`, feature `cef`, `src/bin/vma-html/probe.rs`) : une
+page à fond transparent, pilotée par `SendExternalBeginFrame` à la cadence du maître. La page
+compte ses `requestAnimationFrame` et écrit le compte dans un bloc ; chaque `OnPaint` est relu.
+Sortie : un rapport, code 0 si tout tient. Machine de dev (Linux, release), CEF 156.0.26
+(Chromium 156.0.8078.88), 1920 × 1080, 20 s par cadence après 25 ticks de chauffe, sans écran.
+
+| Cadence | Images / ticks | Répétées / sautées | Pas de l'horloge de la page | Latence BeginFrame → OnPaint (p50 / p99) | CPU (un cœur) |
+|---|---|---|---|---|---|
+| 25 | 500 / 500 | 0 / 0 | 40 ms | 1,7 / 2,3 ms | 6 % |
+| 29,97 | 599 / 599 | 0 / 0 | 33–34 ms | 1,7 / 2,4 ms | 7 % |
+| 30 | 600 / 600 | 0 / 0 | 33–34 ms | 1,7 / 2,3 ms | 7 % |
+| 50 | 1000 / 1000 | 0 / 0 | 20 ms | 1,3 / 2,3 ms | 9 % |
+| 59,94 | 1198 / 1198 | 0 / 0 | 17 ms | 1,7 / 2,4 ms | 11 % |
+| 60 | 1200 / 1200 | 0 / 0 | 16–17 ms | 1,3 / 2,1 ms | 11 % |
+
+- **Alpha** : `rgba(255, 0, 0, 0.5)` relu (128, 0, 0, 128), `rgba(255, 255, 255, 0.25)` relu
+  (64, 64, 64, 64), fond (0, 0, 0, 0) : BGRA **prémultiplié**, sans `background_color`.
+- **Cadence** : l'horloge de la page (`rAF`) avance d'une période du maître par tick ; elle suit
+  l'heure d'envoi du `BeginFrame` (retard d'envoi de notre boucle : p99 ≤ 0,2 ms).
+- **Mémoire** : ≈ 115 Mio (PSS) par navigateur, ≈ 200 Mio pour le processus et ses
+  sous-processus sans navigateur (8 processus en tout).
+- **Copie** d'une image 1080p (7,9 Mio) : ≈ 0,7 ms (p99 0,9 ms), 396 Mio/s par input à 50 i/s.
+- **Démarrage** : contexte CEF ≈ 40 ms, première image de la page ≈ 80 ms.
+
+Ce que l'essai a montré, et qui change la mise en œuvre (pas la décision) :
+1. **`--run-all-compositor-stages-before-draw`** (option de Chromium pour le rendu déterministe
+   du mode *headless*) : sans elle, le compositeur de Chromium produit l'image d'un tick sans
+   attendre le thread principal de la page quand celui-ci est en retard. Vu à chaque essai vers
+   la 200ᵉ image (V8 qui optimise le code de la page, probablement) : une image répète l'étape
+   précédente. Avec elle, l'image attend la page (+ ≈ 1 ms de latence) : une page trop lente
+   arrivera en retard au lieu de se répéter en silence, et le retard sera compté côté `vma`.
+2. **`--ozone-platform=headless`** sous Linux, toujours : sans écran, Chromium ne démarre pas
+   sans lui ; avec un écran (Wayland), il ouvre une connexion inutile et son processus GPU se
+   plaint de Vulkan.
+3. **Rendu logiciel (`--disable-gpu`) par défaut** : pour une page d'overlay, c'est le moins
+   cher (le GPU de Chromium en Vulkan : 19 % de CPU et 5 ms de latence, par la relecture de
+   l'image) et le plus simple (sans écran, l'initialisation GPU d'ANGLE échoue puis se rabat sur
+   le logiciel). `--vma-gpu` garde le GPU pour comparer. À revoir avec une vraie page d'overlay
+   (Q3) et pour le partage de texture (`OnAcceleratedPaint`, qui demande le GPU, § 7).
+4. **Le relevé `/proc` de la sonde (≈ 10 ms) dans la boucle d'envoi** retardait un `BeginFrame`
+   et en faisait perdre un : le thread qui envoie les `BeginFrame` ne doit rien faire d'autre
+   (le futur thread `vma-html` côté application : `try_send` seulement).
+5. **Distribution** : `libcef.so` fait 1,4 Gio avec ses symboles de débogage, 265 Mio
+   strippé ; le paquet doit stripper. `vma-html` trouve `libcef.so` à côté de lui (rpath
+   `$ORIGIN`, `build.rs` d'`io-html`). Fichiers à livrer : ceux que `cef-dll-sys` copie à côté
+   du binaire (`.pak`, `icudtl.dat`, `v8_context_snapshot.bin`, `locales/`, SwiftShader).
+6. **Licences** : le graphe de `vma-html` est permissif ; deux crates de compilation seulement
+   (téléchargement et décompression de CEF) ont une licence hors liste, permissive, en
+   exception dans `deny.toml` : `libbz2-rs-sys` (bzip2-1.0.6), `webpki-roots`
+   (CDLA-Permissive-2.0).
 
 ## Options écartées
 - **Lier CEF au binaire principal** : il ne démarrerait plus sans `libcef` (Linux, Windows),

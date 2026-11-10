@@ -62,6 +62,10 @@ gst-plugin-ndi = "0.15.4"                                    # MPL-2.0
 serde = { version = "1.0", features = ["derive"] }           # MIT OR Apache-2.0
 serde_json = "1.0"                                           # MIT OR Apache-2.0
 rfd = "0.17"                                                 # MIT (sélecteur de fichier natif ; Linux : portail XDG via zbus, pas de GTK ; Windows : API Win32)
+# Off-screen HTML input (ADR 0009), only in the `vma-html` helper (feature `cef` of vma-io-html,
+# never in `vma`). Pinned: each version is one CEF / Chromium build. Its build script downloads a
+# public CEF build (BSD-3-Clause ; Chromium : licences de ses composants, avis à livrer).
+cef = { version = "=156.4.0", default-features = false }     # Apache-2.0 OR MIT
 
 [workspace.lints.rust]
 unsafe_code = "deny"

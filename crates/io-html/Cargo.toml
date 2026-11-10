@@ -9,3 +9,16 @@ publish.workspace = true
 
 [lints]
 workspace = true
+
+[features]
+# Builds the `vma-html` helper (ADR 0009). Downloads CEF at build time: off by default, so that
+# `cargo build --workspace` and `vma` never link to CEF.
+cef = ["dep:cef"]
+
+[[bin]]
+name = "vma-html"
+path = "src/bin/vma-html/main.rs"
+required-features = ["cef"]
+
+[dependencies]
+cef = { workspace = true, optional = true }

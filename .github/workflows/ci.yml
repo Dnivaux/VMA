@@ -35,6 +35,10 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: EmbarkStudios/cargo-deny-action@v2
+      # The `vma-html` helper's graph too (feature `cef`, off by default; ADR 0009).
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          arguments: --features vma-io-html/cef
 
   msrv:
     runs-on: ubuntu-24.04
@@ -186,4 +190,69 @@ jobs:
         with:
           name: golden-diffs-${{ matrix.os }}
           path: tests/golden/*.actual.png
+          if-no-files-found: ignore
+
+  # CEF helper `vma-html` (ADR 0009, Phase 4 step 4): built apart, it downloads CEF. Runs the
+  # trial probe: off-screen rendering without a display, alpha, one image per begin-frame.
+  html:
+    name: html (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      CEF_PATH: ${{ runner.temp }}/cef
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      # Registry only: target/ would hold a copy of CEF (hundreds of MB).
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: html
+          cache-targets: false
+      - name: Cache CEF
+        id: cache-cef
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/cef
+          key: cef-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cef-${{ runner.os }}-
+      - name: Build vma-html
+        run: cargo build --release --locked -p vma-io-html --features cef --bin vma-html
+      - name: Trim the CEF cache (archive, debug symbols of libcef.so)
+        if: steps.cache-cef.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          find "$CEF_PATH" -name '*.tar.bz2' -delete
+          if [ "$RUNNER_OS" = Linux ]; then
+            find "$CEF_PATH" -name libcef.so -exec strip --strip-unneeded {} \;
+          fi
+          du -sh "$CEF_PATH"
+      - name: Clippy (vma-html)
+        run: cargo clippy --locked -p vma-io-html --features cef --all-targets -- -D warnings
+      - name: Libraries of vma-html found (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          ldd target/release/vma-html | tee ldd.txt
+          ! grep "not found" ldd.txt
+      - name: CEF trial probe (1080p50, 20 s, no display)
+        shell: bash
+        run: |
+          set -o pipefail
+          # No display server, as on a machine without screen: rendering is off-screen.
+          env -u DISPLAY -u WAYLAND_DISPLAY target/release/vma-html --vma-probe --vma-seconds=20 \
+            2> probe-stderr.txt | tee probe.md
+          cat probe.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload the probe report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cef-probe-${{ matrix.os }}
+          path: |
+            probe.md
+            probe-stderr.txt
           if-no-files-found: ignore
