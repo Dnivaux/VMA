@@ -66,6 +66,7 @@ rfd = "0.17"                                                 # MIT (sélecteur d
 # never in `vma`). Pinned: each version is one CEF / Chromium build. Its build script downloads a
 # public CEF build (BSD-3-Clause ; Chromium : licences de ses composants, avis à livrer).
 cef = { version = "=156.4.0", default-features = false }     # Apache-2.0 OR MIT
+memmap2 = "0.9"                                              # MIT OR Apache-2.0 (mémoire partagée de l'input HTML)
 
 [workspace.lints.rust]
 unsafe_code = "deny"

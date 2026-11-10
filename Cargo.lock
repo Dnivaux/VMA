@@ -4438,6 +4438,13 @@ name = "vma-io-html"
 version = "0.0.1"
 dependencies = [
  "cef",
+ "crossbeam-channel",
+ "memmap2",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tracing",
+ "vma-core",
 ]
 
 [[package]]
