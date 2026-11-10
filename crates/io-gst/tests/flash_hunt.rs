@@ -140,6 +140,19 @@ fn every_flash_reaches_the_outputs_whole() {
             });
         }
         data_page = dressing.get(2).copied();
+        std::thread::sleep(Duration::from_secs(1));
+        let now = state.load();
+        eprintln!(
+            "dressing: {} inputs ({:?}), overlays {:?}, stinger {:?}",
+            now.inputs.len(),
+            now.inputs
+                .iter()
+                .skip(6)
+                .map(|i| (&i.name, &i.status))
+                .collect::<Vec<_>>(),
+            now.overlays,
+            now.stinger(vma_engine::StingerSlot::new(1).unwrap()).status,
+        );
     }
     let mut cuts = 0u64;
     let mut data_at = Instant::now();
