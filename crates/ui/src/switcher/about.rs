@@ -14,6 +14,15 @@ const LICENCES: &[(&str, &str)] = &[
         "LGPL-2.1 ou ultérieure",
     ),
     ("Plugin NDI® de gst-plugins-rs (gst-plugin-ndi)", "MPL-2.0"),
+    (
+        "Chromium Embedded Framework (CEF), dans vma-html (input HTML)",
+        "BSD-3-Clause",
+    ),
+    (
+        "Chromium, dans vma-html",
+        "BSD-3-Clause et licences de ses composants (CREDITS.html)",
+    ),
+    ("Bindings CEF (cef-rs)", "MIT ou Apache-2.0"),
 ];
 
 impl Switcher {
@@ -39,6 +48,12 @@ impl Switcher {
                      l'utilisateur, et chargé au démarrage s'il est présent.",
                 );
                 ui.label(RichText::new("NDI® is a registered trademark of Vizrt NDI AB.").small());
+                ui.separator();
+                ui.label(
+                    "L'input HTML passe par vma-html, un programme à part livré à côté de VMA \
+                     avec CEF et Chromium ; les avis de licence de Chromium sont dans le \
+                     fichier CREDITS.html qui l'accompagne.",
+                );
             });
         self.about_open = open;
     }

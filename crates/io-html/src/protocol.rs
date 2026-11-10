@@ -153,6 +153,69 @@ pub enum FromHelper {
     /// Sent every [`ALIVE_PERIOD`] whatever the pages do: a static page paints only when it
     /// changes, a crashed one not at all, and the application must still tell a stuck helper.
     Alive,
+    /// Sound the page played (Phase 4 step 9): `samples` is [`encode_samples`] of F32 stereo
+    /// interleaved at `rate` Hz, just captured.
+    Audio {
+        browser: u32,
+        rate: u32,
+        samples: String,
+    },
+}
+
+const BASE64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+/// Samples as base64 of their little-endian bytes (JSON carries no raw bytes).
+pub fn encode_samples(samples: &[f32]) -> String {
+    let bytes: Vec<u8> = samples.iter().flat_map(|v| v.to_le_bytes()).collect();
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let b = [
+            chunk.first().copied().unwrap_or(0),
+            chunk.get(1).copied().unwrap_or(0),
+            chunk.get(2).copied().unwrap_or(0),
+        ];
+        let n = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
+        for (i, shift) in [18u32, 12, 6, 0].into_iter().enumerate() {
+            if i <= chunk.len() {
+                let index = ((n >> shift) & 63) as usize;
+                out.push(char::from(BASE64.get(index).copied().unwrap_or(b'A')));
+            } else {
+                out.push('=');
+            }
+        }
+    }
+    out
+}
+
+/// The samples of [`encode_samples`]; `None` if `text` is not that.
+pub fn decode_samples(text: &str) -> Option<Vec<f32>> {
+    let value = |c: u8| BASE64.iter().position(|&b| b == c).map(|p| p as u32);
+    let text = text.as_bytes();
+    if !text.len().is_multiple_of(4) {
+        return None;
+    }
+    let mut bytes = Vec::with_capacity(text.len() / 4 * 3);
+    for quad in text.chunks(4) {
+        let pad = quad.iter().rev().take_while(|&&c| c == b'=').count();
+        let mut n = 0u32;
+        for &c in quad.get(..4 - pad)? {
+            n = (n << 6) | value(c)?;
+        }
+        n <<= 6 * pad as u32;
+        let decoded = [(n >> 16) as u8, (n >> 8) as u8, n as u8];
+        bytes.extend_from_slice(decoded.get(..3 - pad)?);
+    }
+    if !bytes.len().is_multiple_of(4) {
+        return None;
+    }
+    Some(
+        bytes
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|b| f32::from_le_bytes(*b))
+            .collect(),
+    )
 }
 
 /// Why a message could not be read.
@@ -263,6 +326,19 @@ mod tests {
             read::<ToHelper>(&mut input, &mut line),
             Err(ReadError::Closed)
         ));
+    }
+
+    #[test]
+    fn samples_survive_base64() {
+        for n in 0..8 {
+            let samples: Vec<f32> = (0..n).map(|i| i as f32 * 0.25 - 1.0).collect();
+            let text = encode_samples(&samples);
+            assert_eq!(decode_samples(&text), Some(samples), "{n}");
+        }
+        let edge = [f32::MAX, f32::MIN_POSITIVE, -0.0, 1.0];
+        assert_eq!(decode_samples(&encode_samples(&edge)), Some(edge.to_vec()));
+        assert_eq!(decode_samples("abc"), None);
+        assert_eq!(decode_samples("a!c="), None);
     }
 
     #[test]

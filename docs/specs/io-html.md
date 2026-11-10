@@ -103,6 +103,23 @@ masqués) et « Aller », « Recharger », « Précédente », « Suivante », d
 clavier transmis à CEF) ; une page plus petite que le Program est centrée à sa taille chez la
 référence, mise à l'échelle chez VMA (placement d'un input : « position / zoom », hors Phase 4).
 
+## 4 ter. Son de la page (étape 9, Q9)
+- `vma-html` demande à CEF le son de chaque page en 48 kHz stéréo, par paquets de 10 ms
+  (`AudioHandler` : il n'est plus joué sur la machine), et autorise la lecture sans geste
+  (`--autoplay-policy=no-user-gesture-required` : personne ne clique sur un overlay).
+- CEF appelle ce gestionnaire sur **un thread à lui**, pas le thread UI : il ne touche à rien
+  du service (`Rc`, `RefCell`) ; ses paquets, entrelacés en stéréo (mono des deux côtés, les
+  deux premiers canaux au-delà), passent par un canal au thread principal, seul à écrire sur la
+  connexion (`Audio { browser, rate, samples }`, échantillons F32 en base64). Vu au test : y
+  toucher depuis ce thread était une course de données.
+- **Daté à l'arrivée** : images et son de l'input HTML portent l'heure de l'horloge maître à
+  leur réception (un paquet : celle de sa fin moins sa durée) ; `vma-audio` lit le son à l'heure
+  de l'image montrée, comme pour tout input. Un son à une autre cadence que 48 kHz est ignoré
+  (signalé une fois).
+- L'input HTML a une tranche dans le mélangeur ; comme toute source avec image, il suit la
+  vidéo par défaut (au Master quand il est au Program ; en overlay, seulement si on désactive
+  le suivi, q. 26 de l'observation).
+
 ## 5. Pannes (ADR 0009 § 6)
 Chacune met l'input « signal perdu » avec sa raison ; il repasse en direct avec un **nouveau
 feed** à la première image qui suit.
@@ -132,8 +149,11 @@ jamais).
 | *(étape 7)* **D6** avec le vrai `vma-html` : donnée montrée **sous 2 images**, page pas rechargée (compteur de chargements inchangé) ; script exécuté ; `HtmlReload` → rechargée, CSS de nouveau appliquée ; autre adresse puis page précédente | `tests/real_helper.rs::a_page_takes_data_and_scripts_without_reloading` | job CI `html` (2 OS) |
 | *(étape 7)* Actions de page à l'hôte : données en événement `vma-data`, adresse gardée pour la relance | `host::tests::page_actions_reach_the_open_page_and_navigate_is_kept` | CI |
 | *(étape 7)* **D9** (HTML) : commandes vers `vma-io` pour un input HTML seulement, JSON vérifié, textes ≤ 64 Kio, adresse gardée ; journalisées en entier sauf identifiants, rejeu → même état ; UI (A11) : ajout, grisé, réglages | `state::tests::html_commands_reach_the_page_of_html_inputs_only`, `control::tests::html_commands_are_journaled_and_replayed`, `ui/tests/switcher.rs` (3) | CI |
+| *(étape 9)* Son : une page qui joue une sinusoïde à 0,5 en WebAudio (sans clic) → son au feed en 48 kHz stéréo, au rythme du temps (± 10 %), RMS 0,354 | `tests/real_helper.rs::the_sound_of_a_page_reaches_its_feed` | job CI `html` (2 OS) |
+| *(étape 9)* Son sur le moteur réel : l'input HTML a une tranche ; au Program, sa page s'entend au Master à son niveau | `io-gst/tests/html.rs::the_sound_of_an_html_page_on_program_reaches_the_master` | job CI `html` (Linux) |
+| *(étape 9)* **D12** : CEF et Chromium dans « À propos », avis de Chromium (`CREDITS.html`) à côté de `vma-html` | `ui/tests/switcher.rs::without_the_ndi_runtime_ndi_is_greyed`, job CI `html` | CI |
 | *(étape 6)* Les ticks du maître arrivent à `vma-html` en `BeginFrame`, un retard ne passe que le dernier | `host::tests::master_ticks_reach_the_helper_as_begin_frames_latest_first` | CI |
 | **D5** (BRIEF « sans saccade ») : page animée (une barre qui avance d'une colonne sur 16 à chaque `requestAnimationFrame`) en overlay, **chaque image du Program** relue sur une sortie pendant 60 s après 3 s de chauffe : chaque image montre l'étape suivante et une seule ; feed de l'input sans image répétée ni sautée ; latence p99 ≤ 2 images ; 0 tick manqué | `io-gst/tests/html.rs::an_animated_page_shows_one_new_step_per_program_picture` (`VMA_D5_SECS`, `VMA_D5_RATE`) | job CI `html` (Linux, lavapipe : 50 sur 60 s, 59,94 sur 20 s) ; machine de dev : 50 / 60 s (3000 / 3000), 25, 29,97, 59,94, 60 / 20 s, 0 fausse |
 
-Hors étapes 5 à 7 : son (9). Jalon visible : `vma --html
+Le paquet (avec `CREDITS.html` et `libcef` strippée) viendra avec la première version. Jalon visible : `vma --html
 page.html`, puis le bouton **1** de sa vignette.

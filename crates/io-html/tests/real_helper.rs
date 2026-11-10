@@ -45,20 +45,37 @@ struct Picture {
     blocks: [[u8; 4]; 4],
 }
 
+/// Sound received: rate, samples (stereo interleaved) and their sum of squares.
+#[derive(Debug, Clone, Copy, Default)]
+struct Heard {
+    rate: u32,
+    samples: usize,
+    energy: f64,
+}
+
 #[derive(Debug, Clone, Default)]
 struct Feeds {
     size: Arc<Mutex<Option<Resolution>>>,
     pictures: Arc<Mutex<Vec<Picture>>>,
     created: Arc<Mutex<u32>>,
+    heard: Arc<Mutex<Heard>>,
 }
 
 struct Out {
     input: InputId,
     width: usize,
     pictures: Arc<Mutex<Vec<Picture>>>,
+    heard: Arc<Mutex<Heard>>,
 }
 
 impl HtmlFrames for Out {
+    fn push_audio(&mut self, rate: u32, samples: &[f32]) {
+        let mut heard = self.heard.lock().unwrap();
+        heard.rate = rate;
+        heard.samples += samples.len();
+        heard.energy += samples.iter().map(|v| f64::from(*v).powi(2)).sum::<f64>();
+    }
+
     fn push_bgra(&mut self, data: &[u8], _seq: u64) -> Result<(), String> {
         let px = |x: usize, y: usize| {
             let i = (y * self.width + x) * 4;
@@ -85,6 +102,7 @@ impl HtmlFeeds for Feeds {
             input,
             width: size.width() as usize,
             pictures: Arc::clone(&self.pictures),
+            heard: Arc::clone(&self.heard),
         })
     }
 }
@@ -440,5 +458,56 @@ fn a_page_takes_data_and_scripts_without_reloading() {
     rig.until("back on the first", Duration::from_secs(10), |r| {
         last(r).is_some_and(|b| b[0][2] >= 2 && b[0][0] == 0)
     });
+    assert!(rig.lost.is_empty(), "{:?}", rig.lost);
+}
+
+/// A page that plays a 440 Hz sine at half scale, without a click (WebAudio, no file).
+const TONE_PAGE: &str = r#"<!doctype html><html><body style="margin:0;background:transparent">
+<script>
+const ctx = new AudioContext({ sampleRate: 48000 });
+const osc = ctx.createOscillator(); const gain = ctx.createGain();
+osc.frequency.value = 440; gain.gain.value = 0.5;
+osc.connect(gain).connect(ctx.destination); osc.start();
+(function f() { document.body.dataset.t = performance.now(); requestAnimationFrame(f); })();
+</script></body></html>"#;
+
+/// D12 side (Q9): the page's sound reaches its feed, 48 kHz stereo, at the pace of time and
+/// at its level, without a click.
+#[test]
+fn the_sound_of_a_page_reaches_its_feed() {
+    let Some(status) = helper() else { return };
+    let mut rig = Rig::new(status);
+    let dir = std::env::temp_dir().join(format!("vma-html-test-page-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("tone.html");
+    std::fs::write(&path, TONE_PAGE).unwrap();
+    let p = path.to_string_lossy().replace('\\', "/");
+    let url = if p.starts_with('/') {
+        format!("file://{p}")
+    } else {
+        format!("file:///{p}")
+    };
+    let lost = &mut rig.lost;
+    rig.host
+        .open(InputId(4), &url, None, None, &mut |e| lost.push(e));
+    rig.until("sound", Duration::from_secs(20), |r| {
+        r.feeds.heard.lock().unwrap().samples > 0
+    });
+    let start = *rig.feeds.heard.lock().unwrap();
+    let t0 = Instant::now();
+    rig.until("2 s of sound", Duration::from_secs(10), |_| {
+        t0.elapsed() >= Duration::from_secs(2)
+    });
+    let heard = *rig.feeds.heard.lock().unwrap();
+    assert_eq!(heard.rate, 48_000);
+    let frames = (heard.samples - start.samples) as f64 / 2.0;
+    let seconds = t0.elapsed().as_secs_f64();
+    assert!(
+        (frames / seconds - 48_000.0).abs() < 48_000.0 * 0.1,
+        "{frames} frames in {seconds:.2} s"
+    );
+    // A sine at 0.5: RMS 0.354 on each channel.
+    let rms = ((heard.energy - start.energy) / (heard.samples - start.samples) as f64).sqrt();
+    assert!((rms - 0.354).abs() < 0.05, "rms {rms}");
     assert!(rig.lost.is_empty(), "{:?}", rig.lost);
 }

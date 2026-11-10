@@ -1451,6 +1451,9 @@ fn without_the_ndi_runtime_ndi_is_greyed() {
     h.run();
     h.get_by_label("NDI® is a registered trademark of Vizrt NDI AB.");
     h.get_by_label_contains("MPL-2.0");
+    // D12: CEF and Chromium, and where Chromium's notices are.
+    h.get_by_label("Chromium Embedded Framework (CEF), dans vma-html (input HTML)");
+    h.get_by_label_contains("CREDITS.html qui l'accompagne");
 }
 
 /// Step 8: « + NDI® » adds the NDI output with its default name (once); without the runtime
@@ -1583,9 +1586,10 @@ fn the_settings_of_an_html_input_drive_its_page() {
         .unwrap();
     let page = state.inputs.last().unwrap().id;
     let mut h = harness(state);
-    h.get_by_label("5 board").click();
+    // The thumbnail: the name is also on its strip in the mixer (it has sound), drawn first.
+    h.get_all_by_label("5 board").last().unwrap().click();
     h.step();
-    h.get_by_label("5 board").click();
+    h.get_all_by_label("5 board").last().unwrap().click();
     h.run();
     assert!(h.query_by_label("Réglages de l'input 5").is_some());
     let address = h.get_by_label("Adresse").value().unwrap_or_default();

@@ -497,6 +497,7 @@ impl InputSpec {
                 | Self::AudioDevice { .. }
                 | Self::Srt(_)
                 | Self::Ndi { .. }
+                | Self::Html { .. }
         )
     }
 
@@ -819,7 +820,10 @@ mod tests {
             assert_eq!(html(bad).validate(), Err(InvalidSpec::HtmlUrl), "{bad:?}");
         }
         assert_eq!(html("file:///a.html").kind(), InputKind::Html);
-        assert!(!html("file:///a.html").has_audio(), "sound comes at step 9");
+        assert!(
+            html("file:///a.html").has_audio(),
+            "its page's sound (step 9)"
+        );
     }
 
     #[test]

@@ -33,6 +33,8 @@ use crate::shm::{self, SharedFrames};
 /// Receives the pictures of one HTML input: BGRA, premultiplied alpha, tightly packed.
 pub trait HtmlFrames: Send + 'static {
     fn push_bgra(&mut self, data: &[u8], seq: u64) -> Result<(), String>;
+    /// Sound the page just played: stereo interleaved F32 at `rate` Hz.
+    fn push_audio(&mut self, _rate: u32, _samples: &[f32]) {}
 }
 
 /// Creates the feed of an HTML input when its first picture arrives (again after a loss: the
@@ -682,7 +684,8 @@ impl<F: HtmlFeeds> HtmlHost<F> {
             FromHelper::Hello { .. }
             | FromHelper::Frame { .. }
             | FromHelper::Closed { .. }
-            | FromHelper::Alive => return,
+            | FromHelper::Alive
+            | FromHelper::Audio { .. } => return,
         };
         let timings = self.timings;
         let Some(input) = self.inputs.iter_mut().find(|i| i.browser == browser) else {
@@ -919,6 +922,11 @@ impl<F: HtmlFeeds> PictureThread<F> {
             match message {
                 FromHelper::Frame { browser, slot, seq } => self.frame(browser, slot, seq),
                 FromHelper::Alive => {}
+                FromHelper::Audio {
+                    browser,
+                    rate,
+                    samples,
+                } => self.audio(browser, rate, &samples),
                 other => {
                     if let FromHelper::Closed { browser } = &other {
                         self.browsers.remove(browser);
@@ -963,6 +971,21 @@ impl<F: HtmlFeeds> PictureThread<F> {
                     self.browsers.remove(&browser);
                 }
             }
+        }
+    }
+
+    /// Sound of a browser: to its feed once it has one (the first picture creates it).
+    fn audio(&mut self, browser: u32, rate: u32, samples: &str) {
+        let Some(sink) = self
+            .browsers
+            .get_mut(&browser)
+            .and_then(|b| b.sink.as_mut())
+        else {
+            return;
+        };
+        match protocol::decode_samples(samples) {
+            Some(samples) => sink.push_audio(rate, &samples),
+            None => tracing::warn!(browser, "unreadable sound from vma-html"),
         }
     }
 

@@ -11,13 +11,15 @@
 #![allow(unsafe_code)]
 
 use cef::{
-    App, Browser, BrowserProcessHandler, CefString, Client, CommandLine, Errorcode, Frame, ImplApp,
-    ImplBrowserProcessHandler, ImplClient, ImplCommandLine, ImplFrame, ImplLifeSpanHandler,
-    ImplLoadHandler, ImplRenderHandler, ImplRequestHandler, LifeSpanHandler, LoadHandler,
-    PaintElementType, Rect, RenderHandler, RequestHandler, TerminationStatus, WrapApp,
+    App, AudioHandler, AudioParameters, Browser, BrowserProcessHandler, CefString, ChannelLayout,
+    Client, CommandLine, Errorcode, Frame, ImplApp, ImplAudioHandler, ImplBrowserProcessHandler,
+    ImplClient, ImplCommandLine, ImplFrame, ImplLifeSpanHandler, ImplLoadHandler,
+    ImplRenderHandler, ImplRequestHandler, LifeSpanHandler, LoadHandler, PaintElementType, Rect,
+    RenderHandler, RequestHandler, TerminationStatus, WrapApp, WrapAudioHandler,
     WrapBrowserProcessHandler, WrapClient, WrapLifeSpanHandler, WrapLoadHandler, WrapRenderHandler,
-    WrapRequestHandler, rc::Rc as _, wrap_app, wrap_browser_process_handler, wrap_client,
-    wrap_life_span_handler, wrap_load_handler, wrap_render_handler, wrap_request_handler,
+    WrapRequestHandler, rc::Rc as _, wrap_app, wrap_audio_handler, wrap_browser_process_handler,
+    wrap_client, wrap_life_span_handler, wrap_load_handler, wrap_render_handler,
+    wrap_request_handler,
 };
 use std::os::raw::c_int;
 use std::rc::Rc;
@@ -34,6 +36,30 @@ pub trait Events {
     fn load_failed(&self, browser: u32, reason: String);
     fn renderer_gone(&self, browser: u32, reason: String);
     fn closed(&self, browser: u32);
+}
+
+/// The pages' sound. CEF calls it on a thread of its own, not the UI thread: shared with that
+/// thread, never with the [`Events`].
+pub trait AudioEvents: Send + Sync {
+    /// The page's sound starts: `channels` at `rate` Hz.
+    fn started(&self, browser: u32, rate: u32, channels: usize);
+    /// Channels of the sound started (0: none).
+    fn channels(&self, browser: u32) -> usize;
+    /// A packet of the page's sound: one slice per channel, the same length.
+    fn packet(&self, browser: u32, planes: &[&[f32]]);
+}
+
+pub type SharedAudio = std::sync::Arc<dyn AudioEvents>;
+
+/// The probe and the Chromium sub-processes: sound ignored.
+pub struct NoAudio;
+
+impl AudioEvents for NoAudio {
+    fn started(&self, _: u32, _: u32, _: usize) {}
+    fn channels(&self, _: u32) -> usize {
+        0
+    }
+    fn packet(&self, _: u32, _: &[&[f32]]) {}
 }
 
 pub type Shared = Rc<dyn Events>;
@@ -58,7 +84,7 @@ pub fn app(events: Shared) -> cef::App {
 }
 
 /// The handlers of browser number `browser`.
-pub fn client(events: &Shared, browser: u32) -> Client {
+pub fn client(events: &Shared, audio: &SharedAudio, browser: u32) -> Client {
     let page = Page {
         events: Rc::clone(events),
         browser,
@@ -68,6 +94,7 @@ pub fn client(events: &Shared, browser: u32) -> Client {
         VmaLoadHandler::new(page.clone()),
         VmaLifeSpanHandler::new(page.clone()),
         VmaRequestHandler::new(page),
+        VmaAudioHandler::new(std::sync::Arc::clone(audio), browser),
     )
 }
 
@@ -104,6 +131,11 @@ wrap_app! {
                 Some(&"basic".into()),
             );
             command_line.append_switch(Some(&"use-mock-keychain".into()));
+            // A page plays its sound without a click (nobody clicks an overlay).
+            command_line.append_switch_with_value(
+                Some(&"autoplay-policy".into()),
+                Some(&"no-user-gesture-required".into()),
+            );
 
             // Browser process only: Chromium passes these on to the sub-processes that need
             // them. Measured in the CEF trial (ADR 0009, « Mesures de l'essai »).
@@ -154,9 +186,14 @@ wrap_client! {
         load: LoadHandler,
         life_span: LifeSpanHandler,
         request: RequestHandler,
+        audio: AudioHandler,
     }
 
     impl Client {
+        fn audio_handler(&self) -> Option<AudioHandler> {
+            Some(self.audio.clone())
+        }
+
         fn render_handler(&self) -> Option<RenderHandler> {
             Some(self.render.clone())
         }
@@ -283,6 +320,72 @@ wrap_request_handler! {
             self.page
                 .events
                 .renderer_gone(self.page.browser, format!("{status:?} (code {error_code})"));
+        }
+    }
+}
+
+wrap_audio_handler! {
+    struct VmaAudioHandler {
+        audio: SharedAudio,
+        browser: u32,
+    }
+
+    impl AudioHandler {
+        /// 48 kHz stereo, 10 ms packets: the rate of VMA's mixer.
+        fn audio_parameters(
+            &self,
+            _browser: Option<&mut Browser>,
+            params: Option<&mut AudioParameters>,
+        ) -> c_int {
+            if let Some(params) = params {
+                params.sample_rate = 48_000;
+                params.channel_layout = ChannelLayout::LAYOUT_STEREO;
+                params.frames_per_buffer = 480;
+            }
+            1
+        }
+
+        fn on_audio_stream_started(
+            &self,
+            _browser: Option<&mut Browser>,
+            params: Option<&AudioParameters>,
+            channels: c_int,
+        ) {
+            let rate = params.map_or(48_000, |p| u32::try_from(p.sample_rate).unwrap_or(0));
+            let channels = usize::try_from(channels).unwrap_or(0);
+            self.audio.started(self.browser, rate, channels);
+        }
+
+        fn on_audio_stream_packet(
+            &self,
+            _browser: Option<&mut Browser>,
+            data: *mut *const f32,
+            frames: c_int,
+            _pts: i64,
+        ) {
+            let channels = self.audio.channels(self.browser);
+            let Ok(frames) = usize::try_from(frames) else {
+                return;
+            };
+            if data.is_null() || channels == 0 || frames == 0 {
+                return;
+            }
+            // SAFETY: CEF documents `data` as `channels` pointers (the count given to
+            // `on_audio_stream_started`), each to `frames` floats, valid for this callback;
+            // it is not null (checked above) and only read here.
+            let pointers = unsafe { std::slice::from_raw_parts(data, channels) };
+            let mut planes = [&[][..]; 8];
+            for (plane, &pointer) in planes.iter_mut().zip(pointers) {
+                if pointer.is_null() {
+                    return;
+                }
+                // SAFETY: as above, `frames` floats behind each channel's pointer.
+                *plane = unsafe { std::slice::from_raw_parts(pointer, frames) };
+            }
+            let count = channels.min(planes.len());
+            if let Some(planes) = planes.get(..count) {
+                self.audio.packet(self.browser, planes);
+            }
         }
     }
 }

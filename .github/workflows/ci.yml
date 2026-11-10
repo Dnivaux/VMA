@@ -236,6 +236,10 @@ jobs:
           du -sh "$CEF_PATH"
       - name: Clippy (vma-html)
         run: cargo clippy --locked -p vma-io-html --features cef --all-targets -- -D warnings
+      # D12: Chromium's licence notices ship next to vma-html.
+      - name: Licence notices next to vma-html
+        shell: bash
+        run: test -s target/release/CREDITS.html
       - name: Libraries of vma-html found (Linux)
         if: runner.os == 'Linux'
         run: |

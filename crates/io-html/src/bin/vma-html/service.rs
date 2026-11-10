@@ -155,6 +155,68 @@ impl Events for Service {
     }
 }
 
+/// The pages' sound, from CEF's audio thread: each packet interleaved as stereo (mono on both
+/// sides; only the first two of more) and handed to the main thread, which sends it (one
+/// writer on the connection: messages never interleave). The application dates it on arrival.
+pub struct AudioRelay {
+    tx: crossbeam_channel::Sender<FromHelper>,
+    /// Rate and channels of each browser's sound.
+    layouts: std::sync::Mutex<HashMap<u32, (u32, usize)>>,
+}
+
+impl AudioRelay {
+    pub fn new() -> (Self, crossbeam_channel::Receiver<FromHelper>) {
+        // A second of 10 ms packets; more and the sound is behind: dropped.
+        let (tx, rx) = crossbeam_channel::bounded(100);
+        (
+            Self {
+                tx,
+                layouts: std::sync::Mutex::default(),
+            },
+            rx,
+        )
+    }
+}
+
+impl glue::AudioEvents for AudioRelay {
+    fn started(&self, browser: u32, rate: u32, channels: usize) {
+        if let Ok(mut layouts) = self.layouts.lock() {
+            layouts.insert(browser, (rate, channels));
+        }
+    }
+
+    fn channels(&self, browser: u32) -> usize {
+        self.layouts
+            .lock()
+            .ok()
+            .and_then(|l| l.get(&browser).map(|(_, c)| *c))
+            .unwrap_or(0)
+    }
+
+    fn packet(&self, browser: u32, planes: &[&[f32]]) {
+        let rate = self
+            .layouts
+            .lock()
+            .ok()
+            .and_then(|l| l.get(&browser).map(|(r, _)| *r))
+            .unwrap_or(0);
+        let (Some(left), right) = (planes.first(), planes.get(1)) else {
+            return;
+        };
+        let right = right.unwrap_or(left);
+        let samples: Vec<f32> = left
+            .iter()
+            .zip(right.iter())
+            .flat_map(|(&l, &r)| [l, r])
+            .collect();
+        let _ = self.tx.try_send(FromHelper::Audio {
+            browser,
+            rate,
+            samples: protocol::encode_samples(&samples),
+        });
+    }
+}
+
 /// Reads the application's messages; `None` once the connection is over.
 fn reader(stream: TcpStream) -> Receiver<Option<ToHelper>> {
     let (tx, rx) = std::sync::mpsc::channel();
@@ -192,6 +254,8 @@ pub fn run(
     service: &Rc<Service>,
     options: &Connect,
 ) -> ExitCode {
+    let (relay, sound) = AudioRelay::new();
+    let audio: glue::SharedAudio = std::sync::Arc::new(relay);
     let stream = match TcpStream::connect(options.addr) {
         Ok(stream) => stream,
         Err(e) => {
@@ -237,14 +301,20 @@ pub fn run(
     }
 
     let events: Shared = Rc::clone(service) as Shared;
-    serve(service, &events, &incoming);
+    serve(service, &events, &audio, &incoming, &sound);
 
     cef::shutdown();
     let _ = std::fs::remove_dir_all(&cache);
     ExitCode::SUCCESS
 }
 
-fn serve(service: &Service, events: &Shared, incoming: &Receiver<Option<ToHelper>>) {
+fn serve(
+    service: &Service,
+    events: &Shared,
+    audio: &glue::SharedAudio,
+    incoming: &Receiver<Option<ToHelper>>,
+    sound: &crossbeam_channel::Receiver<FromHelper>,
+) {
     let mut pending = Vec::new();
     let mut quit_by: Option<Instant> = None;
     let mut alive_at = Instant::now();
@@ -277,7 +347,7 @@ fn serve(service: &Service, events: &Shared, incoming: &Receiver<Option<ToHelper
                     quit_by.get_or_insert_with(|| Instant::now() + QUIT_TIMEOUT);
                     close_all(service);
                 } else {
-                    handle(service, events, message);
+                    handle(service, events, audio, message);
                 }
             }
         }
@@ -288,6 +358,9 @@ fn serve(service: &Service, events: &Shared, incoming: &Receiver<Option<ToHelper
             if now >= alive_at {
                 alive_at = now + ALIVE_PERIOD;
                 inner.send(&FromHelper::Alive);
+            }
+            for packet in sound.try_iter() {
+                inner.send(&packet);
             }
             if begin.take().is_some() {
                 due.extend(
@@ -316,7 +389,7 @@ fn serve(service: &Service, events: &Shared, incoming: &Receiver<Option<ToHelper
     }
 }
 
-fn handle(service: &Service, events: &Shared, message: ToHelper) {
+fn handle(service: &Service, events: &Shared, audio: &glue::SharedAudio, message: ToHelper) {
     match message {
         ToHelper::Create {
             browser,
@@ -366,7 +439,7 @@ fn handle(service: &Service, events: &Shared, message: ToHelper) {
             };
             let created = cef::browser_host_create_browser_sync(
                 Some(&window_info),
-                Some(&mut glue::client(events, browser)),
+                Some(&mut glue::client(events, audio, browser)),
                 Some(&url.as_str().into()),
                 Some(&settings),
                 None,

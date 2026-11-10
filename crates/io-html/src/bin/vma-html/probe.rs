@@ -356,7 +356,11 @@ fn probe(
     };
     let browser = cef::browser_host_create_browser_sync(
         Some(&window_info),
-        Some(&mut glue::client(&(state.clone() as glue::Shared), 1)),
+        Some(&mut glue::client(
+            &(state.clone() as glue::Shared),
+            &(std::sync::Arc::new(glue::NoAudio) as glue::SharedAudio),
+            1,
+        )),
         Some(&file_url(page).as_str().into()),
         Some(&browser_settings),
         None,

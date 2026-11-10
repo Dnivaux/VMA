@@ -389,3 +389,85 @@ fn an_animated_page_shows_one_new_step_per_program_picture() {
     );
     drop(io);
 }
+
+/// A page that plays a 440 Hz sine at half scale (WebAudio, no file, no click).
+const TONE: &str = r#"<!doctype html><html><body style="margin:0;background:transparent">
+<script>
+const ctx = new AudioContext({ sampleRate: 48000 });
+const osc = ctx.createOscillator(); const gain = ctx.createGain();
+osc.frequency.value = 440; gain.gain.value = 0.5;
+osc.connect(gain).connect(ctx.destination); osc.start();
+(function f() { document.body.dataset.t = performance.now(); requestAnimationFrame(f); })();
+</script></body></html>"#;
+
+/// Q9 (step 9): an HTML input has a strip; on Program its page's sound is in the Master at
+/// its level (audio-follow-video, like any input with pictures).
+#[test]
+fn the_sound_of_an_html_page_on_program_reaches_the_master() {
+    use vma_core::AudioBus;
+    use vma_engine::Level;
+    let io_status = vma_io_html::locate_helper();
+    if !io_status.is_available() {
+        if std::env::var_os("VMA_REQUIRE_HTML").is_some() {
+            panic!("vma-html required (VMA_REQUIRE_HTML): {io_status:?}");
+        }
+        eprintln!("note: test skipped, no vma-html ({io_status:?}); set VMA_HTML");
+        return;
+    }
+    let gpu = pollster::block_on(headless::request_gpu()).expect("GPU adapter required");
+    let (mut engine, _readers) = RenderEngine::spawn(
+        gpu.device.clone(),
+        gpu.queue.clone(),
+        EngineConfig {
+            resolution: Resolution::new(320, 180).unwrap(),
+            ..EngineConfig::default()
+        },
+        Journal::Disabled,
+    )
+    .unwrap();
+    let io = IoRuntime::start(engine.take_io_port().unwrap()).unwrap();
+    let commands = engine.commands();
+    let send = |command| commands.send(Source::Script, command).unwrap();
+    let state = engine.state();
+    send(Command::AddInput {
+        spec: InputSpec::Html {
+            url: HtmlUrl::new(page_file("tone", TONE)),
+            size: None,
+            css: None,
+        },
+        name: None,
+    });
+    assert!(wait_for(Duration::from_secs(2), || state
+        .load()
+        .inputs
+        .len()
+        == 1));
+    let page = state.load().inputs[0].id;
+    assert!(state.load().input(page).unwrap().audio.is_some(), "a strip");
+    assert!(wait_for(Duration::from_secs(30), || matches!(
+        state.load().input(page).map(|i| i.status),
+        Some(InputStatus::Live { .. })
+    )));
+    assert_eq!(
+        state.load().program,
+        Some(page),
+        "the first input is on Program"
+    );
+    let meters = engine.audio_meters();
+    let peak = |level| {
+        meters
+            .read(level)
+            .map_or(0.0, |[_, post]: [vma_engine::MeterReading; 2]| post.peak[0])
+    };
+    assert!(
+        wait_for(Duration::from_secs(10), || peak(Level::Bus(
+            AudioBus::Master
+        )) > 0.4),
+        "Master peak {}, input peak {}",
+        peak(Level::Bus(AudioBus::Master)),
+        peak(Level::Input(page))
+    );
+    let master = peak(Level::Bus(AudioBus::Master));
+    assert!(master < 0.6, "the page's level (0.5): {master}");
+    drop(io);
+}
