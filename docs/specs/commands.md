@@ -275,8 +275,12 @@ apportées en codant (à relire) :
 - **Nom par défaut** : le nom du fichier de la page sans extension (`board.html` → `board`),
   à défaut l'hôte, à défaut `HTML`.
 - Pas encore de son (étape 9) : pas de tranche dans le mélangeur audio.
-- Les commandes de données (`HtmlData`, `HtmlScript`, `HtmlReload`, `SetHtmlUrl`) viennent à
-  l'étape 7.
+- **Étape 7** : `HtmlData { input, json }` (JSON vérifié, sinon `InvalidJson`),
+  `HtmlScript { input, script }`, `HtmlReload`, `SetHtmlUrl { input, url }` (adresse vérifiée
+  et gardée dans le spec : seule à changer l'état), `HtmlBack`, `HtmlForward` ; refusées pour un
+  autre input (`NotHtml`) ; texte au plus 64 Kio (`HtmlTooLong`, aussi pour la CSS) ;
+  `IoRequest::Html { input, action }` vers `vma-io`. `InputSpec::Html` gagne `css` (absent du
+  journal quand il vaut `None`). Détail : [`io-html.md`](io-html.md) § 4 bis.
 
 ## Critères d'acceptation
 | Critère | Test |

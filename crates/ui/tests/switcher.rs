@@ -52,6 +52,8 @@ struct Rig {
     /// NDI®: why it is unavailable, and the sources seen.
     ndi_unavailable: Option<String>,
     ndi_sources: Vec<String>,
+    /// Why HTML inputs are unavailable (`vma-html` missing).
+    html_unavailable: Option<String>,
 }
 
 impl Rig {
@@ -124,6 +126,7 @@ fn harness(state: State) -> Harness<'static, Rig> {
         }),
         ndi_unavailable: None,
         ndi_sources: vec!["STUDIO (Caméra 1)".into(), "STUDIO (Titres)".into()],
+        html_unavailable: None,
     };
     let mut harness = Harness::builder()
         // A 1080p screen: the inputs and the mixer side by side.
@@ -158,6 +161,7 @@ fn harness(state: State) -> Harness<'static, Rig> {
                         audio_sinks: &rig.audio_sinks,
                         headphones: rig.headphones.as_ref(),
                         ndi_unavailable: rig.ndi_unavailable.as_deref(),
+                        html_unavailable: rig.html_unavailable.as_deref(),
                         ndi_sources: &rig.ndi_sources,
                     },
                     screens: &rig.screens,
@@ -1471,4 +1475,158 @@ fn the_ndi_output_is_added_unless_the_runtime_is_missing() {
     h.get_by_label("+ NDI®").click();
     h.run();
     assert!(h.state().sent().is_empty(), "disabled without the runtime");
+}
+
+/// Phase 4 step 7 (D9, A11): « Ajouter → Page web (HTML)… » adds an HTML input at the
+/// Program's size, or its own with a style sheet.
+#[test]
+fn an_html_input_is_added_with_its_address_size_and_css() {
+    let mut h = harness(state());
+    h.get_by_label("+ Ajouter").click();
+    h.run();
+    h.get_by_label("Page web (HTML)…").click();
+    h.run();
+    h.get_by_label("Adresse").click();
+    h.run();
+    h.get_by_label("Adresse")
+        .type_text(" https://scores.example/board.html ");
+    h.run();
+    h.get_by_label("Ajouter").click();
+    h.run();
+    assert_eq!(
+        h.state().sent(),
+        [Command::AddInput {
+            spec: InputSpec::Html {
+                url: vma_engine::HtmlUrl::new("https://scores.example/board.html"),
+                size: None,
+                css: None,
+            },
+            name: None,
+        }]
+    );
+    assert!(h.query_by_label("Nouvel input HTML").is_none(), "closed");
+
+    h.get_by_label("+ Ajouter").click();
+    h.run();
+    h.get_by_label("Page web (HTML)…").click();
+    h.run();
+    h.get_by_label("Adresse").click();
+    h.run();
+    h.get_by_label("Adresse")
+        .type_text("file:///titres/bas.html");
+    h.run();
+    h.get_by_label("Taille propre (sinon celle du Program)")
+        .click();
+    h.run();
+    for (field, value) in [("Largeur", "1280"), ("Hauteur", "200")] {
+        h.get_by_label(field).click();
+        h.run();
+        // Clear the default (the Program's size), from its end.
+        h.key_press(egui::Key::End);
+        h.run();
+        for _ in 0..5 {
+            h.key_press(egui::Key::Backspace);
+            h.run();
+        }
+        h.get_by_label(field).type_text(value);
+        h.run();
+    }
+    h.get_by_label("CSS (appliquée à chaque page chargée, facultative)")
+        .click();
+    h.run();
+    h.get_by_label("CSS (appliquée à chaque page chargée, facultative)")
+        .type_text("body { zoom: 2 }");
+    h.run();
+    h.get_by_label("Ajouter").click();
+    h.run();
+    assert_eq!(
+        h.state().sent(),
+        [Command::AddInput {
+            spec: InputSpec::Html {
+                url: vma_engine::HtmlUrl::new("file:///titres/bas.html"),
+                size: Some(Resolution::new(1280, 200).unwrap()),
+                css: Some("body { zoom: 2 }".into()),
+            },
+            name: None,
+        }]
+    );
+}
+
+/// D7 (UI): without `vma-html`, « Page web (HTML)… » is greyed and opens nothing.
+#[test]
+fn without_vma_html_html_inputs_are_greyed() {
+    let mut h = harness(state());
+    h.state_mut().html_unavailable = Some("vma-html introuvable".into());
+    h.run();
+    h.get_by_label("+ Ajouter").click();
+    h.run();
+    h.get_by_label("Page web (HTML)…").click();
+    h.run();
+    assert!(h.query_by_label("Nouvel input HTML").is_none(), "disabled");
+    assert!(h.state().sent().is_empty());
+}
+
+/// D9 (UI, A11): the settings of an HTML input send each page command; the address is shown
+/// without its credentials.
+#[test]
+fn the_settings_of_an_html_input_drive_its_page() {
+    let mut state = state();
+    state
+        .apply(&Command::AddInput {
+            spec: InputSpec::Html {
+                url: vma_engine::HtmlUrl::new("https://op:pw@scores.example/board.html"),
+                size: None,
+                css: None,
+            },
+            name: None,
+        })
+        .unwrap();
+    let page = state.inputs.last().unwrap().id;
+    let mut h = harness(state);
+    h.get_by_label("5 board").click();
+    h.step();
+    h.get_by_label("5 board").click();
+    h.run();
+    assert!(h.query_by_label("Réglages de l'input 5").is_some());
+    let address = h.get_by_label("Adresse").value().unwrap_or_default();
+    assert_eq!(address, "https://***@scores.example/board.html");
+    for (button, command) in [
+        ("Recharger", Command::HtmlReload { input: page }),
+        ("Précédente", Command::HtmlBack { input: page }),
+        ("Suivante", Command::HtmlForward { input: page }),
+    ] {
+        h.get_by_label(button).click();
+        h.run();
+        assert_eq!(h.state().sent(), [command]);
+    }
+    h.get_by_label("Données (JSON, événement « vma-data » de la page)")
+        .click();
+    h.run();
+    h.get_by_label("Données (JSON, événement « vma-data » de la page)")
+        .type_text(r#"{"home": 3}"#);
+    h.run();
+    h.get_by_label("Envoyer les données").click();
+    h.run();
+    assert_eq!(
+        h.state().sent(),
+        [Command::HtmlData {
+            input: page,
+            json: r#"{"home": 3}"#.into()
+        }]
+    );
+    h.get_by_label("Script (JavaScript exécuté dans la page)")
+        .click();
+    h.run();
+    h.get_by_label("Script (JavaScript exécuté dans la page)")
+        .type_text("go()");
+    h.run();
+    h.get_by_label("Exécuter le script").click();
+    h.run();
+    assert_eq!(
+        h.state().sent(),
+        [Command::HtmlScript {
+            input: page,
+            script: "go()".into()
+        }]
+    );
 }

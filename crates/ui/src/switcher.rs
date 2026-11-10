@@ -19,6 +19,7 @@ use crate::tally::{TALLY_PREVIEW, TALLY_PROGRAM, Tally};
 use crate::{HeadphonesActivity, OutputActivity};
 
 mod about;
+mod html_input;
 mod mixer;
 mod ndi_input;
 mod outputs;
@@ -112,6 +113,8 @@ pub struct IoView<'a> {
     pub headphones: Option<&'a HeadphonesActivity>,
     /// Why NDI® is unavailable (runtime missing), if it is.
     pub ndi_unavailable: Option<&'a str>,
+    /// Why HTML inputs are unavailable (`vma-html` missing), if they are.
+    pub html_unavailable: Option<&'a str>,
     /// NDI® sources seen on the network now.
     pub ndi_sources: &'a [String],
 }
@@ -139,6 +142,7 @@ impl IoView<'static> {
             audio_sinks: &[],
             headphones: None,
             ndi_unavailable: None,
+            html_unavailable: None,
             ndi_sources: &[],
         }
     }
@@ -228,6 +232,10 @@ pub struct Switcher {
     new_srt: Option<vma_engine::SrtSource>,
     /// The NDI® source name being chosen (« Ajouter → NDI®… »).
     new_ndi: Option<String>,
+    /// The HTML input being added (« Ajouter → Page web (HTML)… »).
+    new_html: Option<html_input::NewHtml>,
+    /// What is typed in the settings of an HTML input.
+    html_fields: html_input::HtmlFields,
     about_open: bool,
 }
 
@@ -248,6 +256,8 @@ impl Default for Switcher {
             mixer: mixer::MixerUi::default(),
             new_srt: None,
             new_ndi: None,
+            new_html: None,
+            html_fields: html_input::HtmlFields::default(),
             about_open: false,
         }
     }
@@ -342,6 +352,7 @@ impl Switcher {
         self.outputs_window(ui, view);
         self.srt_input_window(ui, view);
         self.ndi_input_window(ui, view);
+        self.html_input_window(ui, view);
         self.about_window(ui);
     }
 
@@ -719,6 +730,7 @@ impl Switcher {
                 self.new_ndi = Some(String::new());
                 ui.close();
             }
+            self.html_menu_entry(ui, view);
         });
         if unavailable.is_some() {
             ui.label(
@@ -918,6 +930,7 @@ impl Switcher {
                     }
                 });
             }
+            self.html_settings(ui, view, id);
             if let Some(playback) = input.playback {
                 let mut looping = playback.looping;
                 if ui

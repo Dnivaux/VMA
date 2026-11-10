@@ -532,6 +532,14 @@ impl vma_ui::IoStatus for Io {
         }
     }
 
+    fn html_unavailable(&self) -> Option<String> {
+        match self.0.as_ref().map(vma_io_gst::IoRuntime::html) {
+            None => Some("le thread d'entrées n'a pas démarré".into()),
+            Some(vma_io_gst::HtmlStatus::Available { .. }) => None,
+            Some(vma_io_gst::HtmlStatus::Unavailable { reason }) => Some(reason.clone()),
+        }
+    }
+
     fn ndi_sources(&self) -> Vec<String> {
         self.0.iter().flat_map(|io| io.ndi_sources()).collect()
     }

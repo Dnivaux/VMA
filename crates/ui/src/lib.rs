@@ -73,6 +73,10 @@ pub trait IoStatus: std::fmt::Debug {
     fn ndi_sources(&self) -> Vec<String> {
         Vec::new()
     }
+    /// Why HTML inputs are unavailable (`vma-html` missing), if they are.
+    fn html_unavailable(&self) -> Option<String> {
+        Some("input HTML non pris en charge".into())
+    }
 }
 
 /// What `vma-io` reports about a running output (no GStreamer type in the UI).
@@ -217,6 +221,7 @@ impl MainUi {
         let headphones = io.headphones();
         let ndi_unavailable = io.ndi_unavailable();
         let ndi_sources = io.ndi_sources();
+        let html_unavailable = io.html_unavailable();
         let meters = self.engine.audio_meters();
         let levels = |level| meters.read(level);
         let view = View {
@@ -239,6 +244,7 @@ impl MainUi {
                 audio_sinks: &audio_sinks,
                 headphones: headphones.as_ref(),
                 ndi_unavailable: ndi_unavailable.as_deref(),
+                html_unavailable: html_unavailable.as_deref(),
                 ndi_sources: &ndi_sources,
             },
             screens: &screens,

@@ -76,6 +76,33 @@ Les navigateurs ne peignent que sur ces `BeginFrame` (plus d'horloge propre à `
 Options de Chromium fixées par `vma-html` (essai de l'étape 4) : `--ozone-platform=headless`
 (Linux), `--run-all-compositor-stages-before-draw`, `--disable-gpu`.
 
+## 4 bis. Commandes de la page (étape 7)
+Alignées sur l'input navigateur de la référence (documentation publique : adresse, largeur,
+hauteur, **CSS** appliquée au chargement ; changer d'adresse, recharger, page précédente /
+suivante), plus les **données** que le BRIEF demande (mise à jour sans rechargement, D6) :
+
+| Commande (`commands.md`) | Message à `vma-html` | Dans la page |
+|---|---|---|
+| `HtmlData { json }` | `Script` : `window.dispatchEvent(new CustomEvent("vma-data", { detail: (json) }))` | `addEventListener("vma-data", e => … e.detail …)` ; pas de rechargement |
+| `HtmlScript { script }` | `Script` | exécuté tel quel dans le cadre principal |
+| `HtmlReload` | `Reload` | rechargée (sans cache) |
+| `SetHtmlUrl { url }` | `Navigate` | autre page ; l'adresse est gardée pour les ouvertures suivantes |
+| `HtmlBack` / `HtmlForward` | `Back` / `Forward` | historique du navigateur |
+| `InputSpec::Html { css }` | `Create { css }` | une balise `<style>` ajoutée à **chaque** page chargée (à la fin du chargement : la page peut se montrer un instant sans elle) |
+
+Une action pour une page pas encore ouverte (`vma-html` absent, en relance) est perdue, sauf
+l'adresse. Chez la référence, une page reçoit ses données en interrogeant l'API du mélangeur :
+chez VMA ce sera aussi possible avec l'API de la Phase 5.
+
+**UI** : « Ajouter → Page web (HTML)… » (adresse, taille du Program ou taille propre, CSS),
+grisé avec la raison sans `vma-html` (D7) ; réglages de l'input HTML : adresse (identifiants
+masqués) et « Aller », « Recharger », « Précédente », « Suivante », données JSON et
+« Envoyer les données », script et « Exécuter le script ».
+
+**Différences avec la référence, reportées** : cliquer et taper dans la page (souris et
+clavier transmis à CEF) ; une page plus petite que le Program est centrée à sa taille chez la
+référence, mise à l'échelle chez VMA (placement d'un input : « position / zoom », hors Phase 4).
+
 ## 5. Pannes (ADR 0009 § 6)
 Chacune met l'input « signal perdu » avec sa raison ; il repasse en direct avec un **nouveau
 feed** à la première image qui suit.
@@ -102,9 +129,11 @@ jamais).
 | **D7** avec le vrai `vma-html` (Linux) : processus de rendu tué → perdu, rechargé, nouveau feed ; `vma-html` tué → relancé, en direct | `tests/real_helper.rs` | job CI `html` (Linux) |
 | **D4 / D7** avec le moteur réel : la page en overlay sur le Program, incrustée avec son alpha (128, 0, 127 sur du bleu), bleu où la page est vide ; `vma-html` tué → perdu, de nouveau en direct et incrusté, **0 tick manqué** | `io-gst/tests/html.rs` | job CI `html` (Linux, lavapipe) |
 | `InputSpec::Html` : schémas, nom, identifiants jamais écrits | voir [`commands.md`](commands.md) | CI |
+| *(étape 7)* **D6** avec le vrai `vma-html` : donnée montrée **sous 2 images**, page pas rechargée (compteur de chargements inchangé) ; script exécuté ; `HtmlReload` → rechargée, CSS de nouveau appliquée ; autre adresse puis page précédente | `tests/real_helper.rs::a_page_takes_data_and_scripts_without_reloading` | job CI `html` (2 OS) |
+| *(étape 7)* Actions de page à l'hôte : données en événement `vma-data`, adresse gardée pour la relance | `host::tests::page_actions_reach_the_open_page_and_navigate_is_kept` | CI |
+| *(étape 7)* **D9** (HTML) : commandes vers `vma-io` pour un input HTML seulement, JSON vérifié, textes ≤ 64 Kio, adresse gardée ; journalisées en entier sauf identifiants, rejeu → même état ; UI (A11) : ajout, grisé, réglages | `state::tests::html_commands_reach_the_page_of_html_inputs_only`, `control::tests::html_commands_are_journaled_and_replayed`, `ui/tests/switcher.rs` (3) | CI |
 | *(étape 6)* Les ticks du maître arrivent à `vma-html` en `BeginFrame`, un retard ne passe que le dernier | `host::tests::master_ticks_reach_the_helper_as_begin_frames_latest_first` | CI |
 | **D5** (BRIEF « sans saccade ») : page animée (une barre qui avance d'une colonne sur 16 à chaque `requestAnimationFrame`) en overlay, **chaque image du Program** relue sur une sortie pendant 60 s après 3 s de chauffe : chaque image montre l'étape suivante et une seule ; feed de l'input sans image répétée ni sautée ; latence p99 ≤ 2 images ; 0 tick manqué | `io-gst/tests/html.rs::an_animated_page_shows_one_new_step_per_program_picture` (`VMA_D5_SECS`, `VMA_D5_RATE`) | job CI `html` (Linux, lavapipe : 50 sur 60 s, 59,94 sur 20 s) ; machine de dev : 50 / 60 s (3000 / 3000), 25, 29,97, 59,94, 60 / 20 s, 0 fausse |
 
-Hors étapes 5 et 6 : données vers la page et UI d'ajout (7), son (9), UI
-grisée sans `vma-html` (D7, avec l'UI d'ajout à l'étape 7). Jalon visible : `vma --html
+Hors étapes 5 à 7 : son (9). Jalon visible : `vma --html
 page.html`, puis le bouton **1** de sa vignette.
