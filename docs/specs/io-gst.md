@@ -653,3 +653,39 @@ NDI® est une marque déposée de Vizrt NDI AB. ADR 0008.
 | **D3** Image fixe : alpha selon le fichier | `still::tests::png_is_decoded_exactly`, `sixteen_bit_and_grey_pngs_become_rgba8`, `jpeg_is_decoded_approximately` | CI |
 | **D3** NDI® : source BGRA avec alpha → BGRA droit ; source UYVY → opaque | `outputs::tests::an_ndi_source_with_alpha_keeps_it` | conditionnel (`VMA_REQUIRE_NDI`) : machine de dev |
 | Libellé « avec alpha » | `stats_panel::tests::a_source_with_alpha_says_so` | CI |
+
+## Phase 4 — Stinger (ADR 0010 § 5, étape 8, 2026-11-10)
+- **Anneau** (`vma-engine`, `sequence.rs`) : 16 images GPU par emplacement, numérotées d'un
+  passage à l'autre. `vma-io` les remplit d'avance (`StingerSink`, refusé tant que l'anneau est
+  plein ou l'emplacement occupé par le GPU, jamais d'attente du côté du rendu) ; le rendu prend
+  au tick *k* de la transition l'image `floor(k × cadence du fichier / cadence maître)` (*k*
+  quand les cadences sont égales), répète la précédente (comptée) si elle n'est pas décodée,
+  rend ce qu'il a dépassé puis tout le passage à sa fin. Un anneau remplacé n'est échangé
+  qu'entre deux passages et libéré par `vma-control`.
+- **Préchargement** (`io-gst`, `stinger.rs`, un thread par stinger chargé) :
+  `filesrc ! decodebin ! videoconvert ! RGBA ! appsink`, non synchronisé : il décode aussi vite
+  que l'anneau prend les images. Durée et cadence lues une fois préparé (nombre d'images =
+  `round(durée × cadence)`), alpha d'après le format du décodeur ; « prêt » quand les premières
+  images (16 au plus) sont dans l'anneau ; retour au début à chaque fin de fichier. Fichier
+  illisible, sans durée ou sans cadence → `StingerFailed` avec la raison.
+- **Son** (Q7, au Master) : décodé **en entier** au préchargement par un pipeline à part
+  (`decodebin ! audioconvert ! audioresample ! F32 48 kHz stéréo`), aucun pour un fichier sans
+  son ; `vma-audio` en mixe au Master, à 0 dB, les échantillons du tick *k* sur deux bandes après
+  celles des inputs. Écart à l'ADR 0010 § 5 (« un anneau audio comme un input ») : le son d'un
+  stinger est court (2 s ≈ 768 ko) ; tout décodé d'avance, il tombe sur ses images à
+  l'échantillon près, sans rattrapage d'horloge. `vma-io` garde un temps les sons remplacés :
+  `vma-audio` n'en libère jamais.
+- **UI** : boutons de transition et Quick Play : Fade, Cut, Stinger 1, Stinger 2 ; Réglages →
+  « Stingers » : fichier (sélecteur natif), état (« Prêt : 2,00 s, 1920x1080 50p, avec
+  alpha », « Chargement… », erreur), point de bascule (au milieu, ou en ms), vider.
+
+### Critères (étape 8)
+| Critère | Test | Où |
+|---|---|---|
+| Anneau : images dans l'ordre, rempli derrière le lecteur et pour le passage suivant ; image en retard répétée et comptée ; cadence du fichier gardée (25 sur 50, 60 sur 50) ; passage coupé court, fichier trop long | `sequence::tests` (4) | CI |
+| **D8** (temps) : image *k* au tick *t₀ + k*, A puis B au tick de bascule, rien après la dernière ; un tick sauté compte | `sequencer::tests::a_stinger_shows_picture_k_at_tick_k_and_cuts_at_its_cut_tick` | CI |
+| **D8** de bout en bout (GPU) : 20 images, bascule au tick 10, relues sur une sortie : image *k* au tick *t₀ + k*, Program A puis B dessous, B seul après, aucune répétée | `render_loop::a_stinger_plays_picture_by_picture_and_cuts_at_its_tick` | CI |
+| **D8** avec `vma-io` : un fichier sans perte de 20 images numérotées avec alpha (PNG en MOV, fait par le test) préchargé avec son format, image *k* au tick *t₀ + k*, deux fois de suite ; fichier absent → erreur avec raison | `tests/stinger.rs` (2) | CI |
+| **D8** (son) : au Master à l'échantillon près, rien avant, après ni sur les autres bus ; décodé en entier à 48 kHz stéréo ; aucun pour un fichier sans son, sans attente | `audio::tests::the_sound_of_a_stinger_follows_its_pictures_on_the_master`, `stinger::tests` (2) | CI |
+| **D9** (stinger, UI) : bouton → Stinger 1, fichier, état, bascule, vider | `ui/tests/switcher.rs::stingers_are_set_in_the_settings_and_taken_by_the_buttons` | CI |
+

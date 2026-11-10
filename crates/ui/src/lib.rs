@@ -285,6 +285,20 @@ impl MainUi {
                 let spec = match picker.pick {
                     Pick::Input(FileKind::Video) => InputSpec::File { path },
                     Pick::Input(FileKind::Image) => InputSpec::Image { path },
+                    Pick::Input(FileKind::Stinger(slot)) => {
+                        // The cut point set stays.
+                        let cut_point_ms = self.engine.state().load().stinger(slot).cut_point_ms;
+                        let command = Command::SetStinger {
+                            slot,
+                            file: Some(path),
+                            cut_point_ms,
+                        };
+                        if let Err(e) = self.engine.commands().send(Source::Ui, command) {
+                            tracing::warn!(error = %e, "stinger not set");
+                        }
+                        self.picker = None;
+                        return;
+                    }
                     Pick::RecordFolder(output) => {
                         self.switcher.set_record_folder(output, path);
                         self.picker = None;
@@ -330,6 +344,9 @@ fn open_dialog(pick: Pick, ctx: egui::Context) -> Option<Picker> {
                 FileKind::Image => rfd::FileDialog::new()
                     .set_title("Ajouter une image")
                     .add_filter("Images", &["png", "jpg", "jpeg"]),
+                FileKind::Stinger(slot) => rfd::FileDialog::new()
+                    .set_title(format!("Fichier du stinger {}", slot.number()))
+                    .add_filter("Vidéos avec alpha", &["webm", "mov", "mkv", "mp4", "avi"]),
             };
             let _ = tx.send(dialog.add_filter("Tous les fichiers", &["*"]).pick_file());
             ctx.request_repaint();

@@ -1630,3 +1630,78 @@ fn the_settings_of_an_html_input_drive_its_page() {
         }]
     );
 }
+
+/// Phase 4 step 8 (D9, A11): a transition button takes a stinger; « Réglages » sets the file
+/// of a stinger (native dialog), its cut point, and empties it; its state is shown.
+#[test]
+fn stingers_are_set_in_the_settings_and_taken_by_the_buttons() {
+    use vma_engine::{Effect, StingerSlot};
+    let one = StingerSlot::new(1).unwrap();
+    let mut state = state();
+    state
+        .apply(&Command::SetStinger {
+            slot: one,
+            file: Some("/clips/wipe.webm".into()),
+            cut_point_ms: None,
+        })
+        .unwrap();
+    state.apply_event(&vma_engine::Event::StingerReady {
+        slot: one,
+        file: "/clips/wipe.webm".into(),
+        frames: 100,
+        rate: FrameRate::FPS_50,
+        resolution: Resolution::HD_1080,
+        alpha: vma_core::AlphaMode::Straight,
+    });
+    let mut h = harness(state);
+    let mut buttons: Vec<_> = h
+        .get_all_by_role_and_label(Role::Button, "1 · Fade 0,5 s")
+        .collect();
+    buttons.remove(0).click_secondary();
+    h.run();
+    h.get_by_role_and_label(Role::RadioButton, "Stinger 1")
+        .click();
+    h.run();
+    assert_eq!(
+        h.state().sent(),
+        [Command::SetTransition {
+            button: 1,
+            effect: Effect::Stinger(one),
+            duration_ms: 500,
+        }]
+    );
+    h.key_press(egui::Key::Escape);
+    h.run();
+
+    h.get_by_label("Réglages").click();
+    h.run();
+    h.get_by_label("wipe.webm");
+    h.get_by_label("Prêt : 2,00 s, 1920x1080 50p, avec alpha");
+    h.get_by_label("Fichier du stinger 2…").click();
+    h.run();
+    assert_eq!(
+        h.state().files,
+        [vma_ui::FileKind::Stinger(StingerSlot::new(2).unwrap())]
+    );
+    h.get_by_label("Bascule au milieu (1)").click();
+    h.run();
+    assert_eq!(
+        h.state().sent(),
+        [Command::SetStinger {
+            slot: one,
+            file: Some("/clips/wipe.webm".into()),
+            cut_point_ms: Some(1_000),
+        }],
+        "half the file, now set"
+    );
+    h.get_by_label("Vider le stinger 1").click();
+    h.run();
+    assert_eq!(
+        h.state().sent(),
+        [Command::SetStinger {
+            slot: one,
+            file: None,
+            cut_point_ms: None,
+        }]
+    );
+}

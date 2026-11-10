@@ -282,6 +282,26 @@ apportées en codant (à relire) :
   `IoRequest::Html { input, action }` vers `vma-io`. `InputSpec::Html` gagne `css` (absent du
   journal quand il vaut `None`). Détail : [`io-html.md`](io-html.md) § 4 bis.
 
+## Phase 4 — Stinger (étape 8, 2026-11-10)
+- **`StingerSlot`** (1 ou 2, écrit par son numéro ; 0 ou 3 refusés à la lecture) ;
+  **`Effect::Stinger(slot)`** (`{"Stinger":1}`) pour les boutons de transition et Quick Play
+  (pas pour les overlays : `OverlayEffect`) ; sa durée est celle du fichier (celle du réglage
+  n'est pas utilisée).
+- **`SetStinger { slot, file, cut_point_ms }`** : un nouveau fichier → `Loading` et
+  `IoRequest::LoadStinger` ; `None` → vide (`UnloadStinger`) ; même fichier → seul le point de
+  bascule change (refusé s'il dépasse la fin d'un fichier déjà chargé : `CutPointBeyondEnd`).
+  `cut_point_ms: None` = la moitié du fichier (observation de la référence). Refusé pendant
+  que ce stinger joue (`StingerInUse`).
+- **État** : `State::stingers` (fichier, point de bascule, `StingerStatus` : `Empty`,
+  `Loading`, `Ready { frames, rate, resolution, alpha }`, `Failed { reason }`), relu vide dans
+  un état d'avant. Événements `StingerReady` / `StingerFailed` de `vma-io`, journalisés,
+  ignorés s'ils portent sur un autre fichier que celui de l'emplacement.
+- **Une transition stinger** est refusée avec la raison tant que le stinger est vide, en
+  chargement, en erreur ou avec un point de bascule au-delà de la fin. Elle dure
+  `ceil(images × cadence maître / cadence du fichier)` ticks ; la bascule A → B tombe au tick
+  `round(point de bascule × cadence maître)` (au plus le dernier).
+- **Sur la T-Bar**, l'effet stinger agit comme un Cut (bascule à mi-course, pas d'images).
+
 ## Critères d'acceptation
 | Critère | Test |
 |---|---|
@@ -299,6 +319,7 @@ apportées en codant (à relire) :
 | *(Phase 2)* **B13** côté moteur : ni la clé ni la phrase de passe dans le journal, les logs (niveau TRACE) ou l'état sérialisé ; rejeu refusé sans la clé | `control::tests::secrets_never_reach_the_journal_the_logs_nor_the_published_state` |
 | *(Phase 2, étape 9)* **B14** côté état et contrôle : perte journalisée une fois, démarrages refusés, sorties qui produisent finalisées au bout du délai (pas avant, une fois), sorties en erreur ou à l'arrêt intactes | `state::tests::a_lost_gpu_refuses_starts_then_finalises_what_runs`, `control::tests::a_lost_gpu_is_journaled_and_finalises_the_outputs_after_the_grace` (temps simulé) |
 | *(Phase 4, étape 5)* Input HTML : schémas acceptés et refusés, nom par défaut, identifiants jamais écrits (journal, `Debug`), relu sans eux | `command::tests::html_inputs_take_web_and_file_addresses_only`, `html_inputs_are_named_after_their_page`, `credentials_in_an_html_address_are_never_written` |
+| *(Phase 4, étape 8)* Stinger : préchargement, refus avec raison (vide, en chargement, en erreur, bascule au-delà de la fin), durée du fichier aux cadences maître, bascule par défaut au milieu, changement refusé pendant qu'il joue, écriture des commandes ; overlays sans stinger | `state::tests::a_stinger_plays_once_preloaded_for_the_length_of_its_file`, `a_stinger_cut_point_is_set_in_ms_and_checked_against_its_length`, `stinger_commands_and_effects_are_written_with_the_slot_number`, `overlays_do_not_take_a_stinger` |
 | *(Phase 2, étape 8)* Plein écran : en marche sans `vma-io`, une seule, réglages figés en marche, type figé, arrêt et suppression sans requête, drapeau du plan | `state::tests::the_full_screen_runs_without_io_and_sets_the_plan`, `plan::tests::encoding_round_trips` |
 | *(Phase 3, étape 4)* Audio : défauts par type d'input, chaque commande, refus sans effet (input sans son, inconnu, hors bornes), bus des sorties (figé en marche, refusé au plein écran) | `state::tests::{inputs_with_sound_get_their_default_settings, audio_commands_change_the_settings, audio_commands_are_refused_without_effect, outputs_carry_their_bus}` |
 | *(Phase 3, étape 6)* Input SRT : réglages validés, phrase de passe jamais écrite | `state::tests::srt_inputs_are_checked`, `control::tests::secrets_never_reach_the_journal_the_logs_nor_the_published_state` |

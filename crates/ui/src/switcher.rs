@@ -24,6 +24,7 @@ mod mixer;
 mod ndi_input;
 mod outputs;
 mod srt_input;
+mod stinger;
 
 /// Width of the transition column.
 const COLUMN_WIDTH: f32 = 150.0;
@@ -89,6 +90,8 @@ pub struct CaptureChoice {
 pub enum FileKind {
     Video,
     Image,
+    /// The file of a stinger slot.
+    Stinger(vma_engine::StingerSlot),
 }
 
 /// What the switcher shows about the inputs fed by `vma-io` (capture, files).
@@ -552,8 +555,9 @@ impl Switcher {
         let mut effect = setting.effect;
         let mut duration = setting.duration_ms;
         ui.horizontal(|ui| {
-            ui.radio_value(&mut effect, Effect::Fade, "Fade");
-            ui.radio_value(&mut effect, Effect::Cut, "Cut");
+            for e in stinger::EFFECTS {
+                ui.radio_value(&mut effect, e, describe_effect(e));
+            }
         });
         ui.add_enabled(
             effect == Effect::Fade,
@@ -968,8 +972,9 @@ impl Switcher {
                 let qp = state.quick_play;
                 let (mut effect, mut duration) = (qp.effect, qp.duration_ms);
                 ui.horizontal(|ui| {
-                    ui.radio_value(&mut effect, Effect::Fade, "Fade");
-                    ui.radio_value(&mut effect, Effect::Cut, "Cut");
+                    for e in stinger::EFFECTS {
+                        ui.radio_value(&mut effect, e, describe_effect(e));
+                    }
                     ui.add_enabled(
                         effect == Effect::Fade,
                         egui::DragValue::new(&mut duration)
@@ -1040,6 +1045,9 @@ impl Switcher {
                         }
                     }
                 });
+
+                ui.separator();
+                self.stinger_settings(ui, view);
 
                 ui.separator();
                 ui.label(RichText::new("Mixage des Fade").strong());

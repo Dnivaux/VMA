@@ -39,6 +39,16 @@ est composé de deux calques mélangés (Cut, Fade, T-Bar), puis l'étage de sor
    fond connu, comparées **au code près** (pas seulement au PSNR) ; les golden des Phases 1 à 3
    ne changent pas.
 
+## Mise en œuvre (étape 8, 2026-11-10)
+Détail dans [`io-gst.md`](../specs/io-gst.md), « Phase 4 — Stinger ». Précisions et un écart :
+- **Cadence du fichier** : au tick *k*, l'image `floor(k × cadence du fichier / cadence
+  maître)`, donc *k* à cadence égale (le cas d'un stinger fait pour la production) ; un
+  fichier à une autre cadence garde sa vitesse (images répétées ou sautées, pas accélérées).
+- **T-Bar** : un stinger y agit comme un Cut.
+- **Écart (§ 5, son)** : le son d'un stinger est décodé en entier au préchargement et mixé
+  au Master à l'échantillon du tick, pas lu dans un anneau horodaté comme un input : un
+  stinger est court, et tout son son est disponible d'avance.
+
 ## Options écartées
 - **Alpha droit dans les calques** : chaque passe redivise par α, franges au scaling.
 - **Composition en lumière linéaire** : différente de ce que montrent les pages web et les

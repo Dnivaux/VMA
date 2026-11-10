@@ -400,6 +400,8 @@ pub enum Rejection {
     CutPointBeyondEnd { cut_ms: u32, duration_ms: u32 },
     #[error("{0} is playing")]
     StingerInUse(StingerSlot),
+    #[error("an overlay enters and leaves by Cut or Fade only")]
+    OverlayEffect,
     #[error("the data for the page is not valid JSON: {0}")]
     InvalidJson(String),
 }
@@ -1309,6 +1311,9 @@ impl State {
                 effect,
                 duration_ms,
             } => {
+                if let Effect::Stinger(_) = effect {
+                    return Err(Rejection::OverlayEffect);
+                }
                 let setting = valid_setting(*effect, *duration_ms)?;
                 self.overlay_mut(*channel).transition = setting;
                 Ok(Change::changed())
@@ -2204,6 +2209,22 @@ mod tests {
             .unwrap();
         assert_eq!(io, [IoRequest::UnloadStinger { slot: sting(2) }]);
         assert_eq!(s.stinger(sting(2)).status, StingerStatus::Empty);
+    }
+
+    #[test]
+    fn overlays_do_not_take_a_stinger() {
+        let mut s = state();
+        assert_eq!(
+            refused(
+                &mut s,
+                Command::SetOverlayTransition {
+                    channel: channel(1),
+                    effect: Effect::Stinger(sting(1)),
+                    duration_ms: 0
+                }
+            ),
+            Rejection::OverlayEffect
+        );
     }
 
     #[test]
