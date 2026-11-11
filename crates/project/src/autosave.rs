@@ -2,7 +2,8 @@
 //! when VMA closes, on the `vma-project` thread (never on `vma-control` nor the render
 //! thread). [`AUTOSAVE_KEEP`] files turn in the folder: `autosave-1.vma` is the newest; a new
 //! one is started when it is older than [`ROTATE_AFTER`], so the older files keep the state
-//! of the show some minutes back.
+//! of the show some minutes back. A project loaded (or « Nouveau ») always starts a new
+//! one: the show it replaced stays in the next file.
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, RecvTimeoutError};
@@ -57,9 +58,11 @@ impl Autosaver {
         secrets: Arc<Mutex<Secrets>>,
     ) -> std::io::Result<Self> {
         let (stop, stopped) = mpsc::channel();
+        // Taken here, not on the thread: a change made right after `spawn` is a change.
+        let initial = state.load();
         let thread = std::thread::Builder::new()
             .name("vma-project".into())
-            .spawn(move || run(&state, &folder, &secrets, &stopped))?;
+            .spawn(move || run(&state, &initial, &folder, &secrets, &stopped))?;
         Ok(Self {
             stop: Some(stop),
             thread: Some(thread),
@@ -87,10 +90,18 @@ impl Drop for Autosaver {
     }
 }
 
-fn run(state: &StateReader, folder: &Path, secrets: &Mutex<Secrets>, stopped: &mpsc::Receiver<()>) {
-    let mut version = state.load().version;
-    let mut saved = state.load().project();
+fn run(
+    state: &StateReader,
+    initial: &vma_engine::State,
+    folder: &Path,
+    secrets: &Mutex<Secrets>,
+    stopped: &mpsc::Receiver<()>,
+) {
+    let mut version = initial.version;
+    let mut loads = initial.project_loads;
+    let mut saved = initial.project();
     let mut pending: Option<(ProjectSnapshot, Instant)> = None;
+    let mut rotate = false;
     loop {
         let stopping = match stopped.recv_timeout(LOOK_EVERY) {
             Err(RecvTimeoutError::Timeout) => false,
@@ -99,6 +110,10 @@ fn run(state: &StateReader, folder: &Path, secrets: &Mutex<Secrets>, stopped: &m
         let now = state.load();
         if now.version != version {
             version = now.version;
+            if now.project_loads != loads {
+                loads = now.project_loads;
+                rotate = true;
+            }
             let project = now.project();
             if project != saved {
                 pending = Some((project, Instant::now()));
@@ -110,7 +125,7 @@ fn run(state: &StateReader, folder: &Path, secrets: &Mutex<Secrets>, stopped: &m
             .as_ref()
             .is_some_and(|(_, since)| stopping || since.elapsed() >= AUTOSAVE_DELAY);
         if due && let Some((project, _)) = pending.take() {
-            match save(folder, &project, secrets) {
+            match save(folder, &project, secrets, std::mem::take(&mut rotate)) {
                 Ok(()) => saved = project,
                 Err(e) => {
                     tracing::warn!(folder = %folder.display(), error = %e, "autosave failed");
@@ -125,7 +140,12 @@ fn run(state: &StateReader, folder: &Path, secrets: &Mutex<Secrets>, stopped: &m
     }
 }
 
-fn save(folder: &Path, project: &ProjectSnapshot, secrets: &Mutex<Secrets>) -> std::io::Result<()> {
+fn save(
+    folder: &Path,
+    project: &ProjectSnapshot,
+    secrets: &Mutex<Secrets>,
+    rotate: bool,
+) -> std::io::Result<()> {
     let mut secrets = secrets.lock().unwrap_or_else(PoisonError::into_inner);
     let text = to_json(project, None, &mut secrets).map_err(std::io::Error::other)?;
     let newest = file(folder, 1);
@@ -134,7 +154,7 @@ fn save(folder: &Path, project: &ProjectSnapshot, secrets: &Mutex<Secrets>) -> s
         .ok()
         .and_then(|t| SystemTime::now().duration_since(t).ok())
         .is_some_and(|age| age >= ROTATE_AFTER);
-    if old {
+    if old || rotate {
         for n in (1..AUTOSAVE_KEEP).rev() {
             let from = file(folder, n);
             if from.exists() {

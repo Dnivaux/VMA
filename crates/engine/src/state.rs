@@ -698,6 +698,9 @@ pub struct State {
     /// What the last [`Command::LoadProject`] could not load (empty: all of it).
     #[serde(default)]
     pub load_problems: Vec<LoadProblem>,
+    /// Projects loaded since the start (+1 for every [`Command::LoadProject`]).
+    #[serde(default)]
+    pub project_loads: u64,
     /// Seed of the keys of new inputs ([`Command::SeedInputKeys`]).
     #[serde(default)]
     key_seed: u64,
@@ -768,6 +771,7 @@ impl State {
             overlays: Default::default(),
             stingers: Default::default(),
             load_problems: Vec::new(),
+            project_loads: 0,
             key_seed: 0,
             next_input: 1,
             next_transition: 1,
@@ -2148,6 +2152,7 @@ impl State {
         }
 
         self.load_problems = load.problems;
+        self.project_loads += 1;
         Ok(Change {
             changed: true,
             io: load.io,

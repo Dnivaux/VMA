@@ -25,7 +25,8 @@ L'interface de VMA a été disposée d'après le guide public de la référence 
 1040, six inputs, un overlay ; les vues montrent des aplats à la place de la vidéo). Les
 boutons ont des icônes ; les couleurs et la police sont encore celles par défaut.
 
-Ce qu'on y voit : Preview à gauche, Program à droite, au centre Quick Play, Cut, les 4 boutons
+Ce qu'on y voit : en haut à gauche, le projet (Nouveau, Ouvrir, Sauvegarder, Sauvegarder sous,
+Dernier) ; Preview à gauche, Program à droite, au centre Quick Play, Cut, les 4 boutons
 de transition (la petite flèche à côté : effet et durée), FTB, T-Bar, puis les 4 overlays ; en bas, les
 inputs sur plusieurs rangées (titre, vignette, puis en icônes : fermer, Quick Play, Cut,
 boucle ; 1 2 3 4 ; son) et le mélangeur à

@@ -32,7 +32,8 @@
    le relatif d'abord, puis l'absolu.
 6. **Clés de stream** : jamais dans le projet. Elles vont dans `secrets.json`, dans le dossier
    de configuration de l'utilisateur (droits du seul utilisateur sous Unix), indexées par
-   l'adresse de la destination ; une destination chargée retrouve sa clé sur la même machine,
+   le nom et l'adresse de la destination (deux streams vers le même serveur ont chacun leur
+   clé) ; une destination chargée retrouve sa clé sur la même machine,
    arrive sans clé ailleurs (signalé dans Sorties). Pas de trousseau du système : absent ou
    verrouillé sur certains postes, il ferait échouer un chargement.
 7. **Écriture** sur un thread à part (`vma-project`) : fichier temporaire, `fsync`,

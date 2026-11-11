@@ -243,7 +243,11 @@ impl<'a> App<'a> {
         }
         let autosaver = if options.autosave {
             let folder = startup.config_folder.join("autosave");
-            match vma_project::Autosaver::spawn(engine.state(), folder, startup.secrets) {
+            match vma_project::Autosaver::spawn(
+                engine.state(),
+                folder,
+                Arc::clone(&startup.secrets),
+            ) {
                 Ok(saver) => Some(saver),
                 Err(e) => {
                     tracing::error!(error = %e, "autosave not started");
@@ -423,6 +427,11 @@ impl<'a> App<'a> {
             adapter,
             Box::new(Io(io, options.headphones)),
             screens,
+            vma_ui::ProjectFiles::new(
+                startup.secrets,
+                startup.config_folder,
+                options.project.clone(),
+            ),
         );
         if let Some((options, mut context)) = soak_context {
             context.fullscreen = ui.fullscreen_stats();

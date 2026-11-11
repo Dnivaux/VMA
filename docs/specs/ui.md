@@ -317,3 +317,16 @@ Palette et police : ADR 0011, ouvertes.
 | *(Phase 3, étape 5)* **C12** côté UI : micro ajouté depuis le menu, vignette son seul, périphérique du casque choisi, état du casque | `switcher::{a_microphone_is_added_from_the_menu, a_sound_only_card, the_headphones_device_is_chosen_and_its_trouble_shown}` |
 | *(Phase 3, étape 4)* **C7** côté UI : les vumètres affichent crête et RMS mesurés, « pas de son » sinon | `switcher::meters_show_the_levels` |
 | Utilisation réelle : chaque type d'input, Quick Play, Cut, 4 boutons, T-Bar, contrôles vidéo, à la souris et au clavier ; sélecteur de fichier natif (Linux, Windows) | checklist `docs/manual-tests/phase1-inputs.md` |
+
+## Barre de projet (Phase 5, ADR 0013)
+En haut à gauche, comme chez la référence : **Nouveau**, **Ouvrir** (menu : « Ouvrir un
+projet… » et les projets récents), **Sauvegarder**, **Sauvegarder sous**, **Dernier** (menu :
+les sauvegardes automatiques, « il y a 3 min »), puis le nom du projet (« Sans titre »),
+suivi de « • » s'il a des changements non sauvegardés. « Sauvegarder », pas « Enregistrer » :
+« Enregistrer » est l'enregistrement vidéo, dans la barre du bas.
+- Remplacer l'émission (Nouveau, Ouvrir, Dernier) demande confirmation si elle a des
+  changements non sauvegardés ou si des sorties tournent (elles sont nommées, puis arrêtées
+  avant le chargement) ; sauvegarder ne demande rien.
+- Les fichiers sont lus et écrits sur des threads à part : l'UI continue de dessiner.
+- Ce qu'un projet n'a pas pu charger s'affiche dans une fenêtre (quoi, pourquoi) ; les
+  nouvelles (sauvegardé, ouverture impossible) dans la barre du haut.

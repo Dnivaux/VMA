@@ -21,8 +21,8 @@ use vma_engine::{
     MeterReading, MixDomain, Source, State, Timeline,
 };
 use vma_ui::{
-    AudioView, CaptureChoice, FileKind, HeadphonesActivity, Images, IoView, OutputActivity, Screen,
-    Switcher, View,
+    AudioView, CaptureChoice, FileKind, HeadphonesActivity, Images, IoView, OutputActivity,
+    ProjectNotice, ProjectRequest, ProjectView, Screen, Switcher, View,
 };
 
 struct Rig {
@@ -58,6 +58,12 @@ struct Rig {
     pictures: Option<[egui::TextureHandle; 3]>,
     /// Draw them (`harness_on(_, true)`).
     render: bool,
+    /// The project bar: what it shows, what it asked.
+    project_path: Option<std::path::PathBuf>,
+    project_modified: bool,
+    project_recent: Vec<std::path::PathBuf>,
+    project_notice: Option<ProjectNotice>,
+    project_requests: Vec<ProjectRequest>,
 }
 
 impl Rig {
@@ -138,6 +144,11 @@ fn harness_on(state: State, render: bool) -> Harness<'static, Rig> {
         html_unavailable: None,
         pictures: None,
         render,
+        project_path: None,
+        project_modified: false,
+        project_recent: Vec::new(),
+        project_notice: None,
+        project_requests: Vec::new(),
     };
     let builder = Harness::builder()
         // A 1080p screen: the inputs and the mixer side by side.
@@ -203,8 +214,17 @@ fn harness_on(state: State, render: bool) -> Harness<'static, Rig> {
                 audio: AudioView {
                     levels: &rig.levels,
                 },
+                project: ProjectView {
+                    path: rig.project_path.as_deref(),
+                    modified: rig.project_modified,
+                    recent: &rig.project_recent,
+                    autosaves: &[],
+                    notice: rig.project_notice.as_ref(),
+                },
             };
             rig.switcher.show(ui, &view);
+            rig.project_requests
+                .extend(rig.switcher.take_project_request());
             rig.files.extend(rig.switcher.take_file_request());
             rig.folders.extend(rig.switcher.take_folder_request());
         },
@@ -1942,4 +1962,103 @@ fn screenshot_of_the_main_window() {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/ui-screenshots");
     std::fs::create_dir_all(&dir).unwrap();
     picture.save(dir.join("main.png")).unwrap();
+}
+
+/// Phase 5 (ADR 0013): the project bar, top left; a show is not replaced without asking if
+/// it has changes or outputs run; saving never asks.
+#[test]
+fn the_project_bar_asks_before_replacing_a_show() {
+    let mut h = harness(state());
+    for label in [
+        "Nouveau",
+        "Ouvrir",
+        "Sauvegarder",
+        "Sauvegarder sous",
+        "Dernier",
+        "Sans titre",
+    ] {
+        assert!(h.query_by_label(label).is_some(), "{label}");
+    }
+    h.get_by_label("Nouveau").click();
+    h.run();
+    assert_eq!(h.state().project_requests, [ProjectRequest::New]);
+
+    let mut h = harness(state());
+    h.state_mut().project_modified = true;
+    h.state_mut().project_path = Some("/émissions/match.vma".into());
+    h.run();
+    assert!(
+        h.query_by_label("match.vma •").is_some(),
+        "marked as changed"
+    );
+    h.get_by_label("Nouveau").click();
+    h.run();
+    assert!(h.state().project_requests.is_empty(), "asked first");
+    h.get_by_label("Annuler").click();
+    h.run();
+    assert!(h.query_by_label("Continuer").is_none());
+    assert!(h.state().project_requests.is_empty());
+    h.get_by_label("Nouveau").click();
+    h.run();
+    h.get_by_label("Continuer").click();
+    h.run();
+    assert_eq!(h.state().project_requests, [ProjectRequest::New]);
+    h.get_by_label("Sauvegarder").click();
+    h.run();
+    h.get_by_label("Sauvegarder sous").click();
+    h.run();
+    assert_eq!(
+        h.state().project_requests,
+        [
+            ProjectRequest::New,
+            ProjectRequest::Save,
+            ProjectRequest::SaveAs
+        ]
+    );
+
+    let (running, _) = with_fullscreen(state(), "DP-2", true);
+    let mut h = harness(running);
+    h.state_mut().project_recent = vec!["/émissions/finale.vma".into()];
+    h.run();
+    h.get_by_label("Ouvrir").click();
+    h.run();
+    h.get_by_label("finale.vma").click();
+    h.run();
+    assert!(
+        h.query_by_label_contains("seront arrêtées d'abord")
+            .is_some(),
+        "the outputs that run are named"
+    );
+    h.get_by_label("Continuer").click();
+    h.run();
+    assert_eq!(
+        h.state().project_requests,
+        [ProjectRequest::Open(Some("/émissions/finale.vma".into()))]
+    );
+    assert!(h.state().sent().is_empty(), "the caller stops the outputs");
+}
+
+/// What a project could not load is shown once it is opened; news of the bar in the top bar.
+#[test]
+fn what_a_project_could_not_load_is_shown() {
+    let mut s = state();
+    s.project_loads = 1;
+    s.load_problems = vec![vma_engine::LoadProblem {
+        what: "Caméra 2".into(),
+        reason: "invalid input settings".into(),
+    }];
+    let mut h = harness(s);
+    assert!(h.query_by_label("Caméra 2").is_some());
+    assert!(h.query_by_label("invalid input settings").is_some());
+
+    h.state_mut().project_notice = Some(ProjectNotice {
+        id: 1,
+        text: "Projet sauvegardé : /émissions/match.vma".into(),
+        error: false,
+    });
+    h.run();
+    assert!(
+        h.query_by_label("Projet sauvegardé : /émissions/match.vma")
+            .is_some()
+    );
 }

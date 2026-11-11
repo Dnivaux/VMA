@@ -4806,6 +4806,7 @@ dependencies = [
  "vma-compositor",
  "vma-core",
  "vma-engine",
+ "vma-project",
 ]
 
 [[package]]

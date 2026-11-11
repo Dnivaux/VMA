@@ -244,3 +244,46 @@ fn the_show_is_saved_after_a_change_and_at_the_close() {
     assert_eq!(opened.inputs[1].name, "Logo 2");
     assert_eq!(autosaves(&dir).len(), 1, "a young file is written over");
 }
+
+/// A project loaded starts a new autosave: the show it replaced is kept in the next file.
+#[test]
+fn the_show_a_project_replaced_stays_in_the_autosaves() {
+    let dir = folder("replaced");
+    let mut state = show(&dir);
+    let (reader, publisher) = StateReader::standalone(state.clone());
+    let secrets = Arc::new(Mutex::new(Secrets::default()));
+    let saver = Autosaver::spawn(reader, dir.clone(), secrets).unwrap();
+    let first = state.inputs[0].id;
+    state
+        .apply(&Command::RenameInput {
+            input: first,
+            name: "Avant".into(),
+        })
+        .unwrap();
+    publisher.publish(state.clone());
+    std::thread::sleep(Duration::from_millis(300));
+    saver.finish();
+    let before = state.project();
+
+    let (reader, publisher) = StateReader::standalone(state.clone());
+    let saver = Autosaver::spawn(
+        reader,
+        dir.clone(),
+        Arc::new(Mutex::new(Secrets::default())),
+    )
+    .unwrap();
+    state.apply(&ProjectSnapshot::empty(HD50).load()).unwrap();
+    publisher.publish(state.clone());
+    std::thread::sleep(Duration::from_millis(300));
+    saver.finish();
+
+    let files = autosaves(&dir);
+    assert_eq!(files.len(), 2, "{files:?}");
+    let secrets = Secrets::default();
+    assert_eq!(
+        open(&files[0], &secrets).unwrap(),
+        ProjectSnapshot::empty(HD50)
+    );
+    let kept = open(&files[1], &secrets).unwrap();
+    assert_eq!(kept.inputs, before.inputs);
+}

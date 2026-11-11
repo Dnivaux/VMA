@@ -25,8 +25,11 @@ mod icons;
 mod mixer;
 mod ndi_input;
 mod outputs;
+mod project_bar;
 mod srt_input;
 mod stinger;
+
+pub use project_bar::{ProjectNotice, ProjectRequest, ProjectView};
 
 /// Width of the transition column.
 const COLUMN_WIDTH: f32 = 150.0;
@@ -178,6 +181,8 @@ pub struct View<'a> {
     /// Last command refused by the engine.
     pub rejection: Option<&'a RejectionNotice>,
     pub audio: AudioView<'a>,
+    /// The show's project file (ADR 0013).
+    pub project: ProjectView<'a>,
 }
 
 /// What the switcher reads of the audio mixer.
@@ -246,6 +251,7 @@ pub struct Switcher {
     thumbs: ThumbSize,
     /// The SVG loader of the icons is installed.
     icons_ready: bool,
+    project: project_bar::ProjectUi,
 }
 
 /// Size of the input thumbnails, as the reference lets the operator choose it.
@@ -299,6 +305,7 @@ impl Default for Switcher {
             about_open: false,
             thumbs: ThumbSize::default(),
             icons_ready: false,
+            project: project_bar::ProjectUi::default(),
         }
     }
 }
@@ -324,9 +331,12 @@ impl Switcher {
         }
         self.shortcuts(ui, view);
 
-        // Top: messages on the left, « Réglages » on the right (as in the reference).
+        // Top: the project and messages on the left, « Réglages » on the right (as in the
+        // reference).
         egui::Panel::top("toolbar").show(ui, |ui| {
             ui.horizontal(|ui| {
+                self.project_bar(ui, view);
+                ui.separator();
                 if let Some(reason) = view.io.unavailable {
                     ui.label(
                         RichText::new("GStreamer introuvable : caméras et vidéos désactivées")
@@ -414,6 +424,7 @@ impl Switcher {
         });
 
         self.input_settings_window(ui, view);
+        self.project_windows(ui, view);
         self.settings_window(ui, view);
         self.outputs_window(ui, view);
         self.srt_input_window(ui, view);

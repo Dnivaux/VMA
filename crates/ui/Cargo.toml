@@ -17,6 +17,7 @@ egui-lucide.workspace = true
 egui_extras.workspace = true
 rfd.workspace = true
 tracing.workspace = true
+vma-project.workspace = true
 
 [dev-dependencies]
 # Headless egui tests driven through AccessKit (test only, not in the binary).

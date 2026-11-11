@@ -6,6 +6,7 @@
 
 mod fullscreen;
 mod output_stats;
+mod project;
 mod stats_panel;
 mod switcher;
 mod tally;
@@ -15,7 +16,11 @@ pub use fullscreen::{
     screen_index,
 };
 pub use output_stats::{OutputStatsRow, output_stats};
-pub use switcher::{AudioView, CaptureChoice, FileKind, Images, IoView, Switcher, View};
+pub use project::ProjectFiles;
+pub use switcher::{
+    AudioView, CaptureChoice, FileKind, Images, IoView, ProjectNotice, ProjectRequest, ProjectView,
+    Switcher, View,
+};
 pub use tally::{TALLY_PREVIEW, TALLY_PROGRAM, Tally};
 
 use std::path::PathBuf;
@@ -132,6 +137,7 @@ pub struct MainUi {
     /// Dropped after the engine: `vma-control` stops sending requests to `vma-io` first.
     io: Box<dyn IoStatus>,
     picker: Option<Picker>,
+    project: ProjectFiles,
 }
 
 impl MainUi {
@@ -142,6 +148,7 @@ impl MainUi {
         adapter: String,
         io: Box<dyn IoStatus>,
         screens: Screens,
+        project: ProjectFiles,
     ) -> Self {
         let Readers {
             program,
@@ -162,6 +169,7 @@ impl MainUi {
             adapter,
             io,
             picker: None,
+            project,
         }
     }
 
@@ -252,8 +260,11 @@ impl MainUi {
             fade_to_black: self.engine.feedback().fade_to_black(),
             rejection: rejection.as_deref(),
             audio: AudioView { levels: &levels },
+            project: self.project.view(),
         };
         self.switcher.show(ui, &view);
+        let request = self.switcher.take_project_request();
+        self.project.update(request, &self.engine, ui.ctx());
         self.fullscreen
             .show(ui.ctx(), &state, &self.engine.state(), &screens, &commands);
         self.files(ui.ctx());

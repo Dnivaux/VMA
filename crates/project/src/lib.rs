@@ -236,3 +236,28 @@ pub fn write_atomic(path: &Path, bytes: &[u8], private: bool) -> std::io::Result
     drop(file);
     fs::rename(&temporary, path)
 }
+
+/// Recent projects kept.
+pub const RECENT_KEEP: usize = 8;
+
+/// The recent projects of `path` (`recent.json` of VMA's folder), newest first; empty if it
+/// cannot be read.
+pub fn load_recent(path: &Path) -> Vec<PathBuf> {
+    fs::read_to_string(path)
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default()
+}
+
+/// Puts `project` first in `recent`, once, at most [`RECENT_KEEP`].
+pub fn remember(recent: &mut Vec<PathBuf>, project: &Path) {
+    recent.retain(|p| p != project);
+    recent.insert(0, project.to_owned());
+    recent.truncate(RECENT_KEEP);
+}
+
+/// Writes the recent projects (atomic).
+pub fn save_recent(path: &Path, recent: &[PathBuf]) -> std::io::Result<()> {
+    let bytes = serde_json::to_vec_pretty(recent).map_err(std::io::Error::other)?;
+    write_atomic(path, &bytes, false)
+}
