@@ -253,5 +253,8 @@ la crate Phosphor n'est pas encore à egui 0.37), formes et textes propres à VM
 **Placement décidé par le mainteneur (2026-11-10)** : après la revue de la Phase 4 ; l'essai CEF
 (étape 4) passe d'abord. Hors du périmètre de la Phase 4 (BRIEF §10) : n'avance que sur demande.
 
-## Phase 5 — Contrôle et monitoring · ⬜
+## Phase 5 — Contrôle et monitoring · *spec proposée le 2026-11-11, en attente de validation*
+Spec et plan : [`phase-5.md`](docs/specs/phase-5.md) (projet, API compat HTTP / TCP et native,
+tally, MultiView ; critères E1–E14, questions Q1–Q16) ; fonctions de l'API compat vérifiées
+dans la documentation publique : [`api-compat.md`](docs/specs/api-compat.md).
 ## Phase 6 — Sport · ⬜
