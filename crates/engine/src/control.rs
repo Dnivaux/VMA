@@ -38,11 +38,26 @@ pub enum SendError {
     Stopped,
 }
 
-#[derive(Debug)]
 pub(crate) struct Envelope {
     id: CommandId,
     source: Source,
     command: Command,
+    /// Told the outcome once the command is applied (the API answers its client with it).
+    reply: Option<Reply>,
+}
+
+/// What [`CommandSender::send_then`] calls with the outcome of its command.
+pub type Reply = Box<dyn FnOnce(CommandId, &Outcome) + Send>;
+
+impl std::fmt::Debug for Envelope {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Envelope")
+            .field("id", &self.id)
+            .field("source", &self.source)
+            .field("command", &self.command)
+            .field("reply", &self.reply.is_some())
+            .finish()
+    }
 }
 
 /// Sends commands to `vma-control`. Clonable; never blocks.
@@ -73,11 +88,32 @@ impl CommandSender {
     }
 
     pub fn send(&self, source: Source, command: Command) -> Result<CommandId, SendError> {
+        self.post(source, command, None)
+    }
+
+    /// As [`Self::send`]; `reply` is called on `vma-control` with the outcome, once the
+    /// command is applied (keep it short: it runs on the thread that applies commands).
+    pub fn send_then(
+        &self,
+        source: Source,
+        command: Command,
+        reply: impl FnOnce(CommandId, &Outcome) + Send + 'static,
+    ) -> Result<CommandId, SendError> {
+        self.post(source, command, Some(Box::new(reply)))
+    }
+
+    fn post(
+        &self,
+        source: Source,
+        command: Command,
+        reply: Option<Reply>,
+    ) -> Result<CommandId, SendError> {
         let id = CommandId(self.next_id.fetch_add(1, Ordering::Relaxed));
         match self.tx.try_send(Envelope {
             id,
             source,
             command,
+            reply,
         }) {
             Ok(()) => Ok(id),
             Err(TrySendError::Full(_)) => Err(SendError::Full),
@@ -107,6 +143,30 @@ impl StateReader {
             StatePublisher { state },
         )
     }
+}
+
+/// An engine without render nor I/O: a thread that applies commands to `state`, publishes
+/// it and answers [`CommandSender::send_then`]. For the API's tests and tools; stops when
+/// every [`CommandSender`] is dropped.
+pub fn headless(state: State) -> std::io::Result<(CommandSender, StateReader)> {
+    let (sender, rx) = command_channel();
+    let (reader, publisher) = StateReader::standalone(state.clone());
+    std::thread::Builder::new()
+        .name("vma-headless".into())
+        .spawn(move || {
+            let mut state = state;
+            for envelope in rx {
+                let before = state.version;
+                let result = state.apply(&envelope.command).map(|_| ());
+                if state.version != before {
+                    publisher.publish(state.clone());
+                }
+                if let Some(reply) = envelope.reply {
+                    reply(envelope.id, &Outcome::from(&result));
+                }
+            }
+        })?;
+    Ok((sender, reader))
 }
 
 /// Feeds a [`StateReader::standalone`].
@@ -369,6 +429,9 @@ impl Controller {
             self.publish();
         }
         let outcome = Outcome::from(&result.map(|_| ()));
+        if let Some(reply) = envelope.reply {
+            reply(envelope.id, &outcome);
+        }
         self.journal(JournalLine {
             utc: String::new(),
             frame: self.feedback.last_frame(),
@@ -744,6 +807,7 @@ mod tests {
                 id,
                 source: Source::Ui,
                 command,
+                reply: None,
             });
         }
 
@@ -995,6 +1059,40 @@ mod tests {
         });
         let replayed = replay(fresh, &text).unwrap();
         assert_eq!(replayed, *rig.reader.load());
+    }
+
+    /// Phase 5: a command sent with a reply learns its outcome once applied (the API answers
+    /// its client with it); the headless engine publishes what it applies.
+    #[test]
+    fn a_command_learns_its_outcome() {
+        let (commands, state) = headless(State::new(Format {
+            rate: FrameRate::FPS_50,
+            resolution: Resolution::HD_1080,
+        }))
+        .unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let answer = |tx: std::sync::mpsc::Sender<(CommandId, Outcome)>| {
+            move |id, outcome: &Outcome| {
+                let _ = tx.send((id, outcome.clone()));
+            }
+        };
+        let add = Command::AddInput {
+            spec: InputSpec::Color {
+                color: Rgb8::new(1, 2, 3),
+            },
+            name: None,
+        };
+        let id = commands
+            .send_then(Source::Api, add, answer(tx.clone()))
+            .unwrap();
+        let (got, outcome) = rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!((got, outcome), (id, Outcome::Ok));
+        assert_eq!(state.load().inputs.len(), 1);
+        commands
+            .send_then(Source::Api, Command::Transition { button: 9 }, answer(tx))
+            .unwrap();
+        let (_, outcome) = rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(matches!(outcome, Outcome::Rejected(r) if r.contains("button 9")));
     }
 
     /// ADR 0013: the seed of the keys is journaled, so a replay gives the inputs their keys.

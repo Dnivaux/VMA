@@ -37,6 +37,7 @@ vma-audio = { path = "crates/audio" }
 vma-io-ndi = { path = "crates/io-ndi" }
 vma-io-html = { path = "crates/io-html" }
 vma-project = { path = "crates/project" }
+vma-api = { path = "crates/api" }
 
 # External crates — licence noted for each (rule 2.6). Enforced by deny.toml.
 wgpu = "30.0"                                                # MIT OR Apache-2.0
@@ -74,6 +75,11 @@ rfd = "0.17"                                                 # MIT (sélecteur d
 # public CEF build (BSD-3-Clause ; Chromium : licences de ses composants, avis à livrer).
 cef = { version = "=156.4.0", default-features = false }     # Apache-2.0 OR MIT
 memmap2 = "0.9"                                              # MIT OR Apache-2.0 (mémoire partagée de l'input HTML)
+# Control APIs (ADR 0012): their own runtime, two threads, never the render thread.
+tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "net", "sync", "time", "macros", "io-util"] } # MIT
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio", "ws"] } # MIT (tower, hyper, http : MIT ; tungstenite : MIT OR Apache-2.0)
+tokio-tungstenite = "0.30"                                   # MIT (tests of the WebSocket only)
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] } # MIT OR Apache-2.0 (tests only)
 
 [workspace.lints.rust]
 unsafe_code = "deny"

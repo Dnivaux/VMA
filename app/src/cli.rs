@@ -39,6 +39,7 @@ Options :
                          (elles priment sur --rate et --resolution)
   --no-autosave          n'enregistre pas l'émission automatiquement (coupé d'office pendant
                          un soak : « Dernier » garde l'émission d'avant)
+  --no-api               n'ouvre pas les API de contrôle (native : 127.0.0.1:8090)
   --record <dossier>     enregistre le Program dès le démarrage, dans ce dossier
                          (sans l'option : bouton « Enregistrer », dossier Vidéos)
   --fullscreen <écran>   montre le Program (après FTB) en plein écran dès le démarrage, sur
@@ -87,6 +88,8 @@ pub struct Options {
     pub project: Option<PathBuf>,
     /// Autosave the show: not with `--no-autosave`, nor during a soak.
     pub autosave: bool,
+    /// Open the control APIs (ADR 0012): not with `--no-api`.
+    pub api: bool,
     /// Record from start-up into this folder.
     pub record: Option<PathBuf>,
     /// Full screen from start-up on this screen (name, or number from 1).
@@ -176,6 +179,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> anyhow::Result<Options> 
     let mut record = None;
     let mut project = None;
     let mut autosave = true;
+    let mut api = true;
     let mut fullscreen = None;
     let mut gpu_loss_grace = None;
     let mut stream_url = None;
@@ -248,6 +252,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> anyhow::Result<Options> 
             "--record" => record = Some(PathBuf::from(value::<String>(&mut args, &arg)?)),
             "--project" => project = Some(PathBuf::from(value::<String>(&mut args, &arg)?)),
             "--no-autosave" => autosave = false,
+            "--no-api" => api = false,
             "--fullscreen" => fullscreen = Some(value::<String>(&mut args, &arg)?),
             "--stream" => stream_url = Some(value::<String>(&mut args, &arg)?),
             "--stream-key" => stream_key = Some(value::<String>(&mut args, &arg)?),
@@ -337,6 +342,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> anyhow::Result<Options> 
         spin_margin,
         project,
         autosave: autosave && soak.is_none(),
+        api,
         record,
         fullscreen,
         gpu_loss_grace,
@@ -447,6 +453,8 @@ mod tests {
         assert!(o.headphones);
         assert!(!parse_str("--no-headphones").unwrap().headphones);
         assert!(o.autosave);
+        assert!(o.api);
+        assert!(!parse_str("--no-api").unwrap().api);
         assert!(!parse_str("--no-autosave").unwrap().autosave);
         assert!(
             !parse_str("--soak 10").unwrap().autosave,

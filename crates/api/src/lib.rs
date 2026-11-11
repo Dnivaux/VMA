@@ -1,3 +1,160 @@
-//! Control APIs: native REST/WebSocket and the compatible HTTP/TCP API (module compat). Phase 5.
+//! Control APIs (ADR 0012): the native API (HTTP + WebSocket, JSON) and, later in Phase 5,
+//! the compat API (HTTP and TCP of the reference, `docs/specs/api-compat.md`).
 //!
-//! Skeleton only — no functionality yet. See `ROADMAP.md` for the phase in which it lands.
+//! Everything runs on a tokio runtime of its own (`vma-api`, two threads). The APIs never
+//! touch the state: they send [`Command`](vma_engine::Command)s (source `Api`, journaled like
+//! the UI's) and read the snapshot `vma-control` publishes. A port that cannot be opened is
+//! reported in [`ApiStatus`]; VMA runs on without it.
+
+mod native;
+mod tally;
+
+use std::net::{Ipv4Addr, SocketAddr};
+use std::time::Duration;
+
+use tokio::sync::watch;
+use vma_engine::{CommandSender, StateReader};
+
+pub use tally::{TallyLight, tally};
+
+/// How often the state is looked at for changes (events, tally).
+const STATE_POLL: Duration = Duration::from_millis(10);
+
+/// Where the APIs listen (`None`: off). ADR 0012 § 3: this machine only by default.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApiConfig {
+    pub native: Option<SocketAddr>,
+}
+
+/// Port of the native API (`phase-5.md` Q5).
+pub const NATIVE_PORT: u16 = 8090;
+
+impl Default for ApiConfig {
+    fn default() -> Self {
+        Self {
+            native: Some(SocketAddr::from((Ipv4Addr::LOCALHOST, NATIVE_PORT))),
+        }
+    }
+}
+
+/// What became of a server.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum ServerStatus {
+    #[default]
+    Off,
+    Listening(SocketAddr),
+    /// Its port could not be opened: why.
+    Failed(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ApiStatus {
+    pub native: ServerStatus,
+}
+
+/// Why the APIs could not start at all.
+#[derive(Debug, thiserror::Error)]
+pub enum ApiError {
+    #[error("the API runtime could not start: {0}")]
+    Runtime(#[from] std::io::Error),
+}
+
+/// What every connection shares.
+#[derive(Clone)]
+pub(crate) struct Shared {
+    pub(crate) commands: CommandSender,
+    pub(crate) state: StateReader,
+    /// The state's version, as soon as it changes.
+    pub(crate) versions: watch::Receiver<u64>,
+}
+
+/// The running APIs; dropped, they stop.
+pub struct Api {
+    runtime: Option<tokio::runtime::Runtime>,
+    status: ApiStatus,
+}
+
+impl std::fmt::Debug for Api {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Api").field("status", &self.status).finish()
+    }
+}
+
+impl Api {
+    pub fn start(
+        config: &ApiConfig,
+        commands: CommandSender,
+        state: StateReader,
+    ) -> Result<Self, ApiError> {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .thread_name("vma-api")
+            .enable_io()
+            .enable_time()
+            .build()?;
+        let (version_tx, versions) = watch::channel(state.load().version);
+        let watched = state.clone();
+        runtime.spawn(async move {
+            let mut every = tokio::time::interval(STATE_POLL);
+            every.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                every.tick().await;
+                let version = watched.load().version;
+                version_tx.send_if_modified(|v| std::mem::replace(v, version) != version);
+                if version_tx.is_closed() {
+                    // Nobody listens: keep the task cheap, the runtime stops with VMA.
+                    every.reset_after(Duration::from_millis(250));
+                }
+            }
+        });
+        let shared = Shared {
+            commands,
+            state,
+            versions,
+        };
+        let mut status = ApiStatus::default();
+        if let Some(address) = config.native {
+            status.native = serve(&runtime, address, native::router(shared.clone()));
+        }
+        Ok(Self {
+            runtime: Some(runtime),
+            status,
+        })
+    }
+
+    pub fn status(&self) -> &ApiStatus {
+        &self.status
+    }
+}
+
+impl Drop for Api {
+    fn drop(&mut self) {
+        if let Some(runtime) = self.runtime.take() {
+            runtime.shutdown_timeout(Duration::from_secs(1));
+        }
+    }
+}
+
+/// Opens `address` and serves `router` on it.
+fn serve(
+    runtime: &tokio::runtime::Runtime,
+    address: SocketAddr,
+    router: axum::Router,
+) -> ServerStatus {
+    match runtime.block_on(tokio::net::TcpListener::bind(address)) {
+        Ok(listener) => {
+            let bound = listener.local_addr().unwrap_or(address);
+            runtime.spawn(async move {
+                if let Err(e) = axum::serve(listener, router).await {
+                    tracing::error!(%bound, error = %e, "API server stopped");
+                }
+            });
+            tracing::info!(%bound, "API listening");
+            ServerStatus::Listening(bound)
+        }
+        Err(e) => {
+            tracing::warn!(%address, error = %e, "API port not opened");
+            ServerStatus::Failed(format!("{address} : {e}"))
+        }
+    }
+}

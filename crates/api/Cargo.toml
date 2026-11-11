@@ -1,11 +1,25 @@
 [package]
 name = "vma-api"
-description = "Control APIs: native REST/WebSocket and the compatible HTTP/TCP API (module compat). Phase 5."
+description = "Control APIs (ADR 0012): native REST/WebSocket and the compatible HTTP/TCP API (module compat)."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
+
+[dependencies]
+vma-core.workspace = true
+vma-engine.workspace = true
+tokio.workspace = true
+axum.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tokio-tungstenite.workspace = true
+futures-util.workspace = true
 
 [lints]
 workspace = true

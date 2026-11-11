@@ -39,7 +39,8 @@ pub use command::{
 };
 pub use control::{
     CommandProbe, CommandSender, ControlStats, InputFeedStats, InputStatsReader, IoEvent,
-    IoEventSender, IoRequests, RejectionNotice, SendError, StatePublisher, StateReader,
+    IoEventSender, IoRequests, RejectionNotice, Reply, SendError, StatePublisher, StateReader,
+    headless,
 };
 pub use feed::{FeedError, FeedRegistry, FeedStats, FeedStatsSnapshot, FrameSink};
 pub use journal::{Journal, JournalLine, JournalStats, Origin, Outcome, ReplayError, replay};
