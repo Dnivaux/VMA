@@ -28,6 +28,8 @@ $env:GST_PLUGIN_PATH = $null
 $registry = Join-Path $env:LOCALAPPDATA 'VMA'
 New-Item -ItemType Directory -Force $registry | Out-Null
 $env:GST_REGISTRY_1_0 = Join-Path $registry 'gstreamer-registry.bin'
+# Logs go to files: no terminal colour codes in them.
+$env:NO_COLOR = '1'
 
 # Runs vma.exe, its output in Rapports\<name>.log; returns its exit code.
 function Invoke-Vma([string]$Name, [string[]]$Arguments) {

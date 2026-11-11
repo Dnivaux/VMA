@@ -105,8 +105,8 @@ défaut des 4 boutons et le sens de « forcer le fade à cut » (questions de su
 ### Tests manuels non passés
 | Test | Raison |
 |---|---|
-| A1 sous Windows (`tests/soak/phase1-windows.ps1 -Only A1`) | ⏸ Reporté le 2026-10-28, sans échéance depuis le 2026-10-29 (décision du mainteneur) : pas de test possible sous Windows |
-| A13 : soak hostile Windows (`tests/soak/phase1-windows.ps1 -Only A13`) | ⏸ Reporté depuis la Phase 0, sans échéance depuis le 2026-10-29 (même raison) |
+| A1 sous Windows (`tests/soak/phase1-windows.ps1 -Only A1`) | ⏸ Reporté le 2026-10-28, sans échéance depuis le 2026-10-29 (décision du mainteneur) : pas de test possible sous Windows ; **paquet Windows d'essai prêt le 2026-11-11** ([`packaging-windows.md`](docs/specs/packaging-windows.md), « Test Windows - 40 min ») : envoyé à la partenaire, rapports attendus |
+| A13 : soak hostile Windows (`tests/soak/phase1-windows.ps1 -Only A13`) | ⏸ Reporté depuis la Phase 0, sans échéance depuis le 2026-10-29 (même raison) ; **paquet Windows d'essai prêt le 2026-11-11** ([`packaging-windows.md`](docs/specs/packaging-windows.md), « Test Windows - 40 min ») : envoyé à la partenaire, rapports attendus |
 | Checklist [`phase1-inputs.md`](docs/manual-tests/phase1-inputs.md) (vidéos, images, capture, sélecteur ; partie manuelle d'A8 : débrancher la webcam) | Pas encore passée ; pas de webcam sur la machine de dev (capture couverte en CI par une fausse caméra) |
 
 **Revue de fin de Phase 1 (2026-10-29)** : le mainteneur passe à la Phase 2 sans pouvoir tester
