@@ -1,0 +1,2 @@
+# The Windows package launchers: cmd.exe wants CRLF.
+packaging/windows/*.cmd text eol=crlf

@@ -1,0 +1,51 @@
+name: GStreamer (Windows)
+description: >
+  Installs GStreamer for Windows (ADR 0004): official MSVC installers, runtime + development,
+  checked by SHA-256; puts its bin on PATH and sets PKG_CONFIG_PATH and
+  GSTREAMER_1_0_ROOT_MSVC_X86_64. Used by the CI and by the Windows package.
+
+runs:
+  using: composite
+  steps:
+    - name: Cache GStreamer installers
+      uses: actions/cache@v4
+      with:
+        path: gst-installers
+        key: gstreamer-msvc-x86_64-1.26.11
+    - name: Install GStreamer
+      shell: pwsh
+      env:
+        # Keep the cache key above in step with the version.
+        GST_WIN_VERSION: "1.26.11"
+        GST_WIN_RUNTIME_SHA256: 31cbc21fa0950b5c1e79c80959b2799805cb05a7a35953a13a9f790776137605
+        GST_WIN_DEVEL_SHA256: af0a0720692052aaf5fb0cf2847ef34a87016ef0f914328d516f049e6c86f587
+      run: |
+        $ErrorActionPreference = 'Stop'
+        $v = $env:GST_WIN_VERSION
+        $base = "https://gstreamer.freedesktop.org/data/pkg/windows/$v/msvc"
+        New-Item -ItemType Directory -Force gst-installers | Out-Null
+        $files = @{
+          "gstreamer-1.0-msvc-x86_64-$v.msi" = $env:GST_WIN_RUNTIME_SHA256
+          "gstreamer-1.0-devel-msvc-x86_64-$v.msi" = $env:GST_WIN_DEVEL_SHA256
+        }
+        foreach ($name in $files.Keys) {
+          $path = "gst-installers\$name"
+          if (-not (Test-Path $path)) { Invoke-WebRequest "$base/$name" -OutFile $path }
+          $hash = (Get-FileHash $path -Algorithm SHA256).Hash.ToLower()
+          if ($hash -ne $files[$name]) { throw "checksum mismatch for $name" }
+          $p = Start-Process msiexec -Wait -PassThru -ArgumentList "/i `"$path`" /qn /norestart ADDLOCAL=ALL"
+          if ($p.ExitCode -ne 0) { throw "msiexec $name failed: $($p.ExitCode)" }
+        }
+        $root = [Environment]::GetEnvironmentVariable('GSTREAMER_1_0_ROOT_MSVC_X86_64', 'Machine')
+        if (-not $root) {
+          $root = @('C:\Program Files\gstreamer\1.0\msvc_x86_64', 'C:\gstreamer\1.0\msvc_x86_64') |
+            Where-Object { Test-Path $_ } | Select-Object -First 1
+        }
+        if (-not $root) { throw "GStreamer install directory not found" }
+        $root = $root.TrimEnd('\')
+        Write-Host "GStreamer $v in $root"
+        # GStreamer's own pkg-config first (gstreamer-rs README).
+        "$root\bin" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
+        "PKG_CONFIG_PATH=$root\lib\pkgconfig" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+        "GSTREAMER_1_0_ROOT_MSVC_X86_64=$root\" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+        "GST_WIN_VERSION=$v" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV

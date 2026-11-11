@@ -1,0 +1,57 @@
+VMA, version d'essai pour Windows
+=================================
+
+Merci d'essayer VMA ! Il n'y a rien à installer. Deux choses à faire, dans l'ordre que vous
+voulez : regarder l'interface (« Ouvrir VMA ») et faire le test Windows (40 minutes).
+
+
+Avant de commencer
+------------------
+1. Clic droit sur le fichier .zip reçu > Propriétés > en bas, cocher « Débloquer » > OK.
+   (Sans cela, Windows posera une question à chaque lancement : voir plus bas.)
+2. Clic droit sur le .zip > « Extraire tout... », par exemple dans Documents.
+   Lancer ensuite depuis le dossier extrait, pas depuis l'intérieur du .zip.
+3. Sur un portable : brancher le chargeur.
+
+Si Windows affiche « Windows a protégé votre ordinateur » : cliquer sur « Informations
+complémentaires », puis sur « Exécuter quand même ». VMA n'est pas signé : c'est normal pour
+une version d'essai.
+
+
+Regarder l'interface : « Ouvrir VMA »
+-------------------------------------
+Double-clic sur « Ouvrir VMA ». Une fenêtre noire s'ouvre : ne pas la fermer, elle fait
+tourner VMA. Puis VMA s'ouvre, avec 4 mires de test comme inputs.
+
+Tout peut s'essayer : cliquer sur les vignettes, les transitions, la T-Bar, les overlays, le
+mélangeur... On peut aussi ajouter sa webcam ou une vidéo (« Ajouter un input », en bas à
+gauche). Rien n'est enregistré ni diffusé sans appuyer sur « Enregistrer » ou « Streamer ».
+Pour quitter : fermer la fenêtre de VMA.
+
+Pour comparer avec le logiciel que vous utilisez en émission, les questions sont dans
+Observation\observation-reference-interface.md (clic droit > Ouvrir avec > Bloc-notes) ;
+l'image dont elles parlent est dans Observation\images.
+
+
+Le test Windows : « Test Windows - 40 min »
+-------------------------------------------
+Il vérifie que VMA ne perd aucune image sous Windows. Double-clic, puis suivre ce qui
+s'affiche dans la fenêtre noire. Deux parties :
+
+  1. 30 minutes SANS TOUCHER l'ordinateur. VMA fait des transitions tout seul. Laisser sa
+     fenêtre visible : ne pas la réduire, ne rien ouvrir par-dessus.
+  2. 10 minutes à malmener la fenêtre : la déplacer en tenant la barre de titre, la
+     redimensionner par un bord, la réduire et la rouvrir. VMA la secoue aussi tout seul
+     (taille, plein écran) : c'est voulu.
+
+VMA se ferme seul à la fin de chaque partie. Pendant le test, l'ordinateur ne se met pas en
+veille. À la fin, le dossier « Rapports » apparaît, sélectionné : clic droit dessus >
+Compresser (ou Envoyer vers > Dossier compressé), et m'envoyer le fichier .zip obtenu.
+
+
+En cas de problème
+------------------
+M'envoyer le dossier « Rapports » (les journaux de VMA y sont), avec une phrase sur ce qui
+s'est passé.
+
+Licences : dossier Licences (VMA est un logiciel libre ; GStreamer sous LGPL).

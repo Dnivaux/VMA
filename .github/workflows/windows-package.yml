@@ -1,0 +1,69 @@
+name: Windows package
+
+# The folder a tester runs by double-click (packaging/windows): vma.exe, GStreamer without GPL
+# plugins, launchers. Built on demand (`gh workflow run windows-package.yml`); the artifact
+# "VMA-windows" is the zip to send.
+on:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  package:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install GStreamer
+        uses: ./.github/actions/gstreamer-windows
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build vma.exe
+        run: cargo build --release --locked -p vma
+      - name: Assemble the package
+        shell: pwsh
+        run: pwsh packaging/windows/bundle.ps1 -Out dist\VMA
+      - name: The package's GStreamer, alone (elements VMA uses; no GPL encoder)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = (Resolve-Path dist\VMA).Path
+          # gst-inspect next to a copy of the package's bin, the installed GStreamer off PATH.
+          $probe = New-Item -ItemType Directory -Force "$env:RUNNER_TEMP\probe"
+          Copy-Item dist\VMA\bin\*.dll $probe
+          Copy-Item "$env:GSTREAMER_1_0_ROOT_MSVC_X86_64\bin\gst-inspect-1.0.exe" $probe
+          $env:PATH = "$probe;" + [Environment]::SystemDirectory + ";$env:SystemRoot"
+          $env:GST_PLUGIN_SYSTEM_PATH_1_0 = "$root\lib\gstreamer-1.0"
+          $env:GST_PLUGIN_SCANNER_1_0 = "$root\libexec\gstreamer-1.0\gst-plugin-scanner.exe"
+          $env:GST_REGISTRY_1_0 = "$env:RUNNER_TEMP\probe-registry.bin"
+          $failed = @()
+          foreach ($e in 'videotestsrc', 'audiotestsrc', 'appsrc', 'appsink', 'uridecodebin',
+              'decodebin', 'videoconvert', 'videoscale', 'audioconvert', 'audioresample',
+              'mfh264enc', 'openh264enc', 'avenc_aac', 'mfaacenc', 'h264parse', 'aacparse',
+              'matroskamux', 'mp4mux', 'flvmux', 'rtmp2sink', 'mpegtsmux', 'tsdemux', 'srtsink',
+              'srtsrc', 'vp8alphadecodebin', 'vp9alphadecodebin', 'avdec_prores', 'avdec_png',
+              'mfvideosrc', 'jpegdec', 'pngdec') {
+            & "$probe\gst-inspect-1.0.exe" --exists $e
+            if ($LASTEXITCODE -eq 0) { Write-Host "${e}: ok" } else { Write-Host "${e}: MISSING"; $failed += $e }
+          }
+          foreach ($e in 'x264enc', 'x265enc') {
+            & "$probe\gst-inspect-1.0.exe" --exists $e
+            if ($LASTEXITCODE -eq 0) { Write-Host "${e}: present (GPL)"; $failed += $e } else { Write-Host "${e}: absent, as it should" }
+          }
+          if ($failed) { throw "package GStreamer: $($failed -join ', ')" }
+      - name: Smoke test (5 s soak from the package; no GPU on the runner, frames may miss)
+        shell: pwsh
+        env:
+          WGPU_BACKEND: dx12
+        run: |
+          $env:PATH = [Environment]::SystemDirectory + ";$env:SystemRoot;$env:SystemRoot\System32\WindowsPowerShell\v1.0"
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File dist\VMA\bin\launch.ps1 -Mode Smoke
+          $code = $LASTEXITCODE
+          Remove-Item -Recurse -Force dist\VMA\Rapports
+          exit $code
+      - uses: actions/upload-artifact@v4
+        with:
+          name: VMA-windows
+          path: dist
+          if-no-files-found: error
+          retention-days: 30
