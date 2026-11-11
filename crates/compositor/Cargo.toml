@@ -8,6 +8,9 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+skrifa.workspace = true
+ab_glyph_rasterizer.workspace = true
+epaint_default_fonts.workspace = true
 vma-core.workspace = true
 wgpu.workspace = true
 bytemuck.workspace = true

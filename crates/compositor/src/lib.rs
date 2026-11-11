@@ -9,6 +9,7 @@
 //! - [`OutputStage`]: what every output receives — FTB and sync flash on the Program, then
 //!   Y'CbCr BT.709 limited range 4:2:0 (NV12 planes) for the encoders.
 //! - [`thumbnails`]: every input drawn into its cell of a thumbnail atlas.
+//! - [`multiview`]: Preview, Program and the inputs in one picture (ADR 0014).
 //! - [`TestPattern`], plus helpers to create a headless device and read a texture back
 //!   (tests only).
 //!
@@ -28,6 +29,7 @@ mod error;
 mod frame;
 pub mod headless;
 mod mixer;
+pub mod multiview;
 mod output;
 pub mod readback;
 mod target;

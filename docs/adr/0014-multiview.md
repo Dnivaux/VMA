@@ -1,8 +1,7 @@
 # ADR 0014 — MultiView
 
-- **Statut** : **proposé** (2026-11-11), à valider par le mainteneur (disposition visible de
-  l'opératrice) ; Q9 et Q10 de [`phase-5.md`](../specs/phase-5.md) : « au plus proche de la
-  référence »
+- **Statut** : **accepté** le 2026-11-11 (« ok pour la MultiView ») ; Q9 et Q10 de
+  [`phase-5.md`](../specs/phase-5.md) : « au plus proche de la référence »
 - **Date** : 2026-11-11
 - **Contexte** : BRIEF §4 (Phase 5 : « grille, labels, bordures tally »), §2.1 (clean room :
   le guide public de la référence décrit ses dispositions par leur nom, leur géométrie n'y est
@@ -19,7 +18,7 @@
 - **Titres** au-dessus ou au-dessous de chaque image ; titres de Preview / Output : « Preview »
   et « Output », ou le titre de l'input qu'elles montrent.
 
-## Décision proposée
+## Décision
 1. **Dispositions** (géométrie propre à VMA, image 16:9 à la résolution du maître) :
    - **Preview / Program + 8** : Preview et Program côte à côte sur la moitié haute ; 8 inputs
      en 2 rangées de 4 sur la moitié basse.
@@ -43,8 +42,10 @@
    **hors du rendu**, quand un nom change, dans une texture de titres arrivant par le même
    chemin que les images des inputs (tampon de transfert, copie enregistrée par le rendu,
    ADR 0004 amendement 1) : le rendu ne fait ni texte ni téléversement bloquant.
-6. **Police des titres** : celle d'egui (déjà embarquée), rastérisée par `ab_glyph`
-   (Apache-2.0) ; licence de la police notée dans « À propos ».
+6. **Police des titres** : celle d'egui (Ubuntu, Ubuntu Font Licence 1.0, déjà embarquée),
+   contours lus par `skrifa` (comme egui, MIT ou Apache-2.0) et rastérisés par
+   `ab_glyph_rasterizer` (Apache-2.0) ; `ab_glyph` écarté : il tire `ttf-parser`, signalé non
+   maintenu (`cargo deny`, 2026-11-11). Licence de la police dans « À propos ».
 
 ## Alternatives écartées
 - **Dessiner la MultiView avec egui dans la fenêtre plein écran** : pas de MultiView sur le NDI

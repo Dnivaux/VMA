@@ -75,6 +75,11 @@ rfd = "0.17"                                                 # MIT (sélecteur d
 # public CEF build (BSD-3-Clause ; Chromium : licences de ses composants, avis à livrer).
 cef = { version = "=156.4.0", default-features = false }     # Apache-2.0 OR MIT
 memmap2 = "0.9"                                              # MIT OR Apache-2.0 (mémoire partagée de l'input HTML)
+# MultiView titles (ADR 0014): glyph outlines (as egui reads its fonts), a coverage
+# rasteriser, and the UI's font (Ubuntu: Ubuntu Font Licence 1.0).
+skrifa = "0.44"                                              # MIT OR Apache-2.0 (already under egui)
+ab_glyph_rasterizer = "0.1"                                  # Apache-2.0
+epaint_default_fonts = "0.37"                                # (MIT OR Apache-2.0) AND OFL-1.1 AND Ubuntu-font-1.0
 # Control APIs (ADR 0012): their own runtime, two threads, never the render thread.
 tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "net", "sync", "time", "macros", "io-util"] } # MIT
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio", "ws"] } # MIT (tower, hyper, http : MIT ; tungstenite : MIT OR Apache-2.0)
