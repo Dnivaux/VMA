@@ -8,6 +8,11 @@ use super::Switcher;
 /// Main components and their licences (the complete list: `cargo deny list`).
 const LICENCES: &[(&str, &str)] = &[
     ("wgpu, egui, eframe", "MIT ou Apache-2.0"),
+    (
+        "Icônes Lucide (egui-lucide)",
+        "ISC (dont une partie de Feather en MIT)",
+    ),
+    ("resvg (dessin des icônes)", "MIT ou Apache-2.0"),
     ("Bindings GStreamer (gstreamer-rs)", "MIT ou Apache-2.0"),
     (
         "GStreamer (bibliothèque système, liée dynamiquement)",

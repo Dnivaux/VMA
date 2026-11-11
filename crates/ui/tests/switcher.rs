@@ -421,7 +421,7 @@ fn t_bar_sends_fader_values_and_ignores_the_rest_of_a_completed_drag() {
 #[test]
 fn add_menu() {
     let mut h = harness(state());
-    h.get_by_label("+ Ajouter").click();
+    h.get_by_label("Ajouter un input").click();
     h.run();
     h.get_by_label("Mire").click();
     h.run();
@@ -435,7 +435,7 @@ fn add_menu() {
             name: None
         }]
     );
-    h.get_by_label("+ Ajouter").click();
+    h.get_by_label("Ajouter un input").click();
     h.run();
     h.get_by_label("Couleur").hover();
     h.run();
@@ -578,7 +578,7 @@ fn add_menu_capture_devices_and_files() {
         name: "Webcam HD".into(),
     }];
     h.run();
-    h.get_by_label("+ Ajouter").click();
+    h.get_by_label("Ajouter un input").click();
     h.run();
     h.get_by_label("Caméra / capture").hover();
     h.run();
@@ -594,7 +594,7 @@ fn add_menu_capture_devices_and_files() {
         }]
     );
     for (label, kind) in [("Vidéo…", FileKind::Video), ("Image…", FileKind::Image)] {
-        h.get_by_label("+ Ajouter").click();
+        h.get_by_label("Ajouter un input").click();
         h.run();
         h.get_by_label(label).click();
         h.run();
@@ -614,13 +614,13 @@ fn without_gstreamer_capture_and_video_are_disabled() {
         h.query_by_label("GStreamer introuvable : caméras et vidéos désactivées")
             .is_some()
     );
-    h.get_by_label("+ Ajouter").click();
+    h.get_by_label("Ajouter un input").click();
     h.run();
     h.get_by_label("Vidéo…").click();
     h.run();
     assert!(h.state().files.is_empty(), "video disabled");
     if h.query_by_label("Image…").is_none() {
-        h.get_by_label("+ Ajouter").click();
+        h.get_by_label("Ajouter un input").click();
         h.run();
     }
     h.get_by_label("Image…").click();
@@ -1294,7 +1294,7 @@ fn a_microphone_is_added_from_the_menu() {
         name: "Micro USB".into(),
     }];
     h.run();
-    h.get_by_label("+ Ajouter").click();
+    h.get_by_label("Ajouter un input").click();
     h.run();
     h.get_by_label("Son (micro, ligne)").hover();
     h.run();
@@ -1376,7 +1376,7 @@ fn an_srt_input_is_added_with_its_passphrase_hidden() {
     use vma_engine::{Secret, SrtMode, SrtSource};
     const PASSPHRASE: &str = "correct horse battery";
     let mut h = harness(state());
-    h.get_by_label("+ Ajouter").click();
+    h.get_by_label("Ajouter un input").click();
     h.run();
     h.get_by_label("SRT…").click();
     h.run();
@@ -1417,7 +1417,7 @@ fn an_srt_input_is_added_with_its_passphrase_hidden() {
 #[test]
 fn an_ndi_input_is_added_from_the_sources_seen() {
     let mut h = harness(state());
-    h.get_by_label("+ Ajouter").click();
+    h.get_by_label("Ajouter un input").click();
     h.run();
     h.get_by_label("NDI®…").click();
     h.run();
@@ -1437,7 +1437,7 @@ fn an_ndi_input_is_added_from_the_sources_seen() {
     );
     assert!(h.query_by_label("Nouvel input NDI®").is_none(), "closed");
 
-    h.get_by_label("+ Ajouter").click();
+    h.get_by_label("Ajouter un input").click();
     h.run();
     h.get_by_label("NDI®…").click();
     h.run();
@@ -1465,14 +1465,14 @@ fn without_the_ndi_runtime_ndi_is_greyed() {
     let mut h = harness(state());
     h.state_mut().ndi_unavailable = Some("NDI® runtime not found".into());
     h.run();
-    h.get_by_label("+ Ajouter").click();
+    h.get_by_label("Ajouter un input").click();
     h.run();
     h.get_by_label("NDI®…").click();
     h.run();
     assert!(h.query_by_label("Nouvel input NDI®").is_none(), "disabled");
     assert!(h.state().sent().is_empty());
     if h.query_by_label("Mire").is_none() {
-        h.get_by_label("+ Ajouter").click();
+        h.get_by_label("Ajouter un input").click();
         h.run();
     }
     h.get_by_label("Mire").click();
@@ -1517,7 +1517,7 @@ fn the_ndi_output_is_added_unless_the_runtime_is_missing() {
 #[test]
 fn an_html_input_is_added_with_its_address_size_and_css() {
     let mut h = harness(state());
-    h.get_by_label("+ Ajouter").click();
+    h.get_by_label("Ajouter un input").click();
     h.run();
     h.get_by_label("Page web (HTML)…").click();
     h.run();
@@ -1541,7 +1541,7 @@ fn an_html_input_is_added_with_its_address_size_and_css() {
     );
     assert!(h.query_by_label("Nouvel input HTML").is_none(), "closed");
 
-    h.get_by_label("+ Ajouter").click();
+    h.get_by_label("Ajouter un input").click();
     h.run();
     h.get_by_label("Page web (HTML)…").click();
     h.run();
@@ -1593,7 +1593,7 @@ fn without_vma_html_html_inputs_are_greyed() {
     let mut h = harness(state());
     h.state_mut().html_unavailable = Some("vma-html introuvable".into());
     h.run();
-    h.get_by_label("+ Ajouter").click();
+    h.get_by_label("Ajouter un input").click();
     h.run();
     h.get_by_label("Page web (HTML)…").click();
     h.run();

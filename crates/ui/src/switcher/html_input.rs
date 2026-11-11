@@ -45,7 +45,7 @@ impl Switcher {
     pub(super) fn html_menu_entry(&mut self, ui: &mut egui::Ui, view: &View<'_>) {
         let entry = ui.add_enabled(
             view.io.html_unavailable.is_none(),
-            egui::Button::new("Page web (HTML)…"),
+            super::icons::button(super::icons::Icon::Globe, "Page web (HTML)…"),
         );
         if let Some(reason) = view.io.html_unavailable {
             entry.on_disabled_hover_text(format!(

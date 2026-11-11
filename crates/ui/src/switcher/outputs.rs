@@ -16,6 +16,7 @@ use vma_engine::{
     RecordSpec, RtmpSpec, STREAM_SLOTS, Secret, SrtMode, SrtSpec, VIDEO_KBPS_RANGE,
 };
 
+use super::icons::{self, Icon};
 use super::mixer::bus_name;
 use super::{Switcher, View, WARNING};
 use crate::output_stats::{duration, kind_label, status_label};
@@ -94,17 +95,21 @@ impl Switcher {
             .map(since)
             .max();
 
-        let button = |label: String, on: bool| {
+        let button = |icon: Icon, label: String, on: bool| {
             let text = RichText::new(label).strong();
             if on {
-                egui::Button::new(text.color(Color32::WHITE)).fill(ON_AIR)
+                icons::button(icon, text.color(Color32::WHITE)).fill(ON_AIR)
             } else {
-                egui::Button::new(text)
+                icons::button(icon, text)
             }
         };
         let record = match recording {
-            Some(secs) => button(format!("REC {}", duration(secs)), true),
-            None => button("Enregistrer".into(), false),
+            Some(secs) => button(Icon::CircleDot, format!("REC {}", duration(secs)), true),
+            // A red dot, as on every recorder.
+            None => egui::Button::image_and_text(
+                Icon::CircleDot.icon().size(16.0).color(ON_AIR).image(),
+                RichText::new("Enregistrer").strong(),
+            ),
         };
         let response = ui.add(record).on_hover_text(match recording {
             Some(_) => "Arrêter l'enregistrement",
@@ -121,8 +126,12 @@ impl Switcher {
 
         let has_streams = state.outputs.iter().any(|o| o.spec.is_stream());
         let stream = match streaming {
-            Some(secs) => button(format!("EN DIRECT {}", duration(secs)), true),
-            None => button("Streamer".into(), false),
+            Some(secs) => button(
+                Icon::RadioTower,
+                format!("EN DIRECT {}", duration(secs)),
+                true,
+            ),
+            None => button(Icon::RadioTower, "Streamer".into(), false),
         };
         let response = ui
             .add_enabled(has_streams, stream)
@@ -143,7 +152,7 @@ impl Switcher {
         let fullscreen = state.outputs.iter().find(|o| o.spec.is_fullscreen());
         let on = fullscreen.is_some_and(|o| o.status.is_active());
         let response = ui
-            .add(button("Plein écran".into(), on))
+            .add(button(Icon::Monitor, "Plein écran".into(), on))
             .on_hover_text(match fullscreen {
                 Some(_) if on => "Fermer le plein écran",
                 Some(_) => "Ouvrir le plein écran",
@@ -167,16 +176,14 @@ impl Switcher {
         } else {
             RichText::new("Sorties")
         };
-        ui.toggle_value(&mut self.outputs.open, label);
+        icons::toggle(ui, &mut self.outputs.open, Icon::Cable, label)
+            .on_hover_text("Toutes les sorties : enregistrement, stream, plein écran, NDI®");
     }
 
-    /// « … » beside an output button: opens the « Sorties » window, where its settings are.
+    /// The cog beside an output button: opens the « Sorties » window, where its settings are.
     fn settings_button(&mut self, ui: &mut egui::Ui, name: &str) {
-        let size = Vec2::new(20.0, ui.spacing().interact_size.y);
-        if super::named_button(ui, size, "…", name, None, true)
-            .on_hover_text(name)
-            .clicked()
-        {
+        let cog = ui.add(icons::only(Icon::Settings)).on_hover_text(name);
+        if icons::named(cog, name, None).clicked() {
             self.outputs.open = true;
         }
     }
@@ -186,7 +193,7 @@ impl Switcher {
         let ftb = view.state.ftb;
         let wide = Vec2::new(ui.available_width(), 30.0);
         let level = view.fade_to_black;
-        let mut button = egui::Button::new(RichText::new("FTB").strong());
+        let mut button = icons::button(Icon::Sunset, RichText::new("FTB").strong());
         if ftb.active || level > 0.0 {
             button = button.fill(ON_AIR);
         }

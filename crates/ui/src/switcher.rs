@@ -17,9 +17,11 @@ use vma_engine::{
 
 use crate::tally::{TALLY_PREVIEW, TALLY_PROGRAM, Tally};
 use crate::{HeadphonesActivity, OutputActivity};
+use icons::Icon;
 
 mod about;
 mod html_input;
+mod icons;
 mod mixer;
 mod ndi_input;
 mod outputs;
@@ -242,6 +244,8 @@ pub struct Switcher {
     about_open: bool,
     /// Size of the input thumbnails (« Réglages → Affichage »).
     thumbs: ThumbSize,
+    /// The SVG loader of the icons is installed.
+    icons_ready: bool,
 }
 
 /// Size of the input thumbnails, as the reference lets the operator choose it.
@@ -294,6 +298,7 @@ impl Default for Switcher {
             html_fields: html_input::HtmlFields::default(),
             about_open: false,
             thumbs: ThumbSize::default(),
+            icons_ready: false,
         }
     }
 }
@@ -313,6 +318,10 @@ impl Switcher {
             self.message = Some((format!("Commande refusée : {}", notice.reason), now));
         }
 
+        if !self.icons_ready {
+            icons::install(ui.ctx());
+            self.icons_ready = true;
+        }
         self.shortcuts(ui, view);
 
         // Top: messages on the left, « Réglages » on the right (as in the reference).
@@ -333,10 +342,10 @@ impl Switcher {
                     }
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("À propos").clicked() {
+                    if ui.add(icons::button(Icon::Info, "À propos")).clicked() {
                         self.about_open = true;
                     }
-                    if ui.button("Réglages").clicked() {
+                    if ui.add(icons::button(Icon::Settings, "Réglages")).clicked() {
                         self.settings_open = true;
                     }
                 });
@@ -345,12 +354,15 @@ impl Switcher {
         // Bottom: adding inputs and the outputs on the left, panels on the right.
         egui::Panel::bottom("footer").show(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.menu_button("+ Ajouter", |ui| self.add_menu(ui, view));
+                let plus = icons::tinted(ui, Icon::Plus);
+                ui.menu_button((plus, "Ajouter un input"), |ui| self.add_menu(ui, view));
                 ui.separator();
                 self.output_buttons(ui, view);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.toggle_value(&mut self.show_stats, "Statistiques");
-                    ui.toggle_value(&mut self.mixer.open, "Mélangeur");
+                    icons::toggle(ui, &mut self.show_stats, Icon::ChartColumn, "Statistiques")
+                        .on_hover_text("Panneau des statistiques");
+                    icons::toggle(ui, &mut self.mixer.open, Icon::SlidersVertical, "Mélangeur")
+                        .on_hover_text("Mélangeur audio");
                 });
             });
         });
@@ -507,22 +519,23 @@ impl Switcher {
         let timeline = (view.io.timeline)(id).unwrap_or_default();
         ui.horizontal(|ui| {
             let command = if playback.playing {
-                ui.button("Pause")
+                let pause = ui.add(icons::only(Icon::Pause)).on_hover_text("Pause");
+                icons::named(pause, "Pause", None)
                     .clicked()
                     .then_some(Command::Pause { input: id })
             } else {
-                ui.button("Lecture")
+                let play = ui.add(icons::only(Icon::Play)).on_hover_text("Lecture");
+                icons::named(play, "Lecture", None)
                     .clicked()
                     .then_some(Command::Play { input: id })
             };
             if let Some(command) = command {
                 self.send(ui, view, command);
             }
-            if ui
-                .button("Début")
-                .on_hover_text("Revenir au début")
-                .clicked()
-            {
+            let start = ui
+                .add(icons::only(Icon::SkipBack))
+                .on_hover_text("Revenir au début");
+            if icons::named(start, "Début", None).clicked() {
                 self.send(ui, view, Command::Restart { input: id });
             }
             let duration = timeline.duration_ms.unwrap_or(0);
@@ -562,14 +575,18 @@ impl Switcher {
         let wide = Vec2::new(ui.available_width(), 30.0);
         ui.vertical_centered_justified(|ui| {
             if ui
-                .add_sized(wide, egui::Button::new("Quick Play"))
+                .add_sized(wide, icons::button(Icon::Play, "Quick Play"))
                 .on_hover_text(format!("Preview → Program, {}", describe(state.quick_play)))
                 .clicked()
             {
                 self.active_button = None;
                 self.send(ui, view, Command::QuickPlay { input: None });
             }
-            if ui.add_sized(wide, egui::Button::new("Cut")).clicked() {
+            if ui
+                .add_sized(wide, icons::button(Icon::Scissors, "Cut"))
+                .on_hover_text("Preview → Program, sans transition")
+                .clicked()
+            {
                 self.send(ui, view, Command::Cut);
             }
             ui.add_space(6.0);
@@ -587,7 +604,8 @@ impl Switcher {
                         ui.scope(|ui| {
                             ui.spacing_mut().button_padding.x = 2.0;
                             ui.set_min_size(Vec2::new(arrow, wide.y));
-                            ui.menu_button("…", |ui| {
+                            let arrow = icons::tinted(ui, Icon::ChevronDown);
+                            ui.menu_button(arrow, |ui| {
                                 self.button_menu(ui, view, button, *setting)
                             })
                             .response
@@ -620,7 +638,10 @@ impl Switcher {
     /// input; a click takes it out, or brings back the input it showed last.
     fn overlay_channels(&mut self, ui: &mut egui::Ui, view: &View<'_>) {
         let state = view.state;
-        ui.label(RichText::new("Overlays").small().weak());
+        ui.horizontal(|ui| {
+            ui.add(icons::tinted(ui, Icon::Layers));
+            ui.label(RichText::new("Overlays").weak());
+        });
         ui.horizontal(|ui| {
             let gap = ui.spacing().item_spacing.x;
             let side = ((ui.available_width() - 3.0 * gap) / 4.0).max(16.0);
@@ -636,7 +657,7 @@ impl Switcher {
                     Vec2::new(side, 26.0),
                     &n.to_string(),
                     &format!("Canal d'overlay {n}"),
-                    on.then_some(None),
+                    on,
                     input.is_some(),
                 );
                 let response = match input {
@@ -751,7 +772,7 @@ impl Switcher {
     }
 
     fn add_menu(&mut self, ui: &mut egui::Ui, view: &View<'_>) {
-        ui.menu_button("Couleur", |ui| {
+        ui.menu_button((icons::tinted(ui, Icon::Palette), "Couleur"), |ui| {
             for (name, color) in PRESET_COLORS {
                 if ui.button(name).clicked() {
                     self.add(ui, view, InputSpec::Color { color });
@@ -772,7 +793,7 @@ impl Switcher {
                 }
             });
         });
-        if ui.button("Mire").clicked() {
+        if ui.add(icons::button(Icon::Tv, "Mire")).clicked() {
             let format = view.state.format;
             self.add(
                 ui,
@@ -786,27 +807,30 @@ impl Switcher {
         ui.separator();
         let unavailable = view.io.unavailable;
         ui.add_enabled_ui(unavailable.is_none(), |ui| {
-            ui.menu_button("Caméra / capture", |ui| {
-                if view.io.devices.is_empty() {
-                    ui.label(RichText::new("Aucun périphérique détecté").weak());
-                }
-                for device in view.io.devices {
-                    if ui
-                        .button(&device.name)
-                        .on_hover_text(&device.id.0)
-                        .clicked()
-                    {
-                        let name: String = device.name.chars().take(MAX_NAME_CHARS).collect();
-                        let spec = InputSpec::Capture {
-                            device: device.id.clone(),
-                        };
-                        let name = (!name.trim().is_empty()).then_some(name);
-                        self.send(ui, view, Command::AddInput { spec, name });
-                        ui.close();
+            ui.menu_button(
+                (icons::tinted(ui, Icon::Camera), "Caméra / capture"),
+                |ui| {
+                    if view.io.devices.is_empty() {
+                        ui.label(RichText::new("Aucun périphérique détecté").weak());
                     }
-                }
-            });
-            ui.menu_button("Son (micro, ligne)", |ui| {
+                    for device in view.io.devices {
+                        if ui
+                            .button(&device.name)
+                            .on_hover_text(&device.id.0)
+                            .clicked()
+                        {
+                            let name: String = device.name.chars().take(MAX_NAME_CHARS).collect();
+                            let spec = InputSpec::Capture {
+                                device: device.id.clone(),
+                            };
+                            let name = (!name.trim().is_empty()).then_some(name);
+                            self.send(ui, view, Command::AddInput { spec, name });
+                            ui.close();
+                        }
+                    }
+                },
+            );
+            ui.menu_button((icons::tinted(ui, Icon::Mic), "Son (micro, ligne)"), |ui| {
                 if view.io.audio_sources.is_empty() {
                     ui.label(RichText::new("Aucun périphérique audio détecté").weak());
                 }
@@ -826,17 +850,17 @@ impl Switcher {
                     }
                 }
             });
-            if ui.button("Vidéo…").clicked() {
+            if ui.add(icons::button(Icon::Film, "Vidéo…")).clicked() {
                 self.file_request = Some(FileKind::Video);
                 ui.close();
             }
-            if ui.button("SRT…").clicked() {
+            if ui.add(icons::button(Icon::Cable, "SRT…")).clicked() {
                 self.new_srt = Some(vma_engine::SrtSource::default());
                 ui.close();
             }
             let ndi = ui.add_enabled(
                 view.io.ndi_unavailable.is_none(),
-                egui::Button::new("NDI®…"),
+                icons::button(Icon::Cast, "NDI®…"),
             );
             if let Some(reason) = view.io.ndi_unavailable {
                 ndi.on_disabled_hover_text(format!(
@@ -856,7 +880,7 @@ impl Switcher {
                     .color(WARNING),
             );
         }
-        if ui.button("Image…").clicked() {
+        if ui.add(icons::button(Icon::Image, "Image…")).clicked() {
             self.file_request = Some(FileKind::Image);
             ui.close();
         }
@@ -938,33 +962,46 @@ impl Switcher {
 
                 // Close, Quick Play, Cut, Loop, then 1–4 and the sound: the reference's order.
                 ui.horizontal(|ui| {
-                    if ui
-                        .small_button("×")
-                        .on_hover_text("Fermer l'input")
-                        .clicked()
-                    {
+                    let close = ui
+                        .add(icons::only(Icon::X).small())
+                        .on_hover_text("Fermer l'input");
+                    if icons::named(close, "×", None).clicked() {
                         self.send(ui, view, Command::RemoveInput { input: id });
                     }
                     // A sound-only input has no picture to put on air.
                     if !sound_only
-                        && ui
-                            .small_button("QP")
-                            .on_hover_text("Quick Play : cet input au Program")
-                            .clicked()
+                        && icons::named(
+                            ui.add(icons::only(Icon::Play).small())
+                                .on_hover_text("Quick Play : cet input au Program"),
+                            "QP",
+                            None,
+                        )
+                        .clicked()
                     {
                         self.send(ui, view, Command::QuickPlay { input: Some(id) });
                     }
                     if !sound_only
-                        && ui
-                            .small_button("Cut")
-                            .on_hover_text("Cet input au Program, sans transition")
-                            .clicked()
+                        && icons::named(
+                            ui.add(icons::only(Icon::Scissors).small())
+                                .on_hover_text("Cut : cet input au Program, sans transition"),
+                            "Cut",
+                            None,
+                        )
+                        .clicked()
                     {
                         self.send(ui, view, Command::CutDirect { input: id });
                     }
                     if let Some(playback) = input.playback {
-                        let mut looping = playback.looping;
-                        if ui.toggle_value(&mut looping, "Loop").changed() {
+                        let looping = playback.looping;
+                        let repeat = ui
+                            .add(icons::only(Icon::Repeat).small().selected(looping))
+                            .on_hover_text(if looping {
+                                "Lecture en boucle : l'arrêter"
+                            } else {
+                                "Lire en boucle (Loop)"
+                            });
+                        if icons::named(repeat, "Loop", Some(looping)).clicked() {
+                            let looping = !looping;
                             self.send(
                                 ui,
                                 view,
@@ -997,14 +1034,16 @@ impl Switcher {
                     }
                     // The sound of the input, on or muted (as its mixer strip's « Muet »).
                     if let Some(audio) = input.audio {
-                        let size = Vec2::new(40.0, ui.spacing().interact_size.y);
-                        let response = named_button(
-                            ui,
-                            size,
-                            if audio.mute { "Muet" } else { "Son" },
+                        let (icon, fill) = if audio.mute {
+                            (Icon::VolumeX, mixer::MUTED)
+                        } else {
+                            (Icon::Volume2, ui.visuals().widgets.inactive.weak_bg_fill)
+                        };
+                        let sound = ui.add(icons::only(icon).small().fill(fill));
+                        let response = icons::named(
+                            sound,
                             &format!("Son de l'input {number}"),
-                            audio.mute.then_some(Some(mixer::MUTED)),
-                            true,
+                            Some(audio.mute),
                         )
                         .on_hover_text(if audio.mute {
                             "Son coupé : le rétablir"
@@ -1272,14 +1311,13 @@ fn describe(setting: TransitionSetting) -> String {
 }
 
 /// A button showing `text` (a digit, a symbol) whose accessible name is `name`, so that
-/// screen readers and tests tell it from the other buttons showing the same text. Filled
-/// with `on` when selected (the theme's selection colour if `None`).
+/// screen readers and tests tell it from the other buttons showing the same text.
 fn named_button(
     ui: &mut egui::Ui,
     size: Vec2,
     text: &str,
     name: &str,
-    selected: Option<Option<Color32>>,
+    selected: bool,
     enabled: bool,
 ) -> egui::Response {
     let sense = if enabled {
@@ -1288,9 +1326,8 @@ fn named_button(
         Sense::hover()
     };
     let (rect, response) = ui.allocate_exact_size(size, sense);
-    response.widget_info(|| {
-        egui::WidgetInfo::selected(egui::Role::Button, enabled, selected.is_some(), name)
-    });
+    response
+        .widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, enabled, selected, name));
     if ui.is_rect_visible(rect) {
         let visuals = ui.visuals();
         let style = if !enabled {
@@ -1298,11 +1335,8 @@ fn named_button(
         } else {
             visuals.widgets.style(&response)
         };
-        let (fill, color) = if let Some(on) = selected {
-            match on {
-                Some(fill) => (fill, Color32::WHITE),
-                None => (visuals.selection.bg_fill, visuals.selection.stroke.color),
-            }
+        let (fill, color) = if selected {
+            (visuals.selection.bg_fill, visuals.selection.stroke.color)
         } else if enabled {
             (style.weak_bg_fill, style.text_color())
         } else {
