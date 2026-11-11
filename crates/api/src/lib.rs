@@ -36,10 +36,45 @@ pub const COMPAT_TCP_PORT: u16 = 8099;
 
 impl Default for ApiConfig {
     fn default() -> Self {
+        ApiSettings::default().config()
+    }
+}
+
+/// What the operator sets (Réglages → API de contrôle), kept in VMA's `settings.json`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct ApiSettings {
+    /// Reachable from other machines (0.0.0.0): no password in the compat protocol.
+    pub network: bool,
+    pub native_port: u16,
+    pub compat_http_port: u16,
+    pub compat_tcp_port: u16,
+}
+
+impl Default for ApiSettings {
+    fn default() -> Self {
         Self {
-            native: Some(SocketAddr::from((Ipv4Addr::LOCALHOST, NATIVE_PORT))),
-            compat_http: Some(SocketAddr::from((Ipv4Addr::LOCALHOST, COMPAT_HTTP_PORT))),
-            compat_tcp: Some(SocketAddr::from((Ipv4Addr::LOCALHOST, COMPAT_TCP_PORT))),
+            network: false,
+            native_port: NATIVE_PORT,
+            compat_http_port: COMPAT_HTTP_PORT,
+            compat_tcp_port: COMPAT_TCP_PORT,
+        }
+    }
+}
+
+impl ApiSettings {
+    /// Where the servers listen.
+    pub fn config(&self) -> ApiConfig {
+        let host = if self.network {
+            Ipv4Addr::UNSPECIFIED
+        } else {
+            Ipv4Addr::LOCALHOST
+        };
+        let at = |port| Some(SocketAddr::from((host, port)));
+        ApiConfig {
+            native: at(self.native_port),
+            compat_http: at(self.compat_http_port),
+            compat_tcp: at(self.compat_tcp_port),
         }
     }
 }
@@ -59,6 +94,24 @@ pub struct ApiStatus {
     pub native: ServerStatus,
     pub compat_http: ServerStatus,
     pub compat_tcp: ServerStatus,
+}
+
+impl ApiStatus {
+    /// Each server with what it is, as the Réglages show them.
+    pub fn servers(&self) -> [(&'static str, &ServerStatus); 3] {
+        [
+            ("API compat TCP", &self.compat_tcp),
+            ("API compat HTTP", &self.compat_http),
+            ("API native", &self.native),
+        ]
+    }
+
+    /// A port could not be opened.
+    pub fn any_failed(&self) -> bool {
+        self.servers()
+            .iter()
+            .any(|(_, s)| matches!(s, ServerStatus::Failed(_)))
+    }
 }
 
 /// Why the APIs could not start at all.

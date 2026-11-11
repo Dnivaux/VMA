@@ -4,6 +4,7 @@
 //! each frame is drawn from the latest state snapshot. [`MainUi`] wires the engine to the
 //! [`Switcher`] (the mixer surface) and the statistics panel.
 
+mod api_control;
 mod fullscreen;
 mod output_stats;
 mod project;
@@ -11,6 +12,7 @@ mod stats_panel;
 mod switcher;
 mod tally;
 
+pub use api_control::ApiControl;
 pub use fullscreen::{
     FULLSCREEN_APP_ID, FullscreenStats, FullscreenStatsSnapshot, Screen, Screens, default_screen,
     screen_index,
@@ -18,8 +20,8 @@ pub use fullscreen::{
 pub use output_stats::{OutputStatsRow, output_stats};
 pub use project::ProjectFiles;
 pub use switcher::{
-    AudioView, CaptureChoice, FileKind, Images, IoView, ProjectNotice, ProjectRequest, ProjectView,
-    Switcher, View,
+    ApiView, AudioView, CaptureChoice, FileKind, Images, IoView, ProjectNotice, ProjectRequest,
+    ProjectView, Switcher, View,
 };
 pub use tally::{TALLY_PREVIEW, TALLY_PROGRAM, Tally};
 
@@ -122,6 +124,13 @@ struct Picker {
     result: Receiver<Option<PathBuf>>,
 }
 
+/// What the window runs beside the engine: the project files, the control APIs.
+#[derive(Debug)]
+pub struct Services {
+    pub project: ProjectFiles,
+    pub api: ApiControl,
+}
+
 /// Root UI state.
 #[derive(Debug)]
 pub struct MainUi {
@@ -138,6 +147,7 @@ pub struct MainUi {
     io: Box<dyn IoStatus>,
     picker: Option<Picker>,
     project: ProjectFiles,
+    api: ApiControl,
 }
 
 impl MainUi {
@@ -148,8 +158,9 @@ impl MainUi {
         adapter: String,
         io: Box<dyn IoStatus>,
         screens: Screens,
-        project: ProjectFiles,
+        services: Services,
     ) -> Self {
+        let Services { project, api } = services;
         let Readers {
             program,
             preview,
@@ -170,6 +181,7 @@ impl MainUi {
             io,
             picker: None,
             project,
+            api,
         }
     }
 
@@ -261,10 +273,14 @@ impl MainUi {
             rejection: rejection.as_deref(),
             audio: AudioView { levels: &levels },
             project: self.project.view(),
+            api: self.api.view(),
         };
         self.switcher.show(ui, &view);
         let request = self.switcher.take_project_request();
         self.project.update(request, &self.engine, ui.ctx());
+        if let Some(settings) = self.switcher.take_api_request() {
+            self.api.apply(settings);
+        }
         self.fullscreen
             .show(ui.ctx(), &state, &self.engine.state(), &screens, &commands);
         self.files(ui.ctx());

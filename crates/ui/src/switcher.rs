@@ -20,6 +20,7 @@ use crate::{HeadphonesActivity, OutputActivity};
 use icons::Icon;
 
 mod about;
+mod api_settings;
 mod html_input;
 mod icons;
 mod mixer;
@@ -29,6 +30,7 @@ mod project_bar;
 mod srt_input;
 mod stinger;
 
+pub use api_settings::ApiView;
 pub use project_bar::{ProjectNotice, ProjectRequest, ProjectView};
 
 /// Width of the transition column.
@@ -183,6 +185,8 @@ pub struct View<'a> {
     pub audio: AudioView<'a>,
     /// The show's project file (ADR 0013).
     pub project: ProjectView<'a>,
+    /// The control APIs (ADR 0012).
+    pub api: ApiView<'a>,
 }
 
 /// What the switcher reads of the audio mixer.
@@ -252,6 +256,7 @@ pub struct Switcher {
     /// The SVG loader of the icons is installed.
     icons_ready: bool,
     project: project_bar::ProjectUi,
+    api: api_settings::ApiUi,
 }
 
 /// Size of the input thumbnails, as the reference lets the operator choose it.
@@ -306,6 +311,7 @@ impl Default for Switcher {
             thumbs: ThumbSize::default(),
             icons_ready: false,
             project: project_bar::ProjectUi::default(),
+            api: api_settings::ApiUi::default(),
         }
     }
 }
@@ -337,6 +343,7 @@ impl Switcher {
             ui.horizontal(|ui| {
                 self.project_bar(ui, view);
                 ui.separator();
+                Self::api_warning(ui, view);
                 if let Some(reason) = view.io.unavailable {
                     ui.label(
                         RichText::new("GStreamer introuvable : caméras et vidéos désactivées")
@@ -1256,6 +1263,9 @@ impl Switcher {
                 if domain != state.mix_domain {
                     self.send(ui, view, Command::SetMixDomain { domain });
                 }
+
+                ui.separator();
+                self.api_section(ui, view);
             });
         self.settings_open = open;
     }

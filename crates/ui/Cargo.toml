@@ -18,8 +18,12 @@ egui_extras.workspace = true
 rfd.workspace = true
 tracing.workspace = true
 vma-project.workspace = true
+vma-api.workspace = true
+serde_json.workspace = true
+serde.workspace = true
 
 [dev-dependencies]
+vma-api.workspace = true
 # Headless egui tests driven through AccessKit (test only, not in the binary).
 egui_kittest.workspace = true
 # The app gets egui's bundled fonts through eframe; headless tests need them too.

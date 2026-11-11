@@ -2,9 +2,11 @@
 
 - **Statut** : mise en œuvre le 2026-11-11 (Phase 5 étape 5, ADR 0012) ; critères E10, E11 de
   [`phase-5.md`](phase-5.md)
-- **Adresse** : `http://127.0.0.1:8090` par défaut (cette machine seulement, ADR 0012 § 3) ;
-  `--no-api` la ferme. Le réglage de l'adresse et de l'accès réseau arrive avec les Réglages
-  de l'API compat (étape 6–7).
+- **Adresse** : `http://127.0.0.1:8090` par défaut (cette machine seulement, ADR 0012 § 3).
+  Réglages → API de contrôle : « Accessible depuis le réseau » (0.0.0.0, avec un
+  avertissement), les trois ports, l'état de chaque serveur, « Appliquer » (les API sont
+  fermées puis rouvertes) ; gardés dans `settings.json` du dossier de configuration. Un port
+  qui ne s'ouvre pas est signalé dans la barre du haut ; `--no-api` les ferme toutes.
 
 L'API native est la porte des outils maison, du futur agent IA et d'une future UI web. Elle
 ne touche jamais l'état : elle envoie des `Command`, exactement celles de l'UI, journalisées

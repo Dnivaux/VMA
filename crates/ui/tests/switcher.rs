@@ -21,8 +21,8 @@ use vma_engine::{
     MeterReading, MixDomain, Source, State, Timeline,
 };
 use vma_ui::{
-    AudioView, CaptureChoice, FileKind, HeadphonesActivity, Images, IoView, OutputActivity,
-    ProjectNotice, ProjectRequest, ProjectView, Screen, Switcher, View,
+    ApiView, AudioView, CaptureChoice, FileKind, HeadphonesActivity, Images, IoView,
+    OutputActivity, ProjectNotice, ProjectRequest, ProjectView, Screen, Switcher, View,
 };
 
 struct Rig {
@@ -64,6 +64,10 @@ struct Rig {
     project_recent: Vec<std::path::PathBuf>,
     project_notice: Option<ProjectNotice>,
     project_requests: Vec<ProjectRequest>,
+    /// The control APIs: settings in use, what became of them, what was asked.
+    api_settings: vma_api::ApiSettings,
+    api_status: vma_api::ApiStatus,
+    api_requests: Vec<vma_api::ApiSettings>,
 }
 
 impl Rig {
@@ -149,6 +153,9 @@ fn harness_on(state: State, render: bool) -> Harness<'static, Rig> {
         project_recent: Vec::new(),
         project_notice: None,
         project_requests: Vec::new(),
+        api_settings: vma_api::ApiSettings::default(),
+        api_status: vma_api::ApiStatus::default(),
+        api_requests: Vec::new(),
     };
     let builder = Harness::builder()
         // A 1080p screen: the inputs and the mixer side by side.
@@ -221,7 +228,13 @@ fn harness_on(state: State, render: bool) -> Harness<'static, Rig> {
                     autosaves: &[],
                     notice: rig.project_notice.as_ref(),
                 },
+                api: ApiView {
+                    settings: rig.api_settings,
+                    status: &rig.api_status,
+                    enabled: true,
+                },
             };
+            rig.api_requests.extend(rig.switcher.take_api_request());
             rig.switcher.show(ui, &view);
             rig.project_requests
                 .extend(rig.switcher.take_project_request());
@@ -2060,5 +2073,48 @@ fn what_a_project_could_not_load_is_shown() {
     assert!(
         h.query_by_label("Projet sauvegardé : /émissions/match.vma")
             .is_some()
+    );
+}
+
+/// ADR 0012, E11: a port that could not be opened is shown in the top bar; the settings open
+/// the APIs to the network, change ports, and apply.
+#[test]
+fn the_control_api_settings() {
+    let mut h = harness(state());
+    assert!(
+        h.query_by_label_contains("un port n'a pas pu s'ouvrir")
+            .is_none()
+    );
+    h.state_mut().api_status.compat_tcp =
+        vma_api::ServerStatus::Failed("127.0.0.1:8099 : address in use".into());
+    h.run();
+    assert!(
+        h.query_by_label("API de contrôle : un port n'a pas pu s'ouvrir")
+            .is_some()
+    );
+
+    h.get_by_label("Réglages").click();
+    h.run();
+    assert!(
+        h.query_by_label_contains("API compat TCP : fermée")
+            .is_some()
+    );
+    h.get_by_label("Appliquer").click();
+    h.run();
+    assert!(h.state().api_requests.is_empty(), "nothing changed yet");
+    h.get_by_label("Accessible depuis le réseau").click();
+    h.run();
+    assert!(
+        h.query_by_label_contains("n'a pas de").is_some(),
+        "the warning"
+    );
+    h.get_by_label("Appliquer").click();
+    h.run();
+    assert_eq!(
+        h.state().api_requests,
+        [vma_api::ApiSettings {
+            network: true,
+            ..vma_api::ApiSettings::default()
+        }]
     );
 }

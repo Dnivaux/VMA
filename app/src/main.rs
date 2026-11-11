@@ -177,8 +177,6 @@ struct App<'a> {
     lost_since: Option<Instant>,
     /// Writes what is pending when the window closes (ADR 0013 § 8).
     _autosaver: Option<vma_project::Autosaver>,
-    /// The control APIs (ADR 0012); stopped with the window.
-    _api: Option<vma_api::Api>,
 }
 
 /// What `main` prepares for the window: the journal, the project to open, the stream keys,
@@ -259,21 +257,12 @@ impl<'a> App<'a> {
         } else {
             None
         };
-        let api = if options.api {
-            match vma_api::Api::start(
-                &vma_api::ApiConfig::default(),
-                engine.commands(),
-                engine.state(),
-            ) {
-                Ok(api) => Some(api),
-                Err(e) => {
-                    tracing::error!(error = %e, "control APIs not started");
-                    None
-                }
-            }
-        } else {
-            None
-        };
+        let api = vma_ui::ApiControl::start(
+            startup.config_folder.join("settings.json"),
+            options.api,
+            engine.commands(),
+            engine.state(),
+        );
         // Synthetic sources asked for on the command line (soaks, rate tests). Without them a
         // soak still needs a moving picture on air: the test pattern. A normal session starts
         // empty, like the reference.
@@ -444,11 +433,14 @@ impl<'a> App<'a> {
             adapter,
             Box::new(Io(io, options.headphones)),
             screens,
-            vma_ui::ProjectFiles::new(
-                startup.secrets,
-                startup.config_folder,
-                options.project.clone(),
-            ),
+            vma_ui::Services {
+                project: vma_ui::ProjectFiles::new(
+                    startup.secrets,
+                    startup.config_folder,
+                    options.project.clone(),
+                ),
+                api,
+            },
         );
         if let Some((options, mut context)) = soak_context {
             context.fullscreen = ui.fullscreen_stats();
@@ -466,7 +458,6 @@ impl<'a> App<'a> {
             device_lost_grace: config.device_lost_grace,
             lost_since: None,
             _autosaver: autosaver,
-            _api: api,
         })
     }
 }
