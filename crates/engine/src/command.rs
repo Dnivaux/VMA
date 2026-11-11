@@ -54,6 +54,13 @@ pub enum Command {
     SetFader {
         value: u8,
     },
+    /// A transition of this effect and duration, outside the buttons (the compat API's `Fade`,
+    /// `Cut` with a `Duration`): the Preview, or `input` directly (as Quick Play).
+    Mix {
+        effect: Effect,
+        duration_ms: u32,
+        input: Option<InputId>,
+    },
     SetTransition {
         button: u8,
         effect: Effect,

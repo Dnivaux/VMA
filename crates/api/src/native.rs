@@ -16,13 +16,10 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use serde_json::json;
-use tokio::sync::oneshot;
-use vma_engine::{Command, Outcome, SendError, Source};
+use vma_engine::Command;
 
-use crate::{Shared, tally};
+use crate::{RunError, Shared, run, tally};
 
-/// How long a command may take to be applied before the client is told so.
-const REPLY_TIMEOUT: Duration = Duration::from_secs(2);
 /// A client that does not take an event in this time is disconnected.
 const SEND_TIMEOUT: Duration = Duration::from_secs(5);
 /// Largest command accepted, in bytes (a project with its inputs fits).
@@ -72,33 +69,19 @@ async fn command(Extract(shared): Extract<Shared>, body: String) -> Response {
             );
         }
     };
-    let (tx, rx) = oneshot::channel();
-    let sent = shared
-        .commands
-        .send_then(Source::Api, command, move |id, outcome: &Outcome| {
-            let _ = tx.send((id, outcome.clone()));
-        });
-    if let Err(e) = sent {
-        let status = match e {
-            SendError::Full | SendError::Stopped => StatusCode::SERVICE_UNAVAILABLE,
-        };
-        return json_response(status, &json!({ "error": e.to_string() }));
-    }
-    match tokio::time::timeout(REPLY_TIMEOUT, rx).await {
-        Ok(Ok((id, Outcome::Ok))) => {
-            json_response(StatusCode::OK, &json!({ "id": id.0, "result": "ok" }))
-        }
-        Ok(Ok((id, Outcome::Rejected(reason)))) => json_response(
+    match run(&shared, command).await {
+        Ok(id) => json_response(StatusCode::OK, &json!({ "id": id.0, "result": "ok" })),
+        Err(RunError::Rejected(reason)) => json_response(
             StatusCode::UNPROCESSABLE_ENTITY,
-            &json!({ "id": id.0, "result": "rejected", "error": reason }),
+            &json!({ "result": "rejected", "error": reason }),
         ),
-        Ok(Err(_)) => json_response(
-            StatusCode::SERVICE_UNAVAILABLE,
-            &json!({ "error": "the engine stopped" }),
-        ),
-        Err(_) => json_response(
+        Err(e @ RunError::Timeout) => json_response(
             StatusCode::GATEWAY_TIMEOUT,
-            &json!({ "error": "the engine did not answer in time" }),
+            &json!({ "error": e.to_string() }),
+        ),
+        Err(e @ (RunError::Send(_) | RunError::Stopped)) => json_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            &json!({ "error": e.to_string() }),
         ),
     }
 }

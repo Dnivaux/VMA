@@ -6,14 +6,15 @@
 //! the UI's) and read the snapshot `vma-control` publishes. A port that cannot be opened is
 //! reported in [`ApiStatus`]; VMA runs on without it.
 
+pub mod compat;
 mod native;
 mod tally;
 
 use std::net::{Ipv4Addr, SocketAddr};
 use std::time::Duration;
 
-use tokio::sync::watch;
-use vma_engine::{CommandSender, StateReader};
+use tokio::sync::{oneshot, watch};
+use vma_engine::{Command, CommandId, CommandSender, Outcome, SendError, Source, StateReader};
 
 pub use tally::{TallyLight, tally};
 
@@ -24,15 +25,18 @@ const STATE_POLL: Duration = Duration::from_millis(10);
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApiConfig {
     pub native: Option<SocketAddr>,
+    pub compat_http: Option<SocketAddr>,
 }
 
-/// Port of the native API (`phase-5.md` Q5).
+/// Ports (`phase-5.md` Q5): native, and the reference's HTTP.
 pub const NATIVE_PORT: u16 = 8090;
+pub const COMPAT_HTTP_PORT: u16 = 8088;
 
 impl Default for ApiConfig {
     fn default() -> Self {
         Self {
             native: Some(SocketAddr::from((Ipv4Addr::LOCALHOST, NATIVE_PORT))),
+            compat_http: Some(SocketAddr::from((Ipv4Addr::LOCALHOST, COMPAT_HTTP_PORT))),
         }
     }
 }
@@ -50,6 +54,7 @@ pub enum ServerStatus {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ApiStatus {
     pub native: ServerStatus,
+    pub compat_http: ServerStatus,
 }
 
 /// Why the APIs could not start at all.
@@ -116,6 +121,9 @@ impl Api {
         if let Some(address) = config.native {
             status.native = serve(&runtime, address, native::router(shared.clone()));
         }
+        if let Some(address) = config.compat_http {
+            status.compat_http = serve(&runtime, address, compat::router(shared.clone()));
+        }
         Ok(Self {
             runtime: Some(runtime),
             status,
@@ -132,6 +140,39 @@ impl Drop for Api {
         if let Some(runtime) = self.runtime.take() {
             runtime.shutdown_timeout(Duration::from_secs(1));
         }
+    }
+}
+
+/// How long a command may take to be applied before its caller is told so.
+const REPLY_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Why a command sent by an API was not applied.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub(crate) enum RunError {
+    #[error("{0}")]
+    Send(SendError),
+    #[error("{0}")]
+    Rejected(String),
+    #[error("the engine did not answer in time")]
+    Timeout,
+    #[error("the engine stopped")]
+    Stopped,
+}
+
+/// Sends `command` (source `Api`) and waits for the engine's outcome.
+pub(crate) async fn run(shared: &Shared, command: Command) -> Result<CommandId, RunError> {
+    let (tx, rx) = oneshot::channel();
+    shared
+        .commands
+        .send_then(Source::Api, command, move |id, outcome: &Outcome| {
+            let _ = tx.send((id, outcome.clone()));
+        })
+        .map_err(RunError::Send)?;
+    match tokio::time::timeout(REPLY_TIMEOUT, rx).await {
+        Ok(Ok((id, Outcome::Ok))) => Ok(id),
+        Ok(Ok((_, Outcome::Rejected(reason)))) => Err(RunError::Rejected(reason)),
+        Ok(Err(_)) => Err(RunError::Stopped),
+        Err(_) => Err(RunError::Timeout),
     }
 }
 

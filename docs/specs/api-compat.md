@@ -12,6 +12,22 @@
   été lue en partie seulement, l'entrée est **à revérifier** avant l'implémentation (règle
   BRIEF §7 : ne rien inventer de mémoire) ; **M** = envoyé ou lu par le module Companion.
 
+## 0. Mise en œuvre (2026-11-11)
+- **HTTP** (étape 6) : `GET /api` (et `/api/`, `/API`, `/API/`) : XML d'état ;
+  `GET /api/?Function=…` : 200 « Function completed successfully. », 500 avec la raison. Toutes
+  les fonctions « oui » et « partiel » des tableaux du § 4 sont faites, **sauf** `OpenPreset` /
+  `SavePreset` (plus tard dans la phase). Un test par fonction : `crates/api/tests/compat_http.rs`.
+- **TCP** (étape 7) : à venir.
+- **Choix à confirmer par l'observation du XML réel (Q3)**, constantes de `api::compat` :
+  version `26.0.0.0`, édition `HD` ; types d'input (`Capture`, `Video`, `Image`, `Colour` pour
+  les couleurs et les sources de test, `Audio`, `SRT`, `NDI`, `Browser`) ; `state` `Running` /
+  `Paused` ; enfants de `audio` `master`, `busA`, `busB` ; `position`, `duration`, vumètres et
+  `gainDb` à 0 (pas encore lus par l'API) ; **loi du volume 0–100** : amplitude
+  (volume / 100)², soit 100 = 0 dB, 50 ≈ −12 dB, 0 = silence (un fader au-dessus de 0 dB vaut
+  100).
+- `Fade` / `Cut` avec `Input` : cet input passe au Program directement, la Preview reste
+  (comme Quick Play) ; à vérifier sur la référence.
+
 ## 1. Transports
 **TCP** (port 8099 par défaut, réglable chez VMA, Q5) : texte UTF-8, une commande par ligne
 terminée par `\r\n`. Réponse `<COMMANDE> <OK|ER|longueur> [texte]\r\n`, puis, avec une

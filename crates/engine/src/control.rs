@@ -968,6 +968,42 @@ mod tests {
         assert_eq!((state.program, state.preview), (Some(c), Some(a)));
     }
 
+    /// Phase 5 (compat `Fade`, `Cut` with a duration): a transition of its own effect and
+    /// duration, from the Preview (swapped) or from an input directly (Preview kept).
+    #[test]
+    fn a_mix_has_its_own_effect_and_duration() {
+        let mut rig = Rig::new(FrameRate::FPS_50);
+        let a = rig.color();
+        let b = rig.color();
+        let c = rig.color();
+        let fade = |ms, input| Command::Mix {
+            effect: Effect::Fade,
+            duration_ms: ms,
+            input,
+        };
+        let shown = run_transition(&mut rig, fade(800, None));
+        assert_eq!(shown.iter().filter(|c| c.to.is_some()).count(), 40);
+        let state = rig.reader.load();
+        assert_eq!((state.program, state.preview), (Some(b), Some(a)));
+
+        let shown = run_transition(&mut rig, fade(100, Some(c)));
+        assert_eq!(shown.iter().filter(|c| c.to.is_some()).count(), 5);
+        let state = rig.reader.load();
+        assert_eq!((state.program, state.preview), (Some(c), Some(a)));
+
+        let refused = rig.controller.state().clone();
+        rig.send(fade(20_000, None));
+        rig.send(fade(500, Some(c)));
+        assert_eq!(*rig.controller.state(), refused, "too long; already on air");
+        rig.send(Command::Mix {
+            effect: Effect::Cut,
+            duration_ms: 0,
+            input: None,
+        });
+        rig.tick();
+        assert_eq!(rig.reader.load().program, Some(a));
+    }
+
     #[test]
     fn four_buttons_have_their_own_effect_and_duration() {
         // A17 (engine side).

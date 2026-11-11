@@ -1173,18 +1173,20 @@ impl State {
             }
             Command::QuickPlay { input } => {
                 self.require_idle()?;
-                let (to, ending) = match input {
-                    None => (self.preview.ok_or(Rejection::NoPreview)?, Ending::Swap),
-                    Some(i) => {
-                        self.require(*i)?;
-                        if self.program == Some(*i) {
-                            return Err(Rejection::AlreadyOnProgram(*i));
-                        }
-                        (*i, Ending::Direct)
-                    }
-                };
+                let (to, ending) = self.incoming(*input)?;
                 self.playable(self.quick_play)?;
                 Ok(self.start(self.quick_play, to, ending))
+            }
+            Command::Mix {
+                effect,
+                duration_ms,
+                input,
+            } => {
+                let setting = valid_setting(*effect, *duration_ms)?;
+                self.require_idle()?;
+                let (to, ending) = self.incoming(*input)?;
+                self.playable(setting)?;
+                Ok(self.start(setting, to, ending))
             }
             Command::SetFader { value } => self.set_fader(*value),
             Command::SetTransition {
@@ -2168,6 +2170,21 @@ impl State {
                 return key;
             }
             seed = seed.wrapping_add(1);
+        }
+    }
+
+    /// What a transition brings on air: the Preview (swapped with the Program at the end), or
+    /// `input` directly (the Preview stays).
+    fn incoming(&self, input: Option<InputId>) -> Result<(InputId, Ending), Rejection> {
+        match input {
+            None => Ok((self.preview.ok_or(Rejection::NoPreview)?, Ending::Swap)),
+            Some(i) => {
+                self.require(i)?;
+                if self.program == Some(i) {
+                    return Err(Rejection::AlreadyOnProgram(i));
+                }
+                Ok((i, Ending::Direct))
+            }
         }
     }
 
