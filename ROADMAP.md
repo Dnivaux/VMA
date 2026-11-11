@@ -273,4 +273,8 @@ vérifiées dans la documentation publique : [`api-compat.md`](docs/specs/api-co
 | 11. Raccourcis configurables (liste de la partenaire) | ⬜ | |
 | 12. Soak d'acceptation, arrêt pour revue | ⬜ | |
 
+| Test instable vu pendant la phase | Raison |
+|---|---|
+| `vma-io-html::real_helper::the_sound_of_a_page_reaches_its_feed` (CI Windows) | Run 43064182339 (2026-11-11) : 106 560 échantillons en 2 s (53 280 /s, tolérance 48 000 ± 10 %), rattrapage après une pause du runner ; vert aux runs précédents, code non touché par la Phase 5 ; job relancé. À surveiller avec le démarrage de CEF sous Windows (Phase 4 étape 4, ⏸) |
+
 ## Phase 6 — Sport · ⬜
