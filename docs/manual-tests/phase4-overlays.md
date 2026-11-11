@@ -18,7 +18,7 @@ input ; il ne va **pas** au Program, seulement en overlay (boutons 1–4 de sa v
 - [x] Bouton **1** de sa vignette : le lower third entre en fondu (0,5 s) **au Program
       seulement** ; la Preview ne le montre pas ; le bouton 1 reste enfoncé ; la vignette est
       rouge (tally).
-- [ ] Le Program (rouge) sous le lower third se voit à travers le bandeau et autour du texte.
+- [x] Le Program (rouge) sous le lower third se voit à travers le bandeau et autour du texte.
       Regarder de près les bords des lettres de « Hors bandeau : bords sans liseré ? » : ils
       passent du blanc au rouge **sans trait sombre** autour (un fin contour gris ou noir =
       défaut). Premier passage : « Je ne trouve pas » — sans doute faute d'un input
@@ -27,10 +27,10 @@ input ; il ne va **pas** au Program, seulement en overlay (boutons 1–4 de sa v
       Premier passage : « ça ne fait rien quand je clique », la même image étant en Preview et
       au Program ; à refaire avec Rouge / Bleu : le fond passe du rouge au bleu, le lower
       third reste en place, sans clignoter.
-- [ ] Bouton **1** de la vignette du PNG à nouveau (infobulle « Retirer de l'overlay 1 ») : il
+- [x] Bouton **1** de la vignette du PNG à nouveau (infobulle « Retirer de l'overlay 1 ») : il
       sort en fondu ; le bouton 1 n'est plus enfoncé ; le tally rouge de la vignette s'éteint.
       Premier passage : « je ne comprends pas, j'ai dû mal faire » — noter ce qui se passe
-      (rien, il ressort puis rentre, autre ?).
+      (rien, il ressort puis rentre, autre ?). ca marche ça s'affiche avec un fondu
 - [x] Réglages → Overlays : overlay 1 en Cut ; entrée et sortie à l'instant.
 - [x] Un deuxième input (vidéo avec alpha, ou une couleur) en overlay **2** pendant que le 1 est
       présent : le 2 passe **au-dessus** du 1.
@@ -38,12 +38,12 @@ input ; il ne va **pas** au Program, seulement en overlay (boutons 1–4 de sa v
 
 ## Sorties
 - [x] Enregistrer quelques secondes avec un overlay : il est dans le fichier.
-- [ ] FTB : les sorties passent au noir **overlays compris** ; la vue Program de l'UI les garde.
+- [x] FTB : les sorties passent au noir **overlays compris** ; la vue Program de l'UI les garde.
       Oui, il faut une sortie pour le voir (la vue Program de l'UI n'est volontairement pas
       concernée par le FTB) : lancer **Enregistrer**, mettre un overlay, cliquer **FTB**,
       attendre 2 s, re-cliquer FTB, arrêter l'enregistrement ; à la relecture, l'image *et*
-      l'overlay fondent au noir puis reviennent.
-- [ ] Retirer l'input de la liste (×) pendant qu'il est en overlay : il disparaît, rien d'autre
+      l'overlay fondent au noir puis reviennent. ca fait fondu au noir
+- [x] Retirer l'input de la liste (×) pendant qu'il est en overlay : il disparaît, rien d'autre
       ne change.
 
 ## Input HTML (étape 5)
@@ -58,7 +58,7 @@ toi : `--html https://…`).
 - [x] L'horloge défile régulièrement (centièmes), sans à-coup visible.
 - [x] Sans `vma-html` (renommé) : l'input est « signal perdu » avec la raison
       « vma-html introuvable… », le reste de VMA fonctionne.
-- [ ] Pendant que la page est en overlay, tuer le processus de la page **dans un autre
+- [x] Pendant que la page est en overlay, tuer le processus de la page **dans un autre
       terminal**, VMA restant ouvert :
       `pgrep -af vma-connect` doit afficher une ligne `…/vma-html --vma-connect=127.0.0.1:…` ;
       puis `pkill -9 -f vma-connect`. L'input est perdu une à quelques secondes puis revient
@@ -69,3 +69,5 @@ toi : `--html https://…`).
 _À compléter : versions, écran, remarques._
 - 2026-11-10, premier passage (mainteneur) : 11 points sur 16 cochés ; les 5 autres sont
   précisés ci-dessus, à refaire.
+- 2026-11-11, second passage (mainteneur) : les 5 points refaits, tous ✓ (sortie au bouton 1
+  en fondu, FTB vu sur l'enregistrement) : **16 / 16**, aucun défaut relevé.
