@@ -974,6 +974,23 @@ mod tests {
         assert_eq!(replayed, *rig.reader.load());
     }
 
+    /// ADR 0013: the seed of the keys is journaled, so a replay gives the inputs their keys.
+    #[test]
+    fn a_replay_gives_the_inputs_their_keys() {
+        let mut rig = Rig::new(FrameRate::FPS_50);
+        rig.send(Command::SeedInputKeys { seed: 0x5EED_1234 });
+        rig.color();
+        rig.color();
+        let fresh = State::new(Format {
+            rate: FrameRate::FPS_50,
+            resolution: Resolution::HD_1080,
+        });
+        let replayed = replay(fresh, &rig.journal_text()).unwrap();
+        let live = rig.reader.load();
+        assert_eq!(replayed, *live);
+        assert_ne!(live.inputs[0].key, live.inputs[1].key);
+    }
+
     /// D9 (HTML): page commands are journaled in full (credentials of an address excepted)
     /// and a replay gives the same state.
     #[test]

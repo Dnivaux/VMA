@@ -167,6 +167,14 @@ leur liste pour que VMA puisse faire les mêmes.
 - [ ] Ses raccourcis sont-ils les mêmes d'une émission à l'autre, ou propres à chaque preset ?
   → …
 
+- [ ] **L'état vu par Companion** (pour que VMA lui réponde pareil) : le logiciel ouvert sur
+  une configuration d'émission, ouvrir dans un navigateur `http://127.0.0.1:8088/api`
+  (si rien ne s'affiche : Réglages → Web, noter le port et l'utiliser à la place de 8088),
+  puis Fichier → Enregistrer la page sous… et m'envoyer le fichier. On n'en recopie rien :
+  on vérifie seulement la forme des éléments. Les titres des inputs y figurent : les
+  remplacer si besoin.
+  → …
+
 ## 8. Son
 - [ ] Pendant l'émission, que touche-t-elle dans le mélangeur : faders, muet, solo, bus A / B,
   son qui suit la vidéo ?

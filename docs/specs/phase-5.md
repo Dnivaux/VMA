@@ -1,6 +1,9 @@
 # Phase 5 — Contrôle et monitoring : spec d'ensemble et plan
 
-- **Statut** : **proposé** (2026-11-11), à valider par le mainteneur : questions Q1–Q16 du § 7
+- **Statut** : **validé** le 2026-11-11 par le mainteneur (réponses dans le § 7) : toutes les
+  recommandations retenues ; Q1 : « au plus proche de la référence » ; Q6 : choix délégué
+  (décision : § 7) ; Q8 : « important » ; Q10 : MultiView **au plus proche de la référence**
+  (dispositions d'après son guide public, ADR 0014)
 - **Date** : 2026-11-11
 - **Références** : BRIEF §2, §4 (Phase 5), §5, §6, §7, §8 ; ADR 0002 (UI web plus tard, par
   l'API native), ADR 0003 (état, commandes, threads), ADR 0006 (sorties), ADR 0011 (identité
@@ -140,53 +143,59 @@ embarquée par egui, ou `ab_glyph` Apache-2.0).
   dépend. **Recommandé** : l'accepter comme **identifiant de protocole**, en une constante
   unique dans `api::compat`, jamais montrée dans l'UI, ni dans les messages, ni dans la doc
   utilisateur (on y dit « API compat ») ; l'écrire dans l'ADR 0012. Sinon : pas de Companion
-  sans modification de son module.
+  sans modification de son module. (OK fais ce qui est le mieux pour avoir le plus proche de vmix)
 - **Q2 — Version annoncée** (`<version>`, `<edition>`). Le module active des fonctions selon
   le numéro de version (au-delà de 27 : correction colorimétrique, position des calques, que
   VMA n'a pas). **Recommandé** : annoncer une version 26 et l'édition la plus simple qui
-  convient (à fixer avec Q3), constantes documentées dans `api-compat.md`.
+  convient (à fixer avec Q3), constantes documentées dans `api-compat.md`. (OK)
 - **Q3 — Observer le XML réel.** Demander à la partenaire d'ouvrir `http://127.0.0.1:8088/api`
   dans un navigateur, sur sa configuration, et d'enregistrer la page (c'est la sortie publique
   de l'API, sur ses données : comportement observé, BRIEF §2.1). **Recommandé** : oui, avec
   une ligne dans sa checklist ; on ne recopie pas son contenu, on vérifie la forme des
-  éléments.
+  éléments. (OK)
 - **Q4 — Où écoutent les API.** **Recommandé** : actives par défaut, sur **127.0.0.1**
   seulement (Companion sur la même machine) ; une case « accessible depuis le réseau » dans
   Réglages, avec un avertissement (pas de mot de passe dans le protocole) ; API native : même
-  règle, jeton facultatif plus tard.
+  règle, jeton facultatif plus tard. (OK)
 - **Q5 — Ports.** **Recommandé** : 8088 (HTTP compat) et 8099 (TCP compat), comme la
-  référence, réglables ; API native sur **8090**, réglable.
+  référence, réglables ; API native sur **8090**, réglable. (OK)
 - **Q6 — Clés de stream et projet.** Les clés ne sont jamais écrites (`Secret`).
   **Recommandé** : ne pas les mettre dans le projet (un projet se partage) ; les garder dans
   un fichier à part du dossier de configuration de l'utilisateur (droits restreints), par nom
   de destination ; au chargement sans clé connue, la destination est créée sans clé et la
-  fenêtre Sorties le signale.
+  fenêtre Sorties le signale. (Fais le mieux pour l'outil)
+  **Décision** : clés hors du projet, dans `secrets.json` du dossier de configuration de
+  l'utilisateur (droits du seul utilisateur), indexées par l'adresse de la destination ; au
+  chargement sur la même machine, chaque destination retrouve sa clé sans rien demander ;
+  sur une autre machine, elle arrive sans clé et la fenêtre Sorties le dit. Pas de trousseau
+  du système : absent ou verrouillé sur certains postes Linux, il ferait échouer un
+  chargement à l'antenne.
 - **Q7 — Ouvrir un projet pendant l'émission.** **Recommandé** : confirmation qui liste les
   sorties actives ; elles sont arrêtées proprement avant le chargement ; par l'API, refusé si
-  une sortie est active (erreur explicite).
+  une sortie est active (erreur explicite). (ok)
 - **Q8 — Autosauvegarde.** **Recommandé** : 2 s après le dernier changement et à la fermeture,
   5 sauvegardes tournantes dans le dossier de configuration ; « Dernier » rouvre la plus
-  récente.
+  récente. (oui important)
 - **Q9 — Où va la MultiView.** **Recommandé** : comme source du plein écran (donc **deux
   plein écran** possibles, un par écran : Program sur l'un, MultiView sur l'autre) et du
-  NDI® ; un aperçu dans la fenêtre Sorties.
+  NDI® ; un aperçu dans la fenêtre Sorties. (ok)
 - **Q10 — Dispositions.** **Recommandé** : un jeu fixe (Preview + Program en grand et 8 cases
   dessous ; Preview + Program et 4 ; 3 × 3 ; 4 × 4), chaque case réglable (quel input, ou
-  Preview / Program) ; un éditeur libre plus tard si la partenaire le demande.
+  Preview / Program) ; un éditeur libre plus tard si la partenaire le demande. (Je veux que ca se rapproche de vmix)
 - **Q11 — Tally d'un overlay.** Un input visible dans un overlay du Program est-il « au
   Program » (rouge) ? **Recommandé** : oui (convention de régie), à confirmer par
-  l'observation (Q3, et `TALLY` de la référence).
+  l'observation (Q3, et `TALLY` de la référence). (oui)
 - **Q12 — Comment prouver l'acceptation.** **Recommandé** : Companion réel sur la machine de
   dev (checklist, version épinglée) **et** son trafic rejoué en CI (E8) ; Companion sans
-  interface dans un conteneur en CI plus tard, si le rejeu ne suffit pas.
+  interface dans un conteneur en CI plus tard, si le rejeu ne suffit pas. (ok)
 - **Q13 — Raccourcis configurables dans la Phase 5.** **Recommandé** : oui, avec le
   vocabulaire de l'API compat (une seule table de fonctions), à faire quand la liste de la
-  partenaire est arrivée ; sinon reportés.
+  partenaire est arrivée ; sinon reportés. (ok)
 - **Q14 — `XMLTEXT`.** **Recommandé** : un sous-ensemble de XPath (chemins
   `racine/…/élément[n]/@attribut` et texte d'élément), le reste → `ER` ; c'est ce que les
-  boîtiers simples utilisent.
+  boîtiers simples utilisent. (oui)
 - **Q15 — Format du projet.** **Recommandé** : JSON (BRIEF §6), extension `.vma`, champ
-  `version` entier, migrations écrites et testées pour chaque version.
+  `version` entier, migrations écrites et testées pour chaque version. (ok)
 - **Q16 — Chemins des médias.** **Recommandé** : chaque chemin enregistré en absolu **et**
   relatif au projet ; au chargement, le relatif d'abord (dossier déplacé, autre machine),
-  puis l'absolu.
+  puis l'absolu. (ok)

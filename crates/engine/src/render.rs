@@ -308,6 +308,16 @@ impl RenderEngine {
         let input_stats = controller.input_stats();
         let timelines = Timelines::default();
         let (commands, command_rx) = command_channel();
+        // Keys of new inputs differ from one run to the next, and the journal has the seed
+        // (ADR 0013).
+        let seed = std::hash::BuildHasher::hash_one(
+            &std::collections::hash_map::RandomState::new(),
+            std::time::SystemTime::now(),
+        );
+        let seeding = crate::command::Command::SeedInputKeys { seed };
+        if let Err(e) = commands.send(crate::command::Source::Script, seeding) {
+            tracing::warn!(error = %e, "input keys keep their default seed");
+        }
         let control_thread = control::spawn(
             controller,
             ControlInputs {

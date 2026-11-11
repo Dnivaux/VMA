@@ -253,8 +253,24 @@ la crate Phosphor n'est pas encore à egui 0.37), formes et textes propres à VM
 **Placement décidé par le mainteneur (2026-11-10)** : après la revue de la Phase 4 ; l'essai CEF
 (étape 4) passe d'abord. Hors du périmètre de la Phase 4 (BRIEF §10) : n'avance que sur demande.
 
-## Phase 5 — Contrôle et monitoring · *spec proposée le 2026-11-11, en attente de validation*
-Spec et plan : [`phase-5.md`](docs/specs/phase-5.md) (projet, API compat HTTP / TCP et native,
-tally, MultiView ; critères E1–E14, questions Q1–Q16) ; fonctions de l'API compat vérifiées
-dans la documentation publique : [`api-compat.md`](docs/specs/api-compat.md).
+## Phase 5 — Contrôle et monitoring · *en cours (2026-11-11)*
+Spec et plan **validés le 2026-11-11** : [`phase-5.md`](docs/specs/phase-5.md) (projet, API
+compat HTTP / TCP et native, tally, MultiView ; critères E1–E14) ; fonctions de l'API compat
+vérifiées dans la documentation publique : [`api-compat.md`](docs/specs/api-compat.md).
+
+| Étape | État | Preuve |
+|---|---|---|
+| 1. ADR 0012 (API), 0013 (fichier projet), 0014 (MultiView) | 🟡 | [ADR 0012](docs/adr/0012-api.md) et [ADR 0013](docs/adr/0013-fichier-projet.md) **acceptés** (réponses aux questions de la spec) ; ADR 0014 à l'étape 9, d'après le guide public de la référence (Q10 : « au plus proche ») |
+| 2. Clé stable par input ; instantané d'état | ✅ | `InputKey` (GUID, version 4), `SeedInputKeys` journalisée au démarrage (le rejeu redonne les clés), `SetInputKey` (refusée si la clé est prise) ; l'instantané `Arc<State>` existait déjà (`StateReader`). 3 nouveaux tests ; 474 tests verts en local |
+| 3. Projet : modèle, chargement par commandes, autosauvegarde, secrets | ⬜ | |
+| 4. UI : barre de projet | ⬜ | |
+| 5. API native | ⬜ | |
+| 6. API compat : fonctions, XML | ⬜ | |
+| 7. API compat : TCP, tally, activateurs | ⬜ | |
+| 8. Trafic Companion rejoué, checklist, essai réel | ⬜ | |
+| 9. MultiView (compositor), source des sorties | ⬜ | |
+| 10. UI MultiView, source des sorties | ⬜ | |
+| 11. Raccourcis configurables (liste de la partenaire) | ⬜ | |
+| 12. Soak d'acceptation, arrêt pour revue | ⬜ | |
+
 ## Phase 6 — Sport · ⬜

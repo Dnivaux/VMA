@@ -13,8 +13,9 @@ use vma_core::{
 
 use crate::audio_plan::{AudioPlan, PlanInput};
 use crate::command::{
-    AutoPlay, Command, Db, DeviceId, Effect, InputSpec, MAX_AUDIO_DELAY_MS, MAX_HTML_TEXT,
-    MAX_TRANSITION_MS, MixDomain, StingerSlot, TRANSITION_BUTTONS, TransitionSetting,
+    AutoPlay, Command, Db, DeviceId, Effect, InputKey, InputSpec, MAX_AUDIO_DELAY_MS,
+    MAX_HTML_TEXT, MAX_TRANSITION_MS, MixDomain, StingerSlot, TRANSITION_BUTTONS,
+    TransitionSetting,
 };
 use crate::output_spec::{InvalidSpec, MAX_OUTPUTS, OutputSpec, RecordSpec, STREAM_SLOTS};
 use crate::plan::{PlanFtb, PlanOverlay, PlanProgress, PlanTransition, RenderPlan};
@@ -68,6 +69,9 @@ pub struct Playback {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InputState {
     pub id: InputId,
+    /// Stable key (ADR 0013): kept by a project, used by the compat API.
+    #[serde(default)]
+    pub key: InputKey,
     pub name: String,
     pub spec: InputSpec,
     pub status: InputStatus,
@@ -404,6 +408,8 @@ pub enum Rejection {
     OverlayEffect,
     #[error("the data for the page is not valid JSON: {0}")]
     InvalidJson(String),
+    #[error("another input already has the key {0}")]
+    KeyTaken(InputKey),
 }
 
 /// Work for `io-gst` that follows from an accepted command.
@@ -658,6 +664,9 @@ pub struct State {
     /// The stinger slots, in the order of [`StingerSlot::ALL`].
     #[serde(default)]
     pub stingers: [StingerState; StingerSlot::COUNT],
+    /// Seed of the keys of new inputs ([`Command::SeedInputKeys`]).
+    #[serde(default)]
+    key_seed: u64,
     next_input: u32,
     next_transition: u64,
     next_output: u32,
@@ -724,6 +733,7 @@ impl State {
             audio: AudioState::default(),
             overlays: Default::default(),
             stingers: Default::default(),
+            key_seed: 0,
             next_input: 1,
             next_transition: 1,
             next_output: Self::DEFAULT_RECORDING.0 + 1,
@@ -1391,6 +1401,20 @@ impl State {
                 };
                 Ok(Change { changed: true, io })
             }
+            Command::SeedInputKeys { seed } => {
+                self.key_seed = *seed;
+                Ok(Change::changed())
+            }
+            Command::SetInputKey { input, key } => {
+                self.require(*input)?;
+                if self.inputs.iter().any(|i| i.key == *key && i.id != *input) {
+                    return Err(Rejection::KeyTaken(*key));
+                }
+                if let Some(i) = self.inputs.iter_mut().find(|i| i.id == *input) {
+                    i.key = *key;
+                }
+                Ok(Change::changed())
+            }
         }
     }
 
@@ -1599,9 +1623,11 @@ impl State {
         };
         let id = InputId(self.next_input);
         self.next_input += 1;
+        let key = self.new_key(id);
         let generated = spec.is_generated();
         self.inputs.push(InputState {
             id,
+            key,
             name,
             spec: spec.clone(),
             status: if generated {
@@ -1849,6 +1875,18 @@ impl State {
             .ok_or(Rejection::UnknownButton(button))
     }
 
+    /// A key for new input `id` that no input has yet (a project may have set any key).
+    fn new_key(&self, id: InputId) -> InputKey {
+        let mut seed = self.key_seed;
+        loop {
+            let key = InputKey::derive(seed, id);
+            if self.inputs.iter().all(|i| i.key != key) {
+                return key;
+            }
+            seed = seed.wrapping_add(1);
+        }
+    }
+
     fn require(&self, input: InputId) -> Result<(), Rejection> {
         self.input(input)
             .map(|_| ())
@@ -1987,6 +2025,90 @@ mod tests {
             })
             .unwrap();
         state.inputs.last().unwrap().id
+    }
+
+    /// ADR 0013: every input has its own key, the same for the same seed, another under
+    /// another seed; a key given back by a project is kept, a key taken twice is refused.
+    #[test]
+    fn inputs_have_stable_keys() {
+        let keys = |seed: u64| {
+            let mut s = state();
+            s.apply(&Command::SeedInputKeys { seed }).unwrap();
+            for r in 0..20 {
+                color(&mut s, r);
+            }
+            s.inputs.iter().map(|i| i.key).collect::<Vec<_>>()
+        };
+        let a = keys(7);
+        let mut unique = a.clone();
+        unique.sort();
+        unique.dedup();
+        assert_eq!(unique.len(), a.len(), "keys are distinct");
+        assert_eq!(a, keys(7), "same seed, same keys");
+        assert!(
+            a.iter().zip(keys(8)).all(|(x, y)| *x != y),
+            "another seed, other keys"
+        );
+        for key in &a {
+            let text = key.to_string();
+            assert_eq!(text.len(), 36);
+            assert_eq!(&text[14..15], "4", "version 4: {text}");
+            assert!("89ab".contains(&text[19..20]), "variant: {text}");
+        }
+
+        let mut s = state();
+        let first = color(&mut s, 1);
+        let second = color(&mut s, 2);
+        let kept: InputKey = "26cae087-b7b6-4d45-98e4-de03ab4feb6b".parse().unwrap();
+        s.apply(&Command::SetInputKey {
+            input: first,
+            key: kept,
+        })
+        .unwrap();
+        assert_eq!(s.inputs[0].key, kept);
+        assert_eq!(
+            s.apply(&Command::SetInputKey {
+                input: second,
+                key: kept,
+            }),
+            Err(Rejection::KeyTaken(kept))
+        );
+        // Setting an input's own key again is not a conflict.
+        s.apply(&Command::SetInputKey {
+            input: first,
+            key: kept,
+        })
+        .unwrap();
+        assert_eq!(
+            s.apply(&Command::SetInputKey {
+                input: InputId(99),
+                key: kept,
+            }),
+            Err(Rejection::UnknownInput(InputId(99)))
+        );
+    }
+
+    #[test]
+    fn input_keys_read_and_write_as_guids() {
+        let key: InputKey = "26CAE087-B7B6-4D45-98E4-DE03AB4FEB6B".parse().unwrap();
+        assert_eq!(key.to_string(), "26cae087-b7b6-4d45-98e4-de03ab4feb6b");
+        assert_eq!(
+            "{26cae087-b7b6-4d45-98e4-de03ab4feb6b}".parse::<InputKey>(),
+            Ok(key)
+        );
+        for bad in [
+            "",
+            "26cae087b7b64d4598e4de03ab4feb6b",
+            "26cae087-b7b6-4d45-98e4-de03ab4feb6",
+            "+6cae087-b7b6-4d45-98e4-de03ab4feb6b",
+            "26cae087-b7b6-4d45-98e4-de03ab4feb6g",
+            "26cae087-b7b6-4d45-98e4-de03ab4feb6b-0",
+        ] {
+            assert!(bad.parse::<InputKey>().is_err(), "{bad:?}");
+        }
+        let json = serde_json::to_string(&key).unwrap();
+        assert_eq!(json, r#""26cae087-b7b6-4d45-98e4-de03ab4feb6b""#);
+        assert_eq!(serde_json::from_str::<InputKey>(&json).unwrap(), key);
     }
 
     fn video(state: &mut State) -> InputId {

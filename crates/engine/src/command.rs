@@ -237,6 +237,102 @@ pub enum Command {
         device: Option<DeviceId>,
         solo_mode: SoloMode,
     },
+    /// Seed of the keys given to new inputs: sent once at start-up, so that a journal replays
+    /// to the same keys (ADR 0013).
+    SeedInputKeys {
+        seed: u64,
+    },
+    /// The key of an input, as a project gives it back. Refused if another input has it.
+    SetInputKey {
+        input: InputId,
+        key: InputKey,
+    },
+}
+
+/// The stable key of an input (ADR 0013): a GUID, by which the compat API and a project name
+/// it. Written in its usual form, `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
+pub struct InputKey(u128);
+
+impl InputKey {
+    /// The key of input `id` under `seed`: random-looking, the same for the same pair, with
+    /// the version (4) and variant bits of a random GUID.
+    pub fn derive(seed: u64, id: InputId) -> Self {
+        let high = splitmix64(seed ^ u64::from(id.0).wrapping_mul(0x9E37_79B9_7F4A_7C15));
+        let low = splitmix64(high ^ seed.rotate_left(32));
+        let raw = (u128::from(high) << 64) | u128::from(low);
+        let versioned = (raw & !(0xF << 76)) | (0x4 << 76);
+        Self((versioned & !(0b11 << 62)) | (0b10 << 62))
+    }
+
+    pub fn from_u128(value: u128) -> Self {
+        Self(value)
+    }
+}
+
+fn splitmix64(mut z: u64) -> u64 {
+    z = z.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
+}
+
+impl fmt::Display for InputKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let v = self.0;
+        write!(
+            f,
+            "{:08x}-{:04x}-{:04x}-{:04x}-{:012x}",
+            v >> 96,
+            (v >> 80) & 0xFFFF,
+            (v >> 64) & 0xFFFF,
+            (v >> 48) & 0xFFFF,
+            v & 0xFFFF_FFFF_FFFF
+        )
+    }
+}
+
+/// A key that is not a GUID.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("not an input key (a GUID): {0:?}")]
+pub struct InvalidKey(pub String);
+
+impl std::str::FromStr for InputKey {
+    type Err = InvalidKey;
+
+    /// The usual form, any case, braces allowed.
+    fn from_str(text: &str) -> Result<Self, Self::Err> {
+        let invalid = || InvalidKey(text.to_owned());
+        let bare = text
+            .strip_prefix('{')
+            .and_then(|t| t.strip_suffix('}'))
+            .unwrap_or(text);
+        let groups: Vec<&str> = bare.split('-').collect();
+        let lengths = [8, 4, 4, 4, 12];
+        if groups.len() != lengths.len() || groups.iter().zip(lengths).any(|(g, n)| g.len() != n) {
+            return Err(invalid());
+        }
+        let hex: String = groups.concat();
+        if !hex.chars().all(|c| c.is_ascii_hexdigit()) {
+            return Err(invalid());
+        }
+        u128::from_str_radix(&hex, 16)
+            .map(Self)
+            .map_err(|_| invalid())
+    }
+}
+
+impl Serialize for InputKey {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_str(self)
+    }
+}
+
+impl<'de> Deserialize<'de> for InputKey {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let text = String::deserialize(deserializer)?;
+        text.parse().map_err(serde::de::Error::custom)
+    }
 }
 
 /// A level in decibels: finite, or −∞ (silence). Never NaN, so it compares as `Eq`. The

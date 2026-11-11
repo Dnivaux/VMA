@@ -32,9 +32,9 @@ pub use audio::{
 };
 pub use audio_plan::AudioPlan;
 pub use command::{
-    AutoPlay, Command, CommandId, Db, DeviceId, Effect, HtmlUrl, InputSpec, MAX_AUDIO_DELAY_MS,
-    MAX_HTML_TEXT, MAX_TRANSITION_MS, MixDomain, Source, SrtSource, StingerSlot,
-    TRANSITION_BUTTONS, TransitionSetting,
+    AutoPlay, Command, CommandId, Db, DeviceId, Effect, HtmlUrl, InputKey, InputSpec, InvalidKey,
+    MAX_AUDIO_DELAY_MS, MAX_HTML_TEXT, MAX_TRANSITION_MS, MixDomain, Source, SrtSource,
+    StingerSlot, TRANSITION_BUTTONS, TransitionSetting,
 };
 pub use control::{
     CommandProbe, CommandSender, ControlStats, InputFeedStats, InputStatsReader, IoEvent,
