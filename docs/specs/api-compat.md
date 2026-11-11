@@ -17,7 +17,15 @@
   `GET /api/?Function=…` : 200 « Function completed successfully. », 500 avec la raison. Toutes
   les fonctions « oui » et « partiel » des tableaux du § 4 sont faites, **sauf** `OpenPreset` /
   `SavePreset` (plus tard dans la phase). Un test par fonction : `crates/api/tests/compat_http.rs`.
-- **TCP** (étape 7) : à venir.
+- **TCP** (étape 7) : `FUNCTION`, `TALLY`, `XML` (longueur en octets UTF-8, sans fin de ligne
+  après le document), `XMLTEXT` (chemins `racine/…/élément[n]`, `[@attribut='valeur']`,
+  `/@attribut`, texte d'élément ; sinon `XMLTEXT ER Not found`), `ACTS` (§ 5 ; sans input,
+  `Input`, `InputPreview`, `Overlay1`–`4` donnent l'input qu'ils ont, sinon `ER No Input`),
+  `SUBSCRIBE` / `UNSUBSCRIBE` `TALLY` (le tally tout de suite, puis ses changements) et `ACTS`
+  (les changements), `QUIT`, `PING`. Commande inconnue → `<COMMANDE> ER Unknown command` ;
+  ligne de plus de 64 Kio → `ER Line too long`, la connexion reste ; un client qui ne lit
+  plus (256 lignes en attente, ou 5 s pour en écrire une) est déconnecté. Tests :
+  `crates/api/tests/compat_tcp.rs` (protocole, événements, trafic du module Companion).
 - **Choix à confirmer par l'observation du XML réel (Q3)**, constantes de `api::compat` :
   version `26.0.0.0`, édition `HD` ; types d'input (`Capture`, `Video`, `Image`, `Colour` pour
   les couleurs et les sources de test, `Audio`, `SRT`, `NDI`, `Browser`) ; `state` `Running` /

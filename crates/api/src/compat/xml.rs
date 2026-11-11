@@ -74,9 +74,107 @@ fn bus_letter(bus: AudioBus) -> &'static str {
     }
 }
 
-/// The XML document of `state`.
-pub fn state_xml(state: &State) -> String {
-    let mut x = String::with_capacity(1024 + 512 * state.inputs.len());
+/// An element of the state: its attributes, its text, its children.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Element {
+    pub name: &'static str,
+    pub attrs: Vec<(&'static str, String)>,
+    pub text: Option<String>,
+    pub children: Vec<Element>,
+}
+
+impl Element {
+    fn new(name: &'static str) -> Self {
+        Self {
+            name,
+            ..Self::default()
+        }
+    }
+
+    fn text(name: &'static str, text: impl ToString) -> Self {
+        Self {
+            name,
+            text: Some(text.to_string()),
+            ..Self::default()
+        }
+    }
+
+    fn attr(mut self, name: &'static str, value: impl ToString) -> Self {
+        self.attrs.push((name, value.to_string()));
+        self
+    }
+
+    fn child(mut self, child: Self) -> Self {
+        self.children.push(child);
+        self
+    }
+
+    fn write(&self, x: &mut String) {
+        x.push('<');
+        x.push_str(self.name);
+        for (name, value) in &self.attrs {
+            // `write!` into a String cannot fail.
+            let _ = write!(x, " {name}=\"{}\"", escape(value));
+        }
+        if self.text.is_none() && self.children.is_empty() {
+            x.push_str("/>");
+            return;
+        }
+        x.push('>');
+        if let Some(text) = &self.text {
+            x.push_str(&escape(text));
+        }
+        for child in &self.children {
+            child.write(x);
+        }
+        let _ = write!(x, "</{}>", self.name);
+    }
+
+    /// The document.
+    pub fn to_xml(&self) -> String {
+        let mut x = String::with_capacity(4096);
+        self.write(&mut x);
+        x
+    }
+
+    /// A value by an XPath of the simple kind boxes use (`phase-5.md` Q14):
+    /// `root/inputs/input[2]/@title`, `root/preview`, `root/inputs/input[@number='3']`. An
+    /// element gives its text, `@name` an attribute.
+    pub fn query(&self, path: &str) -> Option<String> {
+        let mut steps = path.trim().trim_start_matches('/').split('/');
+        if steps.next()? != self.name {
+            return None;
+        }
+        let mut at = self;
+        for step in steps {
+            if let Some(attr) = step.strip_prefix('@') {
+                return at
+                    .attrs
+                    .iter()
+                    .find(|(n, _)| *n == attr)
+                    .map(|(_, v)| v.clone());
+            }
+            let (name, filter) = match step.split_once('[') {
+                Some((name, rest)) => (name, Some(rest.strip_suffix(']')?)),
+                None => (step, None),
+            };
+            let mut candidates = at.children.iter().filter(|c| c.name == name);
+            at = match filter {
+                None => candidates.next()?,
+                Some(f) if f.starts_with('@') => {
+                    let (attr, value) = f.strip_prefix('@')?.split_once('=')?;
+                    let value = value.trim_matches(|c| c == '\'' || c == '"');
+                    candidates.find(|c| c.attrs.iter().any(|(n, v)| *n == attr && v == value))?
+                }
+                Some(n) => candidates.nth(n.trim().parse::<usize>().ok()?.checked_sub(1)?)?,
+            };
+        }
+        Some(at.text.clone().unwrap_or_default())
+    }
+}
+
+/// The state as an element tree.
+pub fn state_tree(state: &State) -> Element {
     let number = |id| {
         state
             .inputs
@@ -84,12 +182,7 @@ pub fn state_xml(state: &State) -> String {
             .position(|i| Some(i.id) == id)
             .map_or(0, |n| n + 1)
     };
-    // `write!` into a String cannot fail.
-    let _ = write!(
-        x,
-        "<{ROOT}><version>{VERSION}</version><edition>{EDITION}</edition>"
-    );
-    x.push_str("<inputs>");
+    let mut inputs = Element::new("inputs");
     for (n, input) in state.inputs.iter().enumerate() {
         let audio = input.audio;
         let playing = input.playback.is_some_and(|p| p.playing)
@@ -99,73 +192,52 @@ pub fn state_xml(state: &State) -> String {
             .filter(|b| audio.is_some_and(|a| a.sends.get(b.index()) == Some(&true)))
             .map(bus_letter)
             .collect();
-        let title = escape(&input.name);
-        let _ = write!(
-            x,
-            "<input key=\"{key}\" number=\"{number}\" type=\"{kind}\" title=\"{title}\" \
-             shortTitle=\"{title}\" state=\"{state}\" position=\"0\" duration=\"0\" \
-             loop=\"{looping}\" muted=\"{muted}\" volume=\"{volume:.0}\" balance=\"0\" \
-             solo=\"{solo}\" audiobusses=\"{buses}\" meterF1=\"0\" meterF2=\"0\" \
-             gainDb=\"0\" selectedIndex=\"1\">{title}</input>",
-            key = input.key,
-            number = n + 1,
-            kind = kind(&input.spec),
-            state = if playing { "Running" } else { "Paused" },
-            looping = yes(input.playback.is_some_and(|p| p.looping)),
-            muted = yes(audio.is_some_and(|a| a.mute)),
-            volume = audio.map_or(100.0, |a| db_to_volume(a.gain)),
-            solo = yes(audio.is_some_and(|a| a.solo)),
-            buses = buses.join(","),
-        );
+        let mut element = Element::new("input")
+            .attr("key", input.key)
+            .attr("number", n + 1)
+            .attr("type", kind(&input.spec))
+            .attr("title", &input.name)
+            .attr("shortTitle", &input.name)
+            .attr("state", if playing { "Running" } else { "Paused" })
+            .attr("position", 0)
+            .attr("duration", 0)
+            .attr("loop", yes(input.playback.is_some_and(|p| p.looping)))
+            .attr("muted", yes(audio.is_some_and(|a| a.mute)))
+            .attr(
+                "volume",
+                format!("{:.0}", audio.map_or(100.0, |a| db_to_volume(a.gain))),
+            )
+            .attr("balance", 0)
+            .attr("solo", yes(audio.is_some_and(|a| a.solo)))
+            .attr("audiobusses", buses.join(","))
+            .attr("meterF1", 0)
+            .attr("meterF2", 0)
+            .attr("gainDb", 0)
+            .attr("selectedIndex", 1);
+        element.text = Some(input.name.clone());
+        inputs = inputs.child(element);
     }
-    x.push_str("</inputs><overlays>");
+    let mut overlays = Element::new("overlays");
     for (n, overlay) in state.overlays.iter().enumerate() {
-        let shown = overlay
+        let mut element = Element::new("overlay").attr("number", n + 1);
+        element.text = overlay
             .input
             .filter(|_| overlay.on)
-            .map(|i| number(Some(i)));
-        match shown {
-            Some(input) => {
-                let _ = write!(x, "<overlay number=\"{}\">{input}</overlay>", n + 1);
-            }
-            None => {
-                let _ = write!(x, "<overlay number=\"{}\"/>", n + 1);
-            }
-        }
+            .map(|i| number(Some(i)).to_string());
+        overlays = overlays.child(element);
     }
-    let _ = write!(
-        x,
-        "</overlays><preview>{}</preview><active>{}</active><fadeToBlack>{}</fadeToBlack>",
-        number(state.preview),
-        number(state.program),
-        yes(state.ftb.active)
-    );
-    x.push_str("<transitions>");
+    let mut transitions = Element::new("transitions");
     for (n, button) in state.buttons.iter().enumerate() {
-        let _ = write!(
-            x,
-            "<transition number=\"{}\" effect=\"{}\" duration=\"{}\"/>",
-            n + 1,
-            effect(*button),
-            button.duration_ms
+        transitions = transitions.child(
+            Element::new("transition")
+                .attr("number", n + 1)
+                .attr("effect", effect(*button))
+                .attr("duration", button.duration_ms),
         );
     }
-    x.push_str("</transitions>");
     let on =
         |f: fn(&OutputSpec) -> bool| state.outputs.iter().any(|o| f(&o.spec) && o.status.is_on());
-    let _ = write!(
-        x,
-        "<recording>{}</recording><external>False</external><streaming>{}</streaming>\
-         <playList>False</playList><multiCorder>False</multiCorder>\
-         <fullscreen>{}</fullscreen>",
-        yes(on(|s| matches!(s, OutputSpec::Record(_)))),
-        yes(on(|s| matches!(
-            s,
-            OutputSpec::Rtmp(_) | OutputSpec::Srt(_)
-        ))),
-        yes(on(OutputSpec::is_fullscreen)),
-    );
-    x.push_str("<audio>");
+    let mut audio = Element::new("audio");
     for bus in AudioBus::ALL {
         let set = state
             .audio
@@ -173,27 +245,84 @@ pub fn state_xml(state: &State) -> String {
             .get(bus.index())
             .copied()
             .unwrap_or_default();
-        let _ = write!(
-            x,
-            "<{name} volume=\"{volume:.0}\" muted=\"{muted}\" meterF1=\"0\" meterF2=\"0\"",
-            name = bus_element(bus),
-            volume = db_to_volume(set.gain),
-            muted = yes(set.mute),
-        );
-        if bus == AudioBus::Master {
-            x.push_str(" headphonesVolume=\"100\"");
+        let mut element = Element::new(bus_element(bus))
+            .attr("volume", format!("{:.0}", db_to_volume(set.gain)))
+            .attr("muted", yes(set.mute))
+            .attr("meterF1", 0)
+            .attr("meterF2", 0);
+        element = if bus == AudioBus::Master {
+            element.attr("headphonesVolume", 100)
         } else {
-            x.push_str(" solo=\"False\" sendToMaster=\"True\"");
-        }
-        x.push_str("/>");
+            element.attr("solo", "False").attr("sendToMaster", "True")
+        };
+        audio = audio.child(element);
     }
-    let _ = write!(x, "</audio></{ROOT}>");
-    x
+    Element::new(ROOT)
+        .child(Element::text("version", VERSION))
+        .child(Element::text("edition", EDITION))
+        .child(inputs)
+        .child(overlays)
+        .child(Element::text("preview", number(state.preview)))
+        .child(Element::text("active", number(state.program)))
+        .child(Element::text("fadeToBlack", yes(state.ftb.active)))
+        .child(transitions)
+        .child(Element::text(
+            "recording",
+            yes(on(|s| matches!(s, OutputSpec::Record(_)))),
+        ))
+        .child(Element::text("external", "False"))
+        .child(Element::text(
+            "streaming",
+            yes(on(|s| {
+                matches!(s, OutputSpec::Rtmp(_) | OutputSpec::Srt(_))
+            })),
+        ))
+        .child(Element::text("playList", "False"))
+        .child(Element::text("multiCorder", "False"))
+        .child(Element::text(
+            "fullscreen",
+            yes(on(OutputSpec::is_fullscreen)),
+        ))
+        .child(audio)
+}
+
+/// The XML document of `state`.
+pub fn state_xml(state: &State) -> String {
+    state_tree(state).to_xml()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn simple_paths_are_answered() {
+        let tree = Element::new("r").child(Element::text("preview", 3)).child(
+            Element::new("inputs")
+                .child(
+                    Element::text("input", "A")
+                        .attr("number", 1)
+                        .attr("title", "A"),
+                )
+                .child(Element::text("input", "B & C").attr("number", 2)),
+        );
+        assert_eq!(tree.query("r/preview").as_deref(), Some("3"));
+        assert_eq!(tree.query("/r/inputs/input[2]").as_deref(), Some("B & C"));
+        assert_eq!(tree.query("r/inputs/input[1]/@title").as_deref(), Some("A"));
+        assert_eq!(
+            tree.query("r/inputs/input[@number='2']").as_deref(),
+            Some("B & C")
+        );
+        assert_eq!(tree.query("r/inputs/input[3]"), None);
+        assert_eq!(tree.query("r/inputs/input[0]"), None);
+        assert_eq!(tree.query("other/preview"), None);
+        assert_eq!(tree.query("r/inputs/input[1]/@nothing"), None);
+        assert_eq!(
+            tree.to_xml(),
+            "<r><preview>3</preview><inputs><input number=\"1\" title=\"A\">A</input>\
+             <input number=\"2\">B &amp; C</input></inputs></r>"
+        );
+    }
 
     #[test]
     fn text_is_escaped() {

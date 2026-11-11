@@ -26,17 +26,20 @@ const STATE_POLL: Duration = Duration::from_millis(10);
 pub struct ApiConfig {
     pub native: Option<SocketAddr>,
     pub compat_http: Option<SocketAddr>,
+    pub compat_tcp: Option<SocketAddr>,
 }
 
 /// Ports (`phase-5.md` Q5): native, and the reference's HTTP.
 pub const NATIVE_PORT: u16 = 8090;
 pub const COMPAT_HTTP_PORT: u16 = 8088;
+pub const COMPAT_TCP_PORT: u16 = 8099;
 
 impl Default for ApiConfig {
     fn default() -> Self {
         Self {
             native: Some(SocketAddr::from((Ipv4Addr::LOCALHOST, NATIVE_PORT))),
             compat_http: Some(SocketAddr::from((Ipv4Addr::LOCALHOST, COMPAT_HTTP_PORT))),
+            compat_tcp: Some(SocketAddr::from((Ipv4Addr::LOCALHOST, COMPAT_TCP_PORT))),
         }
     }
 }
@@ -55,6 +58,7 @@ pub enum ServerStatus {
 pub struct ApiStatus {
     pub native: ServerStatus,
     pub compat_http: ServerStatus,
+    pub compat_tcp: ServerStatus,
 }
 
 /// Why the APIs could not start at all.
@@ -123,6 +127,20 @@ impl Api {
         }
         if let Some(address) = config.compat_http {
             status.compat_http = serve(&runtime, address, compat::router(shared.clone()));
+        }
+        if let Some(address) = config.compat_tcp {
+            status.compat_tcp = match runtime.block_on(compat::tcp::bind(address)) {
+                Ok(listener) => {
+                    let bound = listener.local_addr().unwrap_or(address);
+                    runtime.spawn(compat::tcp::serve(listener, shared.clone()));
+                    tracing::info!(%bound, "compat TCP API listening");
+                    ServerStatus::Listening(bound)
+                }
+                Err(e) => {
+                    tracing::warn!(%address, error = %e, "compat TCP port not opened");
+                    ServerStatus::Failed(format!("{address} : {e}"))
+                }
+            };
         }
         Ok(Self {
             runtime: Some(runtime),

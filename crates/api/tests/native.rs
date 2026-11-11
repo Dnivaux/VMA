@@ -29,6 +29,7 @@ fn api() -> (Api, SocketAddr, vma_engine::StateReader) {
     let config = ApiConfig {
         native: Some(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))),
         compat_http: None,
+        compat_tcp: None,
     };
     let api = Api::start(&config, commands, state.clone()).unwrap();
     let ServerStatus::Listening(address) = api.status().native.clone() else {
@@ -168,6 +169,7 @@ fn a_port_already_taken_is_reported() {
     let config = ApiConfig {
         native: Some(taken.local_addr().unwrap()),
         compat_http: None,
+        compat_tcp: None,
     };
     let api = Api::start(&config, commands, state).unwrap();
     assert!(

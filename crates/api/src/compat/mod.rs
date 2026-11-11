@@ -1,16 +1,18 @@
 //! The compat API (ADR 0012, `docs/specs/api-compat.md`): the HTTP API of the reference
-//! (`/api`, port 8088) and, later, its TCP API (port 8099). Functions become `Command`s
+//! (`/api`, port 8088) and its TCP API (port 8099). Functions become `Command`s
 //! ([`resolve`]); the state is written as the reference's XML ([`state_xml`]).
 
+pub mod acts;
 mod call;
 mod functions;
 mod http;
+pub(crate) mod tcp;
 mod xml;
 
 pub use call::Call;
 pub use functions::{CompatError, db_to_volume, resolve, volume_to_db};
 pub(crate) use http::router;
-pub use xml::state_xml;
+pub use xml::{Element, state_tree, state_xml};
 
 /// Root element of the XML state: the reference's name, in lower case. A **protocol
 /// identifier** that the existing clients require (the Companion module drops any other

@@ -74,6 +74,7 @@ fn rig() -> Rig {
     let config = ApiConfig {
         native: None,
         compat_http: Some(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))),
+        compat_tcp: None,
     };
     let api = Api::start(&config, commands, state.clone()).unwrap();
     let ServerStatus::Listening(address) = api.status().compat_http.clone() else {

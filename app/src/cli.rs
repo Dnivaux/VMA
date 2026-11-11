@@ -39,7 +39,8 @@ Options :
                          (elles priment sur --rate et --resolution)
   --no-autosave          n'enregistre pas l'émission automatiquement (coupé d'office pendant
                          un soak : « Dernier » garde l'émission d'avant)
-  --no-api               n'ouvre pas les API de contrôle (native : 127.0.0.1:8090)
+  --no-api               n'ouvre pas les API de contrôle (sur 127.0.0.1 : native 8090,
+                         compat HTTP 8088 et TCP 8099)
   --record <dossier>     enregistre le Program dès le démarrage, dans ce dossier
                          (sans l'option : bouton « Enregistrer », dossier Vidéos)
   --fullscreen <écran>   montre le Program (après FTB) en plein écran dès le démarrage, sur
