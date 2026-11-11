@@ -54,6 +54,10 @@ struct Rig {
     ndi_sources: Vec<String>,
     /// Why HTML inputs are unavailable (`vma-html` missing).
     html_unavailable: Option<String>,
+    /// Plain pictures for Program, Preview and the thumbnails (screenshots only).
+    pictures: Option<[egui::TextureHandle; 3]>,
+    /// Draw them (`harness_on(_, true)`).
+    render: bool,
 }
 
 impl Rig {
@@ -103,6 +107,11 @@ fn id(n: u32) -> InputId {
 }
 
 fn harness(state: State) -> Harness<'static, Rig> {
+    harness_on(state, false)
+}
+
+/// The harness, drawn by wgpu when `render` (screenshots), else without a GPU.
+fn harness_on(state: State, render: bool) -> Harness<'static, Rig> {
     let (commands, probe) = CommandSender::probe();
     let rig = Rig {
         switcher: Switcher::default(),
@@ -127,57 +136,80 @@ fn harness(state: State) -> Harness<'static, Rig> {
         ndi_unavailable: None,
         ndi_sources: vec!["STUDIO (Caméra 1)".into(), "STUDIO (Titres)".into()],
         html_unavailable: None,
+        pictures: None,
+        render,
     };
-    let mut harness = Harness::builder()
+    let builder = Harness::builder()
         // A 1080p screen: the inputs and the mixer side by side.
         .with_size(Vec2::new(1920.0, 1040.0))
         // Short simulated frames, so that two clicks one frame apart make a double-click.
-        .with_step_dt(0.05)
-        .build_ui_state(
-            |ui, rig: &mut Rig| {
-                let no_thumbnail = |_| None::<Rect>;
-                let timeline = rig.timeline;
-                let timeline = move |_| timeline;
-                let no_mode = |_| None::<String>;
-                let activity = rig.activity;
-                let activity = move |_| activity;
-                let view = View {
-                    state: &rig.state,
-                    commands: &rig.commands,
-                    images: Images {
-                        program: TextureId::default(),
-                        preview: TextureId::default(),
-                        thumbnails: TextureId::default(),
-                        thumbnail_uv: &no_thumbnail,
-                    },
-                    io: IoView {
-                        unavailable: rig.unavailable.as_deref(),
-                        devices: &rig.devices,
-                        timeline: &timeline,
-                        capture_mode: &no_mode,
-                        output_activity: &activity,
-                        record_folder: Some(std::path::Path::new("/home/op/Vidéos")),
-                        audio_sources: &rig.audio_sources,
-                        audio_sinks: &rig.audio_sinks,
-                        headphones: rig.headphones.as_ref(),
-                        ndi_unavailable: rig.ndi_unavailable.as_deref(),
-                        html_unavailable: rig.html_unavailable.as_deref(),
-                        ndi_sources: &rig.ndi_sources,
-                    },
-                    screens: &rig.screens,
-                    frame: 0,
-                    fade_to_black: rig.fade_to_black,
-                    rejection: None,
-                    audio: AudioView {
-                        levels: &rig.levels,
-                    },
+        .with_step_dt(0.05);
+    let builder = if render { builder.wgpu() } else { builder };
+    let mut harness = builder.build_ui_state(
+        |ui, rig: &mut Rig| {
+            if rig.render && rig.pictures.is_none() {
+                // Flat colours instead of video: Program, Preview, thumbnails.
+                let flat = |name: &str, rgb: [u8; 3]| {
+                    let [r, g, b] = rgb;
+                    let image = egui::ColorImage::new(
+                        [16, 9],
+                        vec![egui::Color32::from_rgb(r, g, b); 16 * 9],
+                    );
+                    ui.ctx()
+                        .load_texture(name, image, egui::TextureOptions::default())
                 };
-                rig.switcher.show(ui, &view);
-                rig.files.extend(rig.switcher.take_file_request());
-                rig.folders.extend(rig.switcher.take_folder_request());
-            },
-            rig,
-        );
+                rig.pictures = Some([
+                    flat("program", [70, 40, 40]),
+                    flat("preview", [40, 50, 70]),
+                    flat("thumbnails", [55, 55, 60]),
+                ]);
+            }
+            let pictures = rig.pictures.as_ref().map(|p| p.each_ref().map(|t| t.id()));
+            let full = Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
+            let has_pictures = pictures.is_some();
+            let no_thumbnail = move |_| has_pictures.then_some(full);
+            let timeline = rig.timeline;
+            let timeline = move |_| timeline;
+            let no_mode = |_| None::<String>;
+            let activity = rig.activity;
+            let activity = move |_| activity;
+            let view = View {
+                state: &rig.state,
+                commands: &rig.commands,
+                images: Images {
+                    program: pictures.map_or_else(TextureId::default, |p| p[0]),
+                    preview: pictures.map_or_else(TextureId::default, |p| p[1]),
+                    thumbnails: pictures.map_or_else(TextureId::default, |p| p[2]),
+                    thumbnail_uv: &no_thumbnail,
+                },
+                io: IoView {
+                    unavailable: rig.unavailable.as_deref(),
+                    devices: &rig.devices,
+                    timeline: &timeline,
+                    capture_mode: &no_mode,
+                    output_activity: &activity,
+                    record_folder: Some(std::path::Path::new("/home/op/Vidéos")),
+                    audio_sources: &rig.audio_sources,
+                    audio_sinks: &rig.audio_sinks,
+                    headphones: rig.headphones.as_ref(),
+                    ndi_unavailable: rig.ndi_unavailable.as_deref(),
+                    html_unavailable: rig.html_unavailable.as_deref(),
+                    ndi_sources: &rig.ndi_sources,
+                },
+                screens: &rig.screens,
+                frame: 0,
+                fade_to_black: rig.fade_to_black,
+                rejection: None,
+                audio: AudioView {
+                    levels: &rig.levels,
+                },
+            };
+            rig.switcher.show(ui, &view);
+            rig.files.extend(rig.switcher.take_file_request());
+            rig.folders.extend(rig.switcher.take_folder_request());
+        },
+        rig,
+    );
     harness.run();
     assert!(harness.state().sent().is_empty(), "nothing sent at rest");
     harness
@@ -1708,4 +1740,206 @@ fn stingers_are_set_in_the_settings_and_taken_by_the_buttons() {
             cut_point_ms: None,
         }]
     );
+}
+
+/// Under the T-Bar, the overlay channels: a lit channel goes out on a click, an unlit one
+/// brings back the input it showed last, an empty one does nothing.
+#[test]
+fn overlay_channels_under_the_t_bar() {
+    use vma_core::OverlayChannel;
+    let channel = |n| OverlayChannel::new(n).unwrap();
+    let mut state = state();
+    for (n, input) in [(1, 2), (2, 3)] {
+        state
+            .apply(&Command::OverlayIn {
+                channel: channel(n),
+                input: id(input),
+            })
+            .unwrap();
+    }
+    state
+        .apply(&Command::OverlayOut {
+            channel: channel(2),
+        })
+        .unwrap();
+    let mut h = harness(state);
+    let lit = |h: &Harness<'_, Rig>, n: u8| {
+        h.get_by_label(&format!("Canal d'overlay {n}"))
+            .accesskit_node()
+            .toggled()
+            == Some(egui::accesskit::Toggled::True)
+    };
+    assert!(lit(&h, 1));
+    assert!(!lit(&h, 2));
+
+    h.get_by_label("Canal d'overlay 1").click();
+    h.run();
+    assert_eq!(
+        h.state().sent(),
+        [Command::OverlayOut {
+            channel: channel(1)
+        }]
+    );
+    h.get_by_label("Canal d'overlay 2").click();
+    h.run();
+    assert_eq!(
+        h.state().sent(),
+        [Command::OverlayIn {
+            channel: channel(2),
+            input: id(3)
+        }]
+    );
+    h.get_by_label("Canal d'overlay 3").click();
+    h.run();
+    assert!(h.state().sent().is_empty(), "channel 3 is empty");
+}
+
+/// The sound button of a card mutes and unmutes its input, as its mixer strip does.
+#[test]
+fn the_sound_of_an_input_from_its_card() {
+    let mut state = state();
+    state
+        .apply(&Command::AddInput {
+            spec: InputSpec::AudioDevice {
+                device: DeviceId("mic".into()),
+            },
+            name: Some("Micro".into()),
+        })
+        .unwrap();
+    let mic = state.inputs.last().unwrap().id;
+    let mut h = harness(state);
+    // Only the input with sound has one.
+    assert!(h.query_by_label("Son de l'input 1").is_none());
+    for mute in [false, true] {
+        h.state_mut()
+            .state
+            .apply(&Command::SetInputMute { input: mic, mute })
+            .unwrap();
+        h.run();
+        h.get_by_label("Son de l'input 5").click();
+        h.run();
+        assert_eq!(
+            h.state().sent(),
+            [Command::SetInputMute {
+                input: mic,
+                mute: !mute
+            }]
+        );
+    }
+}
+
+/// « Plein écran » in the bottom bar: opens « Sorties » while there is none, then starts and
+/// stops the full screen; « … » beside opens « Sorties ».
+#[test]
+fn full_screen_from_the_bottom_bar() {
+    let mut h = harness(state());
+    assert!(h.query_by_label("+ Plein écran").is_none());
+    h.get_by_label("Plein écran").click();
+    h.run();
+    assert!(h.state().sent().is_empty());
+    assert!(
+        h.query_by_label("+ Plein écran").is_some(),
+        "« Sorties » open"
+    );
+
+    let (fs_state, fs) = with_fullscreen(state(), "DP-2", false);
+    let mut h = harness(fs_state);
+    h.get_by_label("Plein écran").click();
+    h.run();
+    assert_eq!(h.state().sent(), [Command::StartOutput { output: fs }]);
+
+    let (fs_state, fs) = with_fullscreen(state(), "DP-2", true);
+    let mut h = harness(fs_state);
+    h.get_by_label("Plein écran").click();
+    h.run();
+    assert_eq!(h.state().sent(), [Command::StopOutput { output: fs }]);
+
+    let mut h = harness(state());
+    h.get_by_label("Réglages de l'enregistrement").click();
+    h.run();
+    assert!(
+        h.query_by_label("+ Plein écran").is_some(),
+        "« Sorties » open"
+    );
+}
+
+/// A double click on the thumbnail opens the input's settings too (after putting it in
+/// Preview, as the first click does).
+#[test]
+fn double_click_on_the_thumbnail_opens_the_settings() {
+    let mut h = harness(state());
+    h.get_by_label("Vignette 3").click();
+    h.run();
+    h.get_by_label("Vignette 3").click();
+    h.run();
+    assert!(h.query_by_label("Réglages de l'input 3").is_some());
+    assert!(
+        h.state()
+            .sent()
+            .iter()
+            .all(|c| *c == Command::SetPreview { input: id(3) })
+    );
+}
+
+/// « Réglages → Affichage » sets the size of the thumbnails.
+#[test]
+fn thumbnail_size() {
+    let mut h = harness(state());
+    let width = |h: &Harness<'_, Rig>| h.get_by_label("Vignette 1").rect().width();
+    assert_eq!(width(&h), 160.0);
+    h.get_by_label("Réglages").click();
+    h.run();
+    h.get_by_label("Grandes").click();
+    h.run();
+    assert_eq!(width(&h), 224.0);
+    h.get_by_label("Petites").click();
+    h.run();
+    assert_eq!(width(&h), 128.0);
+    assert!(h.state().sent().is_empty(), "a UI setting, not a command");
+}
+
+/// A picture of the main window with a show's worth of inputs, for reviewing the layout
+/// without opening a window (`target/ui-screenshots/main.png`). Needs a GPU:
+/// `cargo test -p vma-ui --test switcher -- --ignored screenshot`.
+#[test]
+#[ignore = "picture for review, needs a GPU"]
+fn screenshot_of_the_main_window() {
+    use vma_core::OverlayChannel;
+    let mut state = state();
+    for (spec, name) in [
+        (
+            InputSpec::File {
+                path: "generique.mp4".into(),
+            },
+            "Générique",
+        ),
+        (
+            InputSpec::AudioDevice {
+                device: DeviceId("mic".into()),
+            },
+            "Micro plateau",
+        ),
+    ] {
+        state
+            .apply(&Command::AddInput {
+                spec,
+                name: Some(name.into()),
+            })
+            .unwrap();
+    }
+    let mic = state.inputs.last().unwrap().id;
+    state.apply_event(&vma_engine::Event::AudioLive { input: mic });
+    state
+        .apply(&Command::OverlayIn {
+            channel: OverlayChannel::new(1).unwrap(),
+            input: id(3),
+        })
+        .unwrap();
+    let (state, _) = with_fullscreen(state, "DP-2", false);
+    let mut h = harness_on(state, true);
+    h.run();
+    let picture = h.render().unwrap();
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/ui-screenshots");
+    std::fs::create_dir_all(&dir).unwrap();
+    picture.save(dir.join("main.png")).unwrap();
 }

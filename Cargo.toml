@@ -43,7 +43,7 @@ eframe = { version = "0.37", default-features = false }      # MIT OR Apache-2.0
 egui-wgpu = "0.37"                                           # MIT OR Apache-2.0
 # Already under eframe; used directly to run its event loop and list the screens.
 winit = { version = "0.30", default-features = false }       # Apache-2.0
-egui_kittest = "0.37"                                        # MIT OR Apache-2.0 (tests only)
+egui_kittest = { version = "0.37", features = ["wgpu", "snapshot"] } # MIT OR Apache-2.0 (tests only; wgpu + snapshot: headless screenshots, dify MIT, image MIT OR Apache-2.0, open MIT, tempfile MIT OR Apache-2.0)
 crossbeam-channel = "0.5"                                    # MIT OR Apache-2.0
 arc-swap = "1.9"                                             # MIT OR Apache-2.0
 thiserror = "2.0"                                            # MIT OR Apache-2.0

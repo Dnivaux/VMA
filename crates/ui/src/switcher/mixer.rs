@@ -31,7 +31,7 @@ const METER_ZONES: [(f32, Color32); 3] = [
     (0.0, Color32::from_rgb(230, 50, 50)),
 ];
 /// Fill of an active mute.
-const MUTED: Color32 = Color32::from_rgb(200, 40, 40);
+pub(super) const MUTED: Color32 = Color32::from_rgb(200, 40, 40);
 /// Fill of an active solo.
 const SOLOED: Color32 = Color32::from_rgb(220, 180, 40);
 

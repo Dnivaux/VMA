@@ -28,8 +28,8 @@ mod stinger;
 
 /// Width of the transition column.
 const COLUMN_WIDTH: f32 = 150.0;
-/// Size of an input card's thumbnail.
-const THUMB: Vec2 = Vec2::new(160.0, 90.0);
+/// Height of everything an input card adds to its thumbnail (title, two rows of buttons).
+const CARD_EXTRA: f32 = 84.0;
 /// How long a message stays visible, in seconds.
 const MESSAGE_SECS: f64 = 4.0;
 /// Height of the video controls under Preview / Program.
@@ -240,6 +240,37 @@ pub struct Switcher {
     /// What is typed in the settings of an HTML input.
     html_fields: html_input::HtmlFields,
     about_open: bool,
+    /// Size of the input thumbnails (« Réglages → Affichage »).
+    thumbs: ThumbSize,
+}
+
+/// Size of the input thumbnails, as the reference lets the operator choose it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum ThumbSize {
+    Small,
+    #[default]
+    Medium,
+    Large,
+}
+
+impl ThumbSize {
+    const ALL: [Self; 3] = [Self::Small, Self::Medium, Self::Large];
+
+    fn size(self) -> Vec2 {
+        match self {
+            Self::Small => Vec2::new(128.0, 72.0),
+            Self::Medium => Vec2::new(160.0, 90.0),
+            Self::Large => Vec2::new(224.0, 126.0),
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Small => "Petites",
+            Self::Medium => "Moyennes",
+            Self::Large => "Grandes",
+        }
+    }
 }
 
 impl Default for Switcher {
@@ -262,6 +293,7 @@ impl Default for Switcher {
             new_html: None,
             html_fields: html_input::HtmlFields::default(),
             about_open: false,
+            thumbs: ThumbSize::default(),
         }
     }
 }
@@ -283,18 +315,9 @@ impl Switcher {
 
         self.shortcuts(ui, view);
 
+        // Top: messages on the left, « Réglages » on the right (as in the reference).
         egui::Panel::top("toolbar").show(ui, |ui| {
             ui.horizontal(|ui| {
-                if ui.button("Réglages").clicked() {
-                    self.settings_open = true;
-                }
-                ui.toggle_value(&mut self.show_stats, "Statistiques");
-                ui.toggle_value(&mut self.mixer.open, "Mélangeur");
-                if ui.button("À propos").clicked() {
-                    self.about_open = true;
-                }
-                ui.separator();
-                self.output_buttons(ui, view);
                 if let Some(reason) = view.io.unavailable {
                     ui.label(
                         RichText::new("GStreamer introuvable : caméras et vidéos désactivées")
@@ -309,17 +332,45 @@ impl Switcher {
                         self.message = None;
                     }
                 }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button("À propos").clicked() {
+                        self.about_open = true;
+                    }
+                    if ui.button("Réglages").clicked() {
+                        self.settings_open = true;
+                    }
+                });
             });
         });
-        // Inputs at the bottom left, the audio mixer beside them at the bottom right.
-        let bottom = if self.mixer.open {
-            mixer::MIXER_HEIGHT.max(THUMB.y + 96.0)
+        // Bottom: adding inputs and the outputs on the left, panels on the right.
+        egui::Panel::bottom("footer").show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.menu_button("+ Ajouter", |ui| self.add_menu(ui, view));
+                ui.separator();
+                self.output_buttons(ui, view);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.toggle_value(&mut self.show_stats, "Statistiques");
+                    ui.toggle_value(&mut self.mixer.open, "Mélangeur");
+                });
+            });
+        });
+        // Inputs above it on the left, the audio mixer beside them on the right. The divider
+        // is dragged up for more rows of inputs.
+        let row = self.thumbs.size().y + CARD_EXTRA;
+        let least = if self.mixer.open {
+            mixer::MIXER_HEIGHT.max(row)
         } else {
-            THUMB.y + 96.0
+            row
         };
+        // At first, the inputs take what Preview and Program leave (16:9 pictures side by side).
+        let side = ((ui.available_width() - COLUMN_WIDTH) / 2.0).max(0.0);
+        let aspect = view.state.format.resolution.aspect_ratio();
+        let views = side / aspect + 24.0 + CONTROLS_HEIGHT + 12.0;
+        let first = (ui.available_height() - views).max(least);
         egui::Panel::bottom("inputs")
-            .resizable(false)
-            .exact_size(bottom)
+            .resizable(true)
+            .default_size(first)
+            .min_size(least)
             .show(ui, |ui| {
                 if self.mixer.open {
                     let width = mixer::panel_width(view.state, ui.available_width());
@@ -525,7 +576,26 @@ impl Switcher {
             for (index, setting) in state.buttons.iter().enumerate() {
                 let button = index as u8 + 1;
                 let label = format!("{button} · {}", describe(*setting));
-                let response = ui.add_sized(wide, egui::Button::new(label));
+                // The button, and beside it the arrow that sets its effect and duration
+                // (a right click on the button does the same).
+                let arrow = 22.0;
+                let gap = ui.spacing().item_spacing.x;
+                let response = ui
+                    .horizontal(|ui| {
+                        let main = Vec2::new(wide.x - arrow - gap, wide.y);
+                        let response = ui.add_sized(main, egui::Button::new(label));
+                        ui.scope(|ui| {
+                            ui.spacing_mut().button_padding.x = 2.0;
+                            ui.set_min_size(Vec2::new(arrow, wide.y));
+                            ui.menu_button("…", |ui| {
+                                self.button_menu(ui, view, button, *setting)
+                            })
+                            .response
+                            .on_hover_text(format!("Effet et durée du bouton {button}"));
+                        });
+                        response
+                    })
+                    .inner;
                 if response.clicked() {
                     self.active_button = Some(button);
                     self.send(ui, view, Command::Transition { button });
@@ -541,6 +611,50 @@ impl Switcher {
             self.ftb_button(ui, view);
             ui.add_space(8.0);
             self.t_bar(ui, view);
+            ui.add_space(8.0);
+            self.overlay_channels(ui, view);
+        });
+    }
+
+    /// Under the T-Bar, one button per overlay channel: lit while the channel shows its
+    /// input; a click takes it out, or brings back the input it showed last.
+    fn overlay_channels(&mut self, ui: &mut egui::Ui, view: &View<'_>) {
+        let state = view.state;
+        ui.label(RichText::new("Overlays").small().weak());
+        ui.horizontal(|ui| {
+            let gap = ui.spacing().item_spacing.x;
+            let side = ((ui.available_width() - 3.0 * gap) / 4.0).max(16.0);
+            for channel in OverlayChannel::ALL {
+                let n = channel.number();
+                let overlay = state.overlay(channel);
+                let input = overlay
+                    .input
+                    .and_then(|id| state.input(id).map(|i| (id, i)));
+                let on = overlay.on && input.is_some();
+                let response = named_button(
+                    ui,
+                    Vec2::new(side, 26.0),
+                    &n.to_string(),
+                    &format!("Canal d'overlay {n}"),
+                    on.then_some(None),
+                    input.is_some(),
+                );
+                let response = match input {
+                    Some((_, i)) if on => response.on_hover_text(format!("Sortir « {} »", i.name)),
+                    Some((_, i)) => response.on_hover_text(format!("Rentrer « {} »", i.name)),
+                    None => response.on_disabled_hover_text(format!("Overlay {n} : vide")),
+                };
+                if response.clicked()
+                    && let Some((input, _)) = input
+                {
+                    let command = if on {
+                        Command::OverlayOut { channel }
+                    } else {
+                        Command::OverlayIn { channel, input }
+                    };
+                    self.send(ui, view, command);
+                }
+            }
         });
     }
 
@@ -582,7 +696,8 @@ impl Switcher {
     /// Vertical T-Bar: top = Program alone, bottom = transition complete (button 1's effect).
     fn t_bar(&mut self, ui: &mut egui::Ui, view: &View<'_>) {
         let state = view.state;
-        let height = ui.available_height().clamp(80.0, 240.0);
+        // Room for the overlay channels underneath.
+        let height = (ui.available_height() - 60.0).clamp(80.0, 240.0);
         let (rect, response) =
             ui.allocate_exact_size(Vec2::new(36.0, height), Sense::click_and_drag());
         let pointer = response.interact_pointer_pos();
@@ -624,17 +739,15 @@ impl Switcher {
     }
 
     fn input_bar(&mut self, ui: &mut egui::Ui, view: &View<'_>) {
-        ui.horizontal(|ui| {
-            ui.label(RichText::new("Inputs").strong());
-            ui.menu_button("+ Ajouter", |ui| self.add_menu(ui, view));
-        });
-        egui::ScrollArea::horizontal().show(ui, |ui| {
-            ui.horizontal(|ui| {
-                for (index, input) in view.state.inputs.iter().enumerate() {
-                    self.input_card(ui, view, index + 1, input);
-                }
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    for (index, input) in view.state.inputs.iter().enumerate() {
+                        self.input_card(ui, view, index + 1, input);
+                    }
+                });
             });
-        });
     }
 
     fn add_menu(&mut self, ui: &mut egui::Ui, view: &View<'_>) {
@@ -773,12 +886,19 @@ impl Switcher {
                     .color()
                     .unwrap_or(ui.visuals().widgets.noninteractive.bg_stroke.color),
             ));
+        let thumb_size = self.thumbs.size();
         frame.show(ui, |ui| {
-            ui.set_width(THUMB.x);
+            ui.set_width(thumb_size.x);
             ui.vertical(|ui| {
-                let (rect, thumb) = ui.allocate_exact_size(THUMB, Sense::click());
+                // Title bar: number and name; double click = the input's settings.
+                let title = ui.add(
+                    egui::Label::new(RichText::new(format!("{number} {}", input.name)).strong())
+                        .truncate()
+                        .sense(Sense::click()),
+                );
+                let (rect, thumb) = ui.allocate_exact_size(thumb_size, Sense::click());
                 match (view.images.thumbnail_uv)(id) {
-                    Some(uv) => egui::Image::from_texture((view.images.thumbnails, THUMB))
+                    Some(uv) => egui::Image::from_texture((view.images.thumbnails, thumb_size))
                         .uv(uv)
                         .paint_at(ui, rect),
                     // No picture yet (or not a GPU-backed input yet): black.
@@ -812,16 +932,11 @@ impl Switcher {
                 if thumb.clicked() {
                     self.send(ui, view, Command::SetPreview { input: id });
                 }
-
-                let title = ui.add(
-                    egui::Label::new(RichText::new(format!("{number} {}", input.name)).strong())
-                        .truncate()
-                        .sense(Sense::click()),
-                );
-                if title.double_clicked() {
+                if title.double_clicked() || thumb.double_clicked() {
                     self.input_settings = Some((id, input.name.clone()));
                 }
 
+                // Close, Quick Play, Cut, Loop, then 1–4 and the sound: the reference's order.
                 ui.horizontal(|ui| {
                     if ui
                         .small_button("×")
@@ -861,9 +976,9 @@ impl Switcher {
                         }
                     }
                 });
-                // Overlay channels 1–4: in, or out if it is there (ADR 0010).
-                if !sound_only {
-                    ui.horizontal(|ui| {
+                ui.horizontal(|ui| {
+                    // Overlay channels 1–4: in, or out if it is there (ADR 0010).
+                    if !sound_only {
                         for channel in OverlayChannel::ALL {
                             let n = channel.number();
                             let on = state.overlay(channel).shows(id);
@@ -879,8 +994,29 @@ impl Switcher {
                                 self.send(ui, view, Command::OverlayToggle { channel, input: id });
                             }
                         }
-                    });
-                }
+                    }
+                    // The sound of the input, on or muted (as its mixer strip's « Muet »).
+                    if let Some(audio) = input.audio {
+                        let size = Vec2::new(40.0, ui.spacing().interact_size.y);
+                        let response = named_button(
+                            ui,
+                            size,
+                            if audio.mute { "Muet" } else { "Son" },
+                            &format!("Son de l'input {number}"),
+                            audio.mute.then_some(Some(mixer::MUTED)),
+                            true,
+                        )
+                        .on_hover_text(if audio.mute {
+                            "Son coupé : le rétablir"
+                        } else {
+                            "Couper le son de l'input"
+                        });
+                        if response.clicked() {
+                            let mute = !audio.mute;
+                            self.send(ui, view, Command::SetInputMute { input: id, mute });
+                        }
+                    }
+                });
             });
         });
     }
@@ -1050,6 +1186,15 @@ impl Switcher {
                 self.stinger_settings(ui, view);
 
                 ui.separator();
+                ui.label(RichText::new("Affichage").strong());
+                ui.horizontal(|ui| {
+                    ui.label("Vignettes des inputs");
+                    for size in ThumbSize::ALL {
+                        ui.radio_value(&mut self.thumbs, size, size.label());
+                    }
+                });
+
+                ui.separator();
                 ui.label(RichText::new("Mixage des Fade").strong());
                 let mut domain = state.mix_domain;
                 ui.radio_value(
@@ -1124,6 +1269,61 @@ fn describe(setting: TransitionSetting) -> String {
         }
         Effect::Stinger(_) => describe_effect(setting.effect).to_owned(),
     }
+}
+
+/// A button showing `text` (a digit, a symbol) whose accessible name is `name`, so that
+/// screen readers and tests tell it from the other buttons showing the same text. Filled
+/// with `on` when selected (the theme's selection colour if `None`).
+fn named_button(
+    ui: &mut egui::Ui,
+    size: Vec2,
+    text: &str,
+    name: &str,
+    selected: Option<Option<Color32>>,
+    enabled: bool,
+) -> egui::Response {
+    let sense = if enabled {
+        Sense::click()
+    } else {
+        Sense::hover()
+    };
+    let (rect, response) = ui.allocate_exact_size(size, sense);
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(egui::Role::Button, enabled, selected.is_some(), name)
+    });
+    if ui.is_rect_visible(rect) {
+        let visuals = ui.visuals();
+        let style = if !enabled {
+            &visuals.widgets.noninteractive
+        } else {
+            visuals.widgets.style(&response)
+        };
+        let (fill, color) = if let Some(on) = selected {
+            match on {
+                Some(fill) => (fill, Color32::WHITE),
+                None => (visuals.selection.bg_fill, visuals.selection.stroke.color),
+            }
+        } else if enabled {
+            (style.weak_bg_fill, style.text_color())
+        } else {
+            (style.weak_bg_fill, visuals.weak_text_color())
+        };
+        ui.painter().rect(
+            rect,
+            style.corner_radius,
+            fill,
+            style.bg_stroke,
+            StrokeKind::Inside,
+        );
+        ui.painter().text(
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            text,
+            egui::TextStyle::Button.resolve(ui.style()),
+            color,
+        );
+    }
+    response
 }
 
 /// Status written over a thumbnail when the input has no live picture.

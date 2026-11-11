@@ -74,7 +74,8 @@ impl Switcher {
         }
     }
 
-    /// « Enregistrer », « Streamer », « Sorties » in the toolbar.
+    /// « Enregistrer », « Streamer », « Plein écran », « Sorties » in the bottom bar: a click
+    /// starts or stops, the « … » beside opens the settings (as the reference's cog).
     pub(super) fn output_buttons(&mut self, ui: &mut egui::Ui, view: &View<'_>) {
         let state = view.state;
         let since = |o: &OutputState| {
@@ -116,6 +117,7 @@ impl Switcher {
             };
             self.send(ui, view, command);
         }
+        self.settings_button(ui, "Réglages de l'enregistrement");
 
         let has_streams = state.outputs.iter().any(|o| o.spec.is_stream());
         let stream = match streaming {
@@ -136,6 +138,26 @@ impl Switcher {
             };
             self.send(ui, view, command);
         }
+        self.settings_button(ui, "Destinations de stream");
+
+        let fullscreen = state.outputs.iter().find(|o| o.spec.is_fullscreen());
+        let on = fullscreen.is_some_and(|o| o.status.is_active());
+        let response = ui
+            .add(button("Plein écran".into(), on))
+            .on_hover_text(match fullscreen {
+                Some(_) if on => "Fermer le plein écran",
+                Some(_) => "Ouvrir le plein écran",
+                None => "Aucun plein écran : à ajouter dans « Sorties »",
+            });
+        if response.clicked() {
+            match fullscreen {
+                Some(o) if on => self.send(ui, view, Command::StopOutput { output: o.id }),
+                Some(o) => self.send(ui, view, Command::StartOutput { output: o.id }),
+                None => self.outputs.open = true,
+            }
+        }
+        self.settings_button(ui, "Réglages du plein écran");
+        ui.separator();
         let failed = state
             .outputs
             .iter()
@@ -146,6 +168,17 @@ impl Switcher {
             RichText::new("Sorties")
         };
         ui.toggle_value(&mut self.outputs.open, label);
+    }
+
+    /// « … » beside an output button: opens the « Sorties » window, where its settings are.
+    fn settings_button(&mut self, ui: &mut egui::Ui, name: &str) {
+        let size = Vec2::new(20.0, ui.spacing().interact_size.y);
+        if super::named_button(ui, size, "…", name, None, true)
+            .on_hover_text(name)
+            .clicked()
+        {
+            self.outputs.open = true;
+        }
     }
 
     /// « FTB » in the transition column: fade the outputs to black and back.
