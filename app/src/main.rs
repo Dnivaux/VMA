@@ -50,6 +50,35 @@ fn engine_config(options: &cli::Options) -> EngineConfig {
     config
 }
 
+/// The GPU set-up of the window and the engine (one device, ADR 0001). Windows: the DirectX 12
+/// adapter is preferred (the discrete GPU first), unless `WGPU_BACKEND` says otherwise —
+/// Vulkan on a laptop with two GPUs lost frames in the first Windows soaks (2026-11-11).
+fn wgpu_options() -> egui_wgpu::WgpuConfiguration {
+    let mut setup = egui_wgpu::WgpuSetupCreateNew::without_display_handle();
+    if cfg!(windows) && wgpu::Backends::from_env().is_none() {
+        setup.native_adapter_selector = Some(std::sync::Arc::new(|adapters, surface| {
+            let usable = |a: &&wgpu::Adapter| surface.is_none_or(|s| a.is_surface_supported(s));
+            let rank = |a: &&wgpu::Adapter| {
+                let info = a.get_info();
+                let dx12 = info.backend == wgpu::Backend::Dx12;
+                let discrete = info.device_type == wgpu::DeviceType::DiscreteGpu;
+                // Lower is better: DirectX 12 first, then the discrete GPU.
+                (u8::from(!dx12), u8::from(!discrete))
+            };
+            adapters
+                .iter()
+                .filter(usable)
+                .min_by_key(rank)
+                .cloned()
+                .ok_or_else(|| "no GPU adapter can show the window".to_owned())
+        }));
+    }
+    egui_wgpu::WgpuConfiguration {
+        wgpu_setup: setup.into(),
+        ..Default::default()
+    }
+}
+
 fn main() -> anyhow::Result<ExitCode> {
     let options = cli::parse(std::env::args().skip(1))?;
     if options.help {
@@ -100,6 +129,7 @@ fn main() -> anyhow::Result<ExitCode> {
             .with_title("VMA")
             .with_inner_size([1400.0, 820.0])
             .with_min_inner_size([800.0, 480.0]),
+        wgpu_options: wgpu_options(),
         ..Default::default()
     };
 

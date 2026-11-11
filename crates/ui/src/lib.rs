@@ -132,6 +132,9 @@ pub struct Services {
     pub api: ApiControl,
 }
 
+/// Shortest time between two frames of the main window (60 Hz).
+const UI_FRAME: std::time::Duration = std::time::Duration::from_micros(16_667);
+
 /// Root UI state.
 #[derive(Debug)]
 pub struct MainUi {
@@ -295,8 +298,11 @@ impl MainUi {
         }
         self.files(ui.ctx());
 
-        // Program and Preview change every tick: keep repainting at the display rate.
-        ui.ctx().request_repaint();
+        // Program and Preview change every tick: keep repainting, at 60 Hz at most. A 144 Hz
+        // screen would draw the window 144 times a second for a 50p Program, on the GPU the
+        // render thread shares (first Windows soaks, 2026-11-11). The full-screen window
+        // keeps every picture (its own repaints).
+        ui.ctx().request_repaint_after(UI_FRAME);
     }
 
     /// Opens the dialog the switcher asked for: a file becomes an input, a folder goes back
