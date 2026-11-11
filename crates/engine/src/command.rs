@@ -247,6 +247,12 @@ pub enum Command {
         input: InputId,
         key: InputKey,
     },
+    /// Replaces the show by a project's (ADR 0013), as the commands that build it would: each
+    /// part checked as such, the parts refused listed in [`State::load_problems`](crate::State).
+    /// Refused as a whole while a transition runs or an output is active.
+    LoadProject {
+        project: Box<crate::project::ProjectSnapshot>,
+    },
 }
 
 /// The stable key of an input (ADR 0013): a GUID, by which the compat API and a project name

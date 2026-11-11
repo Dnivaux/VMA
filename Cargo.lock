@@ -4660,6 +4660,7 @@ dependencies = [
  "vma-core",
  "vma-engine",
  "vma-io-gst",
+ "vma-project",
  "vma-ui",
  "wgpu",
  "winit",
@@ -4773,6 +4774,18 @@ dependencies = [
  "gstreamer",
  "thiserror 2.0.21",
  "tracing",
+]
+
+[[package]]
+name = "vma-project"
+version = "0.0.1"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tracing",
+ "vma-core",
+ "vma-engine",
 ]
 
 [[package]]

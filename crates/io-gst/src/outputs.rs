@@ -58,6 +58,12 @@ pub fn default_record_folder() -> PathBuf {
     glib::user_special_dir(glib::UserDirectory::Videos).unwrap_or_else(glib::home_dir)
 }
 
+/// VMA's own folder in the user's configuration (Linux: `$XDG_CONFIG_HOME/vma`, usually
+/// `~/.config/vma`; Windows: `%LOCALAPPDATA%\\vma`): autosaves, stream keys, recent projects.
+pub fn config_folder() -> PathBuf {
+    glib::user_config_dir().join("vma")
+}
+
 /// A free file name in `folder`: `VMA AAAA-MM-JJ HH-MM-SS.ext` (local time), with ` (2)`… if
 /// it is taken.
 pub(crate) fn record_path(folder: &Path, stamp: &str, extension: &str) -> Option<PathBuf> {

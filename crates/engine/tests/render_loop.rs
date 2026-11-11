@@ -1078,6 +1078,68 @@ fn hot_add_and_remove_without_missed_frames() {
     assert_eq!(render.gpu_errors, 0);
 }
 
+/// Phase 5, E3: loading a project of 10 inputs while the Program runs costs the clock no
+/// frame; each load gives the project's show.
+#[test]
+fn loading_a_project_costs_no_frame() {
+    let mut spawned = spawn(FrameRate::FPS_50, Resolution::new(320, 180).unwrap());
+    let commands = spawned.engine.commands();
+    let state = spawned.engine.state();
+    let missed_before = spawned.engine.clock_stats().snapshot().missed;
+    let show = |shade: u8| {
+        let mut s = vma_engine::State::new(vma_engine::Format {
+            rate: FrameRate::FPS_50,
+            resolution: Resolution::new(320, 180).unwrap(),
+        });
+        for n in 0..10u8 {
+            s.apply(&Command::AddInput {
+                spec: vma_engine::InputSpec::Color {
+                    color: vma_core::Rgb8::new(shade, n * 20, 0),
+                },
+                name: Some(format!("Couleur {n}")),
+            })
+            .unwrap();
+        }
+        s.project()
+    };
+    let (a, b) = (show(40), show(200));
+    for cycle in 0..10 {
+        let project = if cycle % 2 == 0 { &a } else { &b };
+        commands
+            .send(Source::Script, project.clone().load())
+            .unwrap();
+        assert!(
+            wait_for(Duration::from_secs(2), || state.load().project()
+                == *project),
+            "cycle {cycle}: {:?}",
+            state.load().load_problems
+        );
+        let from = spawned.engine.feedback().last_frame() + 2;
+        let [r, ..] = center_pixel(&mut spawned, from);
+        assert_eq!(r, project.inputs[0].spec_color_red(), "cycle {cycle}");
+    }
+    let clock = spawned.engine.clock_stats().snapshot();
+    eprintln!("adapter: {}\n{clock:?}", spawned.adapter);
+    assert_eq!(
+        clock.missed - missed_before,
+        0,
+        "missed frames while loading"
+    );
+}
+
+trait ColorRed {
+    fn spec_color_red(&self) -> u8;
+}
+
+impl ColorRed for vma_engine::ProjectInput {
+    fn spec_color_red(&self) -> u8 {
+        match &self.spec {
+            vma_engine::InputSpec::Color { color } => color.r,
+            other => panic!("{other:?}"),
+        }
+    }
+}
+
 /// ADR 0004, amendment 1: a producer pushing about 40 times faster than the master rate
 /// never shows a torn or foreign picture and costs the clock no frame; every picture pushed
 /// is published or counted as `upload_busy`, every one published is shown or skipped (at

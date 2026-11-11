@@ -35,6 +35,10 @@ Options :
   --html-data            pendant le soak, envoie une donnée par seconde au dernier input
                          HTML (événement « vma-data » : n, score)
   --spin-margin-us <µs>  marge d'attente active de l'horloge maître (défaut : 1000)
+  --project <fichier>    ouvre ce projet (.vma) au démarrage, à sa cadence et à sa résolution
+                         (elles priment sur --rate et --resolution)
+  --no-autosave          n'enregistre pas l'émission automatiquement (coupé d'office pendant
+                         un soak : « Dernier » garde l'émission d'avant)
   --record <dossier>     enregistre le Program dès le démarrage, dans ce dossier
                          (sans l'option : bouton « Enregistrer », dossier Vidéos)
   --fullscreen <écran>   montre le Program (après FTB) en plein écran dès le démarrage, sur
@@ -79,6 +83,10 @@ pub struct Options {
     /// A stinger file for slot 1, on button 2.
     pub stinger: Option<PathBuf>,
     pub spin_margin: Option<Duration>,
+    /// A project opened at start-up, at its format (ADR 0013).
+    pub project: Option<PathBuf>,
+    /// Autosave the show: not with `--no-autosave`, nor during a soak.
+    pub autosave: bool,
     /// Record from start-up into this folder.
     pub record: Option<PathBuf>,
     /// Full screen from start-up on this screen (name, or number from 1).
@@ -166,6 +174,8 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> anyhow::Result<Options> 
     let mut input_resolution = None;
     let mut spin_margin = None;
     let mut record = None;
+    let mut project = None;
+    let mut autosave = true;
     let mut fullscreen = None;
     let mut gpu_loss_grace = None;
     let mut stream_url = None;
@@ -236,6 +246,8 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> anyhow::Result<Options> 
                 spin_margin = Some(Duration::from_micros(us));
             }
             "--record" => record = Some(PathBuf::from(value::<String>(&mut args, &arg)?)),
+            "--project" => project = Some(PathBuf::from(value::<String>(&mut args, &arg)?)),
+            "--no-autosave" => autosave = false,
             "--fullscreen" => fullscreen = Some(value::<String>(&mut args, &arg)?),
             "--stream" => stream_url = Some(value::<String>(&mut args, &arg)?),
             "--stream-key" => stream_key = Some(value::<String>(&mut args, &arg)?),
@@ -323,6 +335,8 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> anyhow::Result<Options> 
         overlays,
         stinger,
         spin_margin,
+        project,
+        autosave: autosave && soak.is_none(),
         record,
         fullscreen,
         gpu_loss_grace,
@@ -432,6 +446,18 @@ mod tests {
         assert_eq!(parse_str("--no-journal").unwrap().journal_dir, None);
         assert!(o.headphones);
         assert!(!parse_str("--no-headphones").unwrap().headphones);
+        assert!(o.autosave);
+        assert!(!parse_str("--no-autosave").unwrap().autosave);
+        assert!(
+            !parse_str("--soak 10").unwrap().autosave,
+            "a soak keeps « Dernier »"
+        );
+        assert_eq!(o.project, None);
+        assert_eq!(
+            parse_str("--project show.vma").unwrap().project,
+            Some(PathBuf::from("show.vma"))
+        );
+        assert!(parse_str("--project").is_err());
         assert!(
             !parse_str("--soak 10").unwrap().headphones,
             "never during a soak"

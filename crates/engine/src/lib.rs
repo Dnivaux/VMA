@@ -17,6 +17,7 @@ mod journal;
 mod output_spec;
 mod outputs;
 mod plan;
+mod project;
 mod readback;
 mod render;
 mod sequence;
@@ -38,7 +39,7 @@ pub use command::{
 };
 pub use control::{
     CommandProbe, CommandSender, ControlStats, InputFeedStats, InputStatsReader, IoEvent,
-    IoEventSender, IoRequests, RejectionNotice, SendError, StateReader,
+    IoEventSender, IoRequests, RejectionNotice, SendError, StatePublisher, StateReader,
 };
 pub use feed::{FeedError, FeedRegistry, FeedStats, FeedStatsSnapshot, FrameSink};
 pub use journal::{Journal, JournalLine, JournalStats, Origin, Outcome, ReplayError, replay};
@@ -52,6 +53,7 @@ pub use outputs::{
     SyncTest, audio_sample_at, video_pts_ns,
 };
 pub use plan::{PlanFtb, PlanOverlay, PlanProgress, PlanReader, PlanTransition, RenderPlan};
+pub use project::{LoadProblem, ProjectInput, ProjectOutput, ProjectSnapshot, ProjectStinger};
 pub use render::{EngineConfig, EngineError, FrameReader, IoPort, Readers, RenderEngine};
 pub use sequence::{
     RING as STINGER_RING, Refused, SequenceStats, SequenceStatsSnapshot, StingerSink,

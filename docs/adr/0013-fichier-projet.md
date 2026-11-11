@@ -13,13 +13,19 @@
 2. **Contenu** : ce que l'opératrice règle, pas ce qui tourne. Format maître ; inputs (type et
    source, nom, **clé**, boucle, réglages audio et envois, réglages propres à leur type) dans
    l'ordre ; boutons de transition, Quick Play, lecture auto, domaine de mélange ; overlays
-   (transitions, dernier input de chaque channel) ; stingers ; sorties (réglages, sans leur
+   (leurs transitions ; pas le dernier input de chaque channel : aucune commande ne le donne
+   sans mettre l'overlay à l'antenne) ; stingers ; sorties (réglages, sans leur
    état) ; bus, casque ; durée du FTB ; plus tard MultiView et raccourcis. Pas dedans : état
    des sorties, signal perdu, compteurs, positions de lecture.
-3. **Charger = des `Command`** : le chargeur construit la suite de commandes qui mène d'un état
-   vide à l'état du fichier (`AddInput`, `SetInputKey`, réglages…) et la passe par le canal
-   ordinaire : même validation, journal, rejeu. Une commande refusée est rapportée (input
-   par input) sans arrêter le chargement.
+3. **Charger = une commande, `LoadProject`** (mise en œuvre, 2026-11-11) : `vma-control`
+   l'applique comme la suite de commandes ordinaires qui mène de l'émission en cours à celle du
+   fichier (`RemoveInput`…, `AddInput`, `SetInputKey`, réglages, sorties), chacune avec sa
+   validation, en **un seul changement d'état** : aucune image intermédiaire à l'antenne, et
+   le numéro d'un input créé est connu de la commande suivante. Journalisée en une ligne,
+   rejouable. Une partie refusée est notée dans `State::load_problems` (quoi, pourquoi), le
+   reste est chargé ; le format maître ne change pas en cours de route (noté aussi : ouvrir
+   le projet au démarrage, `--project`, pour prendre le sien). Le premier enregistrement garde
+   son numéro (les options de démarrage s'en servent).
 4. **Média absent** : l'input est créé quand même et passe en « signal perdu » (règle
    BRIEF §2.4) ; le chargement ne s'arrête pas.
 5. **Chemins** : chaque chemin est enregistré en absolu et relatif au fichier ; au chargement,
@@ -45,6 +51,8 @@
 - **Remplacer l'état d'un bloc** : contournerait la validation des commandes et le journal.
 
 ## Conséquences
+- Modèle `ProjectSnapshot` dans `vma-engine` (tiré de l'état par `State::project`) ; fichier,
+  migrations, chemins, clés et autosauvegarde dans la crate `vma-project`.
 - Une nouvelle commande `SetInputKey` (clé d'un input, refusée si elle est déjà prise), et une
   graine des clés journalisée au démarrage (`SeedInputKeys`) pour que le rejeu d'un journal
   redonne les mêmes clés.

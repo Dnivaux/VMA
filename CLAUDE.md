@@ -42,6 +42,9 @@ cargo run --release -- --soak 600 --hostile --report …   # + agressions fenêt
 cargo run --release -- --rate 59.94 --resolution 720p --inputs 4 --input-rates 59.94,25,29.97,60
 tests/soak/a6-rates.sh                                    # A6 : un soak de 2 min par cadence maître
 # Journal des commandes : logs/commands-AAAA-MM-JJ.jsonl par défaut (--journal-dir, --no-journal)
+# Projet (ADR 0013) : ouvert au démarrage, à son format ; autosauvegarde dans ~/.config/vma/autosave
+# (coupée pendant un soak et par --no-autosave) :
+cargo run --release -- --project emission.vma
 # Enregistrer le Program dès le démarrage (sinon bouton « Enregistrer », dossier Vidéos) :
 cargo run --release -- --record /tmp/vma-rec --soak 10 --report /tmp/vma-rec/soak.md
 # Program en plein écran dès le démarrage (nom de l'écran, ou numéro : voir « screens=[…] » au démarrage) :
@@ -80,7 +83,8 @@ Variables wgpu utiles : `WGPU_BACKEND=vulkan|dx12` ; `WGPU_ADAPTER_NAME=Intel` (
 | `crates/audio` | Audio temps réel sans GStreamer (ADR 0007) : anneau horodaté par input, DLL (fréquence de la source), lecture au temps de flux rééchantillonnée, `Mixer` (faders, mutes, envois Master / A / B, solo AFL / PFL au casque, audio-follow-video), vumètres. |
 | `crates/io-ndi` | NDI® (ADR 0008) : plugin `gst-plugin-ndi` enregistré statiquement, détection du runtime (`status()`), jamais embarqué. |
 | `crates/io-html` | Input HTML (ADR 0009, `docs/specs/io-html.md`) : `HtmlHost` (lance et surveille `vma-html`, TCP local + jeton, images par mémoire partagée), sans CEF ; binaire `vma-html` (feature `cef`, hors des builds ordinaires : mode service et sonde `--vma-probe`). |
-| `crates/{replay,api}` | Squelettes vides pour les phases suivantes. |
+| `crates/project` | Fichier projet (ADR 0013) : `ProjectSnapshot` de `vma-engine` en JSON versionné (`.vma`), chemins des médias relatifs et absolus, clés de stream à part (`secrets.json`), écriture atomique, autosauvegarde (thread `vma-project`, 5 fichiers tournants). |
+| `crates/{replay,api}` | Squelettes vides pour les phases suivantes (`api` : Phase 5, ADR 0012). |
 | `docs/adr/` | Décisions d'architecture (une par fichier, à faire valider). 0001 archi (acceptée avec amendements), 0002 décisions produit. |
 | `docs/specs/` | Une spec par module, avec critères d'acceptation. |
 | `docs/manual-tests/` | Checklists de tests sur matériel réel. |

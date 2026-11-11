@@ -1,0 +1,19 @@
+[package]
+name = "vma-project"
+description = "Project files (ADR 0013): format and version, media paths, stream keys kept apart, atomic writes, autosave."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+vma-core.workspace = true
+vma-engine.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[lints]
+workspace = true

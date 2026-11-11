@@ -96,6 +96,29 @@ impl StateReader {
     pub fn load(&self) -> Arc<State> {
         self.state.load_full()
     }
+
+    /// A reader fed by hand, without engine (tests of the API and the autosave, tools).
+    pub fn standalone(state: State) -> (Self, StatePublisher) {
+        let state = Arc::new(ArcSwap::from_pointee(state));
+        (
+            Self {
+                state: Arc::clone(&state),
+            },
+            StatePublisher { state },
+        )
+    }
+}
+
+/// Feeds a [`StateReader::standalone`].
+#[derive(Debug, Clone)]
+pub struct StatePublisher {
+    state: Arc<ArcSwap<State>>,
+}
+
+impl StatePublisher {
+    pub fn publish(&self, state: State) {
+        self.state.store(Arc::new(state));
+    }
 }
 
 /// The last refused command, for the UI to show.

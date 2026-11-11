@@ -262,7 +262,7 @@ vérifiées dans la documentation publique : [`api-compat.md`](docs/specs/api-co
 |---|---|---|
 | 1. ADR 0012 (API), 0013 (fichier projet), 0014 (MultiView) | 🟡 | [ADR 0012](docs/adr/0012-api.md) et [ADR 0013](docs/adr/0013-fichier-projet.md) **acceptés** (réponses aux questions de la spec) ; ADR 0014 à l'étape 9, d'après le guide public de la référence (Q10 : « au plus proche ») |
 | 2. Clé stable par input ; instantané d'état | ✅ | `InputKey` (GUID, version 4), `SeedInputKeys` journalisée au démarrage (le rejeu redonne les clés), `SetInputKey` (refusée si la clé est prise) ; l'instantané `Arc<State>` existait déjà (`StateReader`). 3 nouveaux tests ; 474 tests verts en local |
-| 3. Projet : modèle, chargement par commandes, autosauvegarde, secrets | ⬜ | |
+| 3. Projet : modèle, chargement par commandes, autosauvegarde, secrets | ✅ | `ProjectSnapshot` (`State::project`), `LoadProject` en un changement d'état (parties refusées dans `load_problems`, refusée pendant une transition ou une sortie active) ; crate `vma-project` : JSON versionné, chemins relatifs puis absolus, clés dans `secrets.json` (0600), écriture atomique, autosauvegarde 2 s après un changement et à la fermeture ; `--project`, `--no-autosave`. **E1** (aller-retour, clés), **E2** (refus motivés, dossier déplacé, médias absents), **E3** (10 chargements de 10 inputs en direct : 0 tick manqué, GPU réel), **E4** (autosauvegarde) : 10 nouveaux tests ; 485 tests verts en local |
 | 4. UI : barre de projet | ⬜ | |
 | 5. API native | ⬜ | |
 | 6. API compat : fonctions, XML | ⬜ | |

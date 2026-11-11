@@ -69,7 +69,29 @@ fn main() -> anyhow::Result<ExitCode> {
         .with_writer(log_writer)
         .init();
 
-    let config = engine_config(&options);
+    // Autosaves, stream keys (ADR 0013).
+    let config_folder = vma_io_gst::config_folder();
+    let secrets = Arc::new(std::sync::Mutex::new(vma_project::Secrets::load(
+        &config_folder.join("secrets.json"),
+    )));
+    let project = match &options.project {
+        Some(path) => {
+            let keys = secrets
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            Some(
+                vma_project::open(path, &keys)
+                    .with_context(|| format!("--project {}", path.display()))?,
+            )
+        }
+        None => None,
+    };
+    let mut config = engine_config(&options);
+    // A project runs at its own format.
+    if let Some(project) = &project {
+        config.rate = project.format.rate;
+        config.resolution = project.format.resolution;
+    }
 
     let native_options = eframe::NativeOptions {
         renderer: eframe::Renderer::Wgpu,
@@ -101,8 +123,13 @@ fn main() -> anyhow::Result<ExitCode> {
                 let app = App::new(
                     cc,
                     config,
-                    journal,
                     &options,
+                    Startup {
+                        journal,
+                        project: project.clone(),
+                        secrets: Arc::clone(&secrets),
+                        config_folder: config_folder.clone(),
+                    },
                     &device_lost,
                     &soak_handle,
                     screens.clone(),
@@ -148,14 +175,25 @@ struct App<'a> {
     device_lost_grace: Duration,
     /// When this window first saw the GPU lost.
     lost_since: Option<Instant>,
+    /// Writes what is pending when the window closes (ADR 0013 § 8).
+    _autosaver: Option<vma_project::Autosaver>,
+}
+
+/// What `main` prepares for the window: the journal, the project to open, the stream keys,
+/// VMA's folder.
+struct Startup {
+    journal: Journal,
+    project: Option<vma_engine::ProjectSnapshot>,
+    secrets: Arc<std::sync::Mutex<vma_project::Secrets>>,
+    config_folder: std::path::PathBuf,
 }
 
 impl<'a> App<'a> {
     fn new(
         cc: &eframe::CreationContext<'_>,
         config: EngineConfig,
-        journal: Journal,
         options: &cli::Options,
+        startup: Startup,
         device_lost: &'a OnceLock<String>,
         soak_handle: &OnceLock<soak::SoakHandle>,
         screens: vma_ui::Screens,
@@ -181,7 +219,7 @@ impl<'a> App<'a> {
             render_state.device.clone(),
             render_state.queue.clone(),
             config,
-            journal,
+            startup.journal,
         )?;
         // Images, capture and files (ADR 0004). Without GStreamer the runtime still serves
         // still images; without the thread at all, those inputs stay « Démarrage ».
@@ -197,6 +235,24 @@ impl<'a> App<'a> {
                 }
             }
         });
+        // `--project`: the show, before what the other options add to it.
+        if let Some(project) = startup.project {
+            engine
+                .commands()
+                .send(vma_engine::Source::Script, project.load())?;
+        }
+        let autosaver = if options.autosave {
+            let folder = startup.config_folder.join("autosave");
+            match vma_project::Autosaver::spawn(engine.state(), folder, startup.secrets) {
+                Ok(saver) => Some(saver),
+                Err(e) => {
+                    tracing::error!(error = %e, "autosave not started");
+                    None
+                }
+            }
+        } else {
+            None
+        };
         // Synthetic sources asked for on the command line (soaks, rate tests). Without them a
         // soak still needs a moving picture on air: the test pattern. A normal session starts
         // empty, like the reference.
@@ -383,6 +439,7 @@ impl<'a> App<'a> {
             state,
             device_lost_grace: config.device_lost_grace,
             lost_since: None,
+            _autosaver: autosaver,
         })
     }
 }

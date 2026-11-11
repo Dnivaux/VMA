@@ -19,6 +19,7 @@ use crate::command::{
 };
 use crate::output_spec::{InvalidSpec, MAX_OUTPUTS, OutputSpec, RecordSpec, STREAM_SLOTS};
 use crate::plan::{PlanFtb, PlanOverlay, PlanProgress, PlanTransition, RenderPlan};
+use crate::project::{LoadProblem, ProjectSnapshot};
 
 /// Maximum number of inputs (fixed slot table on the render side, ADR 0003).
 pub const MAX_INPUTS: usize = 64;
@@ -412,6 +413,36 @@ pub enum Rejection {
     KeyTaken(InputKey),
 }
 
+/// What [`State::load_project`] gathers while it applies its commands.
+#[derive(Default)]
+struct Load {
+    io: Vec<IoRequest>,
+    problems: Vec<LoadProblem>,
+}
+
+impl Load {
+    /// Applies one command of the load; a refusal is noted against `what`. `true` if applied.
+    fn step(&mut self, state: &mut State, command: &Command, what: &str) -> bool {
+        match state.apply_inner(command) {
+            Ok(change) => {
+                self.io.extend(change.io);
+                true
+            }
+            Err(e) => {
+                self.problem(what, &e);
+                false
+            }
+        }
+    }
+
+    fn problem(&mut self, what: &str, reason: &Rejection) {
+        self.problems.push(LoadProblem {
+            what: what.to_owned(),
+            reason: reason.to_string(),
+        });
+    }
+}
+
 /// Work for `io-gst` that follows from an accepted command.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IoRequest {
@@ -664,6 +695,9 @@ pub struct State {
     /// The stinger slots, in the order of [`StingerSlot::ALL`].
     #[serde(default)]
     pub stingers: [StingerState; StingerSlot::COUNT],
+    /// What the last [`Command::LoadProject`] could not load (empty: all of it).
+    #[serde(default)]
+    pub load_problems: Vec<LoadProblem>,
     /// Seed of the keys of new inputs ([`Command::SeedInputKeys`]).
     #[serde(default)]
     key_seed: u64,
@@ -733,6 +767,7 @@ impl State {
             audio: AudioState::default(),
             overlays: Default::default(),
             stingers: Default::default(),
+            load_problems: Vec::new(),
             key_seed: 0,
             next_input: 1,
             next_transition: 1,
@@ -1401,6 +1436,7 @@ impl State {
                 };
                 Ok(Change { changed: true, io })
             }
+            Command::LoadProject { project } => self.load_project(project),
             Command::SeedInputKeys { seed } => {
                 self.key_seed = *seed;
                 Ok(Change::changed())
@@ -1873,6 +1909,249 @@ impl State {
             .and_then(|i| self.buttons.get(i))
             .copied()
             .ok_or(Rejection::UnknownButton(button))
+    }
+
+    fn load_project(&mut self, project: &ProjectSnapshot) -> Result<Change, Rejection> {
+        if self.transition.is_some() {
+            return Err(Rejection::TransitionRunning);
+        }
+        if let Some(o) = self.outputs.iter().find(|o| o.status.is_active()) {
+            return Err(Rejection::OutputActive(o.id));
+        }
+        let mut load = Load::default();
+        if project.format != self.format {
+            load.problems.push(LoadProblem {
+                what: "Format".into(),
+                reason: format!(
+                    "the project is {}x{} at {}, VMA runs {}x{} at {}: open the project at \
+                     start-up to use its format",
+                    project.format.resolution.width(),
+                    project.format.resolution.height(),
+                    project.format.rate,
+                    self.format.resolution.width(),
+                    self.format.resolution.height(),
+                    self.format.rate
+                ),
+            });
+        }
+
+        // The show is emptied; the first recording stays, so that its number does not change
+        // (start-up options use it).
+        for id in self.inputs.iter().map(|i| i.id).collect::<Vec<_>>() {
+            load.step(self, &Command::RemoveInput { input: id }, "Input");
+        }
+        let mut recording = self
+            .outputs
+            .iter()
+            .find(|o| matches!(o.spec, OutputSpec::Record(_)))
+            .map(|o| o.id);
+        for id in self
+            .outputs
+            .iter()
+            .map(|o| o.id)
+            .filter(|id| Some(*id) != recording)
+            .collect::<Vec<_>>()
+        {
+            load.step(self, &Command::RemoveOutput { output: id }, "Output");
+        }
+
+        let mut ids = Vec::with_capacity(project.inputs.len());
+        for input in &project.inputs {
+            let name = input.name.as_str();
+            let add = Command::AddInput {
+                spec: input.spec.clone(),
+                name: Some(input.name.clone()),
+            };
+            if !load.step(self, &add, name) {
+                ids.push(None);
+                continue;
+            }
+            let Some(id) = self.inputs.last().map(|i| i.id) else {
+                ids.push(None);
+                continue;
+            };
+            ids.push(Some(id));
+            load.step(
+                self,
+                &Command::SetInputKey {
+                    input: id,
+                    key: input.key,
+                },
+                name,
+            );
+            if input.spec.kind().has_playback() {
+                let looping = Command::SetLoop {
+                    input: id,
+                    enabled: input.looping,
+                };
+                load.step(self, &looping, name);
+            }
+            if let Some(audio) = input.audio.filter(|_| input.spec.has_audio()) {
+                let mut commands = vec![
+                    Command::SetInputGain {
+                        input: id,
+                        db: audio.gain,
+                    },
+                    Command::SetInputMute {
+                        input: id,
+                        mute: audio.mute,
+                    },
+                    Command::SetInputSolo {
+                        input: id,
+                        solo: audio.solo,
+                    },
+                    Command::SetInputDelay {
+                        input: id,
+                        ms: audio.delay_ms,
+                    },
+                    Command::SetAudioFollowVideo {
+                        input: id,
+                        on: audio.follow_video,
+                    },
+                ];
+                commands.extend(AudioBus::ALL.into_iter().map(|bus| Command::SetInputBus {
+                    input: id,
+                    bus,
+                    on: audio.sends.get(bus.index()).copied().unwrap_or(false),
+                }));
+                for command in &commands {
+                    load.step(self, command, name);
+                }
+            }
+        }
+        let shown = |state: &Self, at: Option<usize>| {
+            at.and_then(|n| ids.get(n).copied().flatten())
+                .filter(|id| state.input(*id).is_some_and(|i| i.spec.kind().has_video()))
+        };
+        self.program = shown(self, project.program);
+        self.preview = shown(self, project.preview);
+
+        let mut settings: Vec<(Command, String)> = Vec::new();
+        for (n, button) in project.buttons.iter().enumerate() {
+            settings.push((
+                Command::SetTransition {
+                    button: n as u8 + 1,
+                    effect: button.effect,
+                    duration_ms: button.duration_ms,
+                },
+                format!("Transition {}", n + 1),
+            ));
+        }
+        settings.push((
+            Command::SetQuickPlay {
+                effect: project.quick_play.effect,
+                duration_ms: project.quick_play.duration_ms,
+            },
+            "Quick Play".into(),
+        ));
+        settings.push((Command::SetAutoPlay(project.auto_play), "Lecture".into()));
+        settings.push((
+            Command::SetMixDomain {
+                domain: project.mix_domain,
+            },
+            "Mélange".into(),
+        ));
+        settings.push((
+            Command::SetFadeToBlackDuration { ms: project.ftb_ms },
+            "FTB".into(),
+        ));
+        for (channel, transition) in OverlayChannel::ALL.into_iter().zip(project.overlays) {
+            settings.push((
+                Command::SetOverlayTransition {
+                    channel,
+                    effect: transition.effect,
+                    duration_ms: transition.duration_ms,
+                },
+                format!("Overlay {}", channel.number()),
+            ));
+        }
+        for (slot, stinger) in StingerSlot::ALL.into_iter().zip(&project.stingers) {
+            settings.push((
+                Command::SetStinger {
+                    slot,
+                    file: stinger.file.clone(),
+                    cut_point_ms: stinger.cut_point_ms,
+                },
+                format!("Stinger {}", slot.number()),
+            ));
+        }
+        for bus in AudioBus::ALL {
+            let set = project.buses.get(bus.index()).copied().unwrap_or_default();
+            let what = format!("Bus {bus:?}");
+            settings.push((Command::SetBusGain { bus, db: set.gain }, what.clone()));
+            settings.push((
+                Command::SetBusMute {
+                    bus,
+                    mute: set.mute,
+                },
+                what,
+            ));
+        }
+        settings.push((
+            Command::SetMonitor {
+                device: project.monitor.device.clone(),
+                solo_mode: project.monitor.solo_mode,
+            },
+            "Casque".into(),
+        ));
+        for (command, what) in &settings {
+            load.step(self, command, what);
+        }
+
+        for output in &project.outputs {
+            let name = output.name.as_str();
+            let id = match (recording, &output.spec) {
+                (Some(id), OutputSpec::Record(_)) => {
+                    recording = None;
+                    let update = Command::UpdateOutput {
+                        output: id,
+                        spec: output.spec.clone(),
+                    };
+                    if !load.step(self, &update, name) {
+                        continue;
+                    }
+                    match valid_name(name) {
+                        Ok(name) => {
+                            if let Some(o) = self.outputs.iter_mut().find(|o| o.id == id) {
+                                o.name = name;
+                            }
+                        }
+                        Err(e) => load.problem(name, &e),
+                    }
+                    id
+                }
+                _ => {
+                    let add = Command::AddOutput {
+                        spec: output.spec.clone(),
+                        name: Some(output.name.clone()),
+                    };
+                    if !load.step(self, &add, name) {
+                        continue;
+                    }
+                    let Some(id) = self.outputs.last().map(|o| o.id) else {
+                        continue;
+                    };
+                    id
+                }
+            };
+            if !output.spec.is_fullscreen() {
+                let bus = Command::SetOutputBus {
+                    output: id,
+                    bus: output.bus,
+                };
+                load.step(self, &bus, name);
+            }
+        }
+        // A project without recording: the one kept goes too.
+        if let Some(id) = recording {
+            load.step(self, &Command::RemoveOutput { output: id }, "Output");
+        }
+
+        self.load_problems = load.problems;
+        Ok(Change {
+            changed: true,
+            io: load.io,
+        })
     }
 
     /// A key for new input `id` that no input has yet (a project may have set any key).
