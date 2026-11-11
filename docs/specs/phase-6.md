@@ -1,6 +1,7 @@
 # Phase 6 — Sport : spec d'ensemble et plan
 
-- **Statut** : **proposé** (2026-11-11), à valider par le mainteneur : questions Q1–Q14 du § 7
+- **Statut** : **validé** le 2026-11-11 par le mainteneur (« je valide tes recommandations ») :
+  les recommandations des questions Q1–Q14 du § 7 sont retenues
 - **Date** : 2026-11-11
 - **Références** : BRIEF §4 (Phase 6), §2.3 (temps réel), §8 (budgets) ; ADR 0004 (entrées
   GStreamer), ADR 0006 (sorties, encodeurs), ADR 0007 (audio), ADR 0014 (MultiView) ;
