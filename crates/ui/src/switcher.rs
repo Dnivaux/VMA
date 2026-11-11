@@ -24,6 +24,7 @@ mod api_settings;
 mod html_input;
 mod icons;
 mod mixer;
+mod multiview_settings;
 mod ndi_input;
 mod outputs;
 mod project_bar;
@@ -1263,6 +1264,9 @@ impl Switcher {
                 if domain != state.mix_domain {
                     self.send(ui, view, Command::SetMixDomain { domain });
                 }
+
+                ui.separator();
+                self.multiview_section(ui, view);
 
                 ui.separator();
                 self.api_section(ui, view);

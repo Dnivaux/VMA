@@ -2125,3 +2125,48 @@ fn the_control_api_settings() {
         }]
     );
 }
+
+/// ADR 0014: Réglages → MultiView sends its settings; a cell can show a chosen input.
+#[test]
+fn multiview_settings() {
+    let mut h = harness(state());
+    h.get_by_label("Réglages").click();
+    h.run();
+    h.get_by_label("Titres sous les images").click();
+    h.run();
+    assert_eq!(
+        h.state().sent(),
+        [Command::SetMultiview {
+            settings: vma_engine::MultiviewSettings {
+                titles_below: true,
+                ..Default::default()
+            },
+        }]
+    );
+    h.get_by_label("Disposition").click();
+    h.run();
+    h.get_by_label("Preview / Program + 14 inputs").click();
+    h.run();
+    assert!(matches!(
+        h.state().sent().last(),
+        Some(Command::SetMultiview { settings }) if settings.layout == vma_engine::MultiviewLayout::PlusFourteen
+    ));
+    h.get_by_label("Ordre des cases").click();
+    h.run();
+    h.get_by_label("Case 2").click();
+    h.run();
+    let key = h.state().state.inputs[2].key;
+    let name = format!("3 {}", h.state().state.inputs[2].name);
+    // The card has the same title: the menu's entry is the last one.
+    h.get_all_by_label(&name).last().unwrap().click();
+    h.run();
+    assert!(
+        matches!(
+            h.state().sent().last(),
+            Some(Command::SetMultiview { settings })
+                if settings.slots == [vma_engine::MultiviewSlot::Auto, vma_engine::MultiviewSlot::Input(key)]
+        ),
+        "{:?}",
+        h.state().sent().last()
+    );
+}

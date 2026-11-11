@@ -330,3 +330,11 @@ suivi de « • » s'il a des changements non sauvegardés. « Sauvegarder », p
 - Les fichiers sont lus et écrits sur des threads à part : l'UI continue de dessiner.
 - Ce qu'un projet n'a pas pu charger s'affiche dans une fenêtre (quoi, pourquoi) ; les
   nouvelles (sauvegardé, ouverture impossible) dans la barre du haut.
+
+## MultiView et plein écran (Phase 5, ADR 0014)
+- **Sorties** : jusqu'à deux plein écran, chacun sur son écran, avec « Montre » : Program après
+  FTB, Preview ou MultiView.
+- **Réglages → MultiView** : disposition (Preview / Program + 8, + 14, + 2, ou + 8 sans titres
+  ni vumètres), titres sous les images, nom de l'input sur la Preview et le Program, ordre des
+  cases (« Automatique » : les inputs dans l'ordre ; « Vide » ; ou un input choisi, gardé par sa
+  clé). Gardé dans le projet.
