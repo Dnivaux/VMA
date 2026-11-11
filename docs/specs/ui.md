@@ -244,8 +244,12 @@ refusées, `journal_dropped`.
 Demandée par le mainteneur avant les réponses de la partenaire : la disposition suit ce que
 dit le guide public de la référence ([`ui-inventaire-reference.md`](ui-inventaire-reference.md)),
 la partenaire compare ensuite ([`observation-reference-interface.md`](../manual-tests/observation-reference-interface.md)).
-Remplace le schéma de « Disposition » ci-dessus. Pas d'icônes ni de thème encore (ADR 0011) :
-les polices fournies par egui n'ont presque aucun symbole, les boutons restent en texte.
+Remplace le schéma de « Disposition » ci-dessus. **Icônes Lucide** depuis le 2026-11-11
+([ADR 0011](../adr/0011-identite-visuelle.md)) : icône + texte pour les commandes principales,
+icône seule (infobulle, nom accessible inchangé : « × », « QP », « Cut », « Loop », « Lecture »,
+« Pause », « Début ») sur les tuiles et les contrôles vidéo ; les « … » du schéma sont des
+chevrons (transitions) et des rouages (sorties). « + Ajouter » s'appelle « Ajouter un input ».
+Palette et police : ADR 0011, ouvertes.
 ```
 ┌──────────────────────────────────────────────────────────────── [Réglages] [À propos] ┐
 │ PREVIEW · n nom (vert)        │ Quick Play   │ PROGRAM · n nom (rouge)               │
@@ -269,7 +273,7 @@ les polices fournies par egui n'ont presque aucun symbole, les boutons restent e
 ```
 - **Barre du haut** : messages à gauche (place des presets, Phase 5) ; Réglages et À propos à
   droite.
-- **Barre du bas** : « + Ajouter » ; chaque sortie est un bouton qui démarre / arrête
+- **Barre du bas** : « Ajouter un input » ; chaque sortie est un bouton qui démarre / arrête
   (durée à côté quand elle tourne) et un « … » qui ouvre ses réglages (fenêtre Sorties), comme
   le rouage de la référence. **Plein écran** : démarre / arrête le plein écran ; sans plein
   écran, ouvre Sorties. À droite : Mélangeur et Statistiques (bascules).

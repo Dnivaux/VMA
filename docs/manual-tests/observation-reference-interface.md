@@ -23,12 +23,13 @@ Fréquence, quand on la demande : **S** = à chaque émission, **P** = parfois, 
 L'interface de VMA a été disposée d'après le guide public de la référence (2026-11-11) :
 [`images/vma-interface-2026-11-11.png`](images/vma-interface-2026-11-11.png) (fenêtre 1920 ×
 1040, six inputs, un overlay ; les vues montrent des aplats à la place de la vidéo). Les
-boutons sont en texte pour l'instant : icônes et couleurs viendront ensuite.
+boutons ont des icônes ; les couleurs et la police sont encore celles par défaut.
 
 Ce qu'on y voit : Preview à gauche, Program à droite, au centre Quick Play, Cut, les 4 boutons
-de transition (« … » à côté : effet et durée), FTB, T-Bar, puis les 4 overlays ; en bas, les
-inputs sur plusieurs rangées (titre, vignette, × QP Cut Loop, 1 2 3 4, Son) et le mélangeur à
-droite ; tout en bas, Ajouter, Enregistrer, Streamer, Plein écran (« … » : leurs réglages),
+de transition (la petite flèche à côté : effet et durée), FTB, T-Bar, puis les 4 overlays ; en bas, les
+inputs sur plusieurs rangées (titre, vignette, puis en icônes : fermer, Quick Play, Cut,
+boucle ; 1 2 3 4 ; son) et le mélangeur à
+droite ; tout en bas, Ajouter, Enregistrer, Streamer, Plein écran (le rouage à côté : leurs réglages),
 Sorties, et à droite Mélangeur et Statistiques ; Réglages en haut à droite.
 
 - [ ] En regardant l'image : qu'est-ce qui n'est **pas à l'endroit** où elle l'attend ?
