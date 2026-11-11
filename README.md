@@ -3,8 +3,8 @@
 Mélangeur vidéo live open source en Rust : switcher, streaming, enregistrement.
 Linux et Windows en priorité, macOS ensuite. Nom provisoire (BRIEF §12 : « VMA » remplace le nom de code « Aiguillage »).
 
-> **État** : Phases 0 à 3 closes sous Linux (mélange, entrées, enregistrement, streaming,
-> plein écran, audio, SRT, NDI®), Phase 4 en revue (overlays, input HTML, stinger). Voir
+> **État** : Phases 0 à 4 closes sous Linux (mélange, entrées, enregistrement, streaming,
+> plein écran, audio, SRT, NDI®, overlays, input HTML, stinger). Voir
 > [`ROADMAP.md`](ROADMAP.md).
 
 ## Démarrer
