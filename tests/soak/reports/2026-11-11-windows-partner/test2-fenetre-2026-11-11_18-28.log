@@ -1,0 +1,325 @@
+2026-11-11T19:11:04.925061Z  INFO vma::screens: screens screens=["\\\\.\\DISPLAY1 · 1920 × 1080 · 144 Hz"]
+2026-11-11T19:11:05.301637Z  INFO egui_wgpu: There are 6 available wgpu adapters: {backend: Vulkan, device_type: IntegratedGpu, name: "Intel(R) Iris(R) Xe Graphics", driver: "Intel Corporation", driver_info: "Intel driver", vendor: Intel (0x8086), device: 0x9A49, subgroup_size: 8..=32, transient_saves_memory: Some(false), limit_bucket: None}, {backend: Vulkan, device_type: DiscreteGpu, name: "NVIDIA GeForce RTX 3060 Laptop GPU", driver: "NVIDIA", driver_info: "555.97", vendor: NVIDIA (0x10DE), device: 0x2520, pci_bus_id: "0000:01:00.0", subgroup_size: 32..=32, transient_saves_memory: Some(false), limit_bucket: None}, {backend: Dx12, device_type: IntegratedGpu, name: "Intel(R) Iris(R) Xe Graphics", driver: "31.0.101.5333", vendor: Intel (0x8086), device: 0x9A49, pci_bus_id: "0000:00:02.0", subgroup_size: 16..=16, transient_saves_memory: Some(false), limit_bucket: None}, {backend: Dx12, device_type: DiscreteGpu, name: "NVIDIA GeForce RTX 3060 Laptop GPU", driver: "32.0.15.5597", vendor: NVIDIA (0x10DE), device: 0x2520, pci_bus_id: "0000:01:00.0", subgroup_size: 32..=32, transient_saves_memory: Some(false), limit_bucket: None}, {backend: Dx12, device_type: Cpu, name: "Microsoft Basic Render Driver", driver: "10.0.26100.9711", vendor: Unknown (0x1414), device: 0x8C, subgroup_size: 4..=4, transient_saves_memory: Some(false), limit_bucket: None}, {backend: Gl, device_type: IntegratedGpu, name: "Intel(R) Iris(R) Xe Graphics", driver_info: "4.6.0 - Build 31.0.101.5333", vendor: Intel (0x8086), subgroup_size: 4..=128, transient_saves_memory: None, limit_bucket: None}
+2026-11-11T19:11:05.484753Z  INFO vma: GPU adapter adapter=NVIDIA GeForce RTX 3060 Laptop GPU · Vulkan · DiscreteGpu
+2026-11-11T19:11:05.497715Z  INFO vma_engine::render: engine started rate=50p resolution=1920x1080
+2026-11-11T19:11:05.499509Z  INFO vma_io_ndi: NDI® status=Unavailable { reason: "NDI® runtime not found: install the NDI runtime (NDI Tools), or set NDI_RUNTIME_DIR_V6, then restart VMA" }
+2026-11-11T19:11:05.499663Z  INFO vma_io_gst::runtime: HTML inputs unavailable reason=vma-html.exe introuvable (C:\Users\<utilisateur>\Desktop\VMA\bin\vma-html.exe) : VMA a été compilé sans l'input HTML
+2026-11-11T19:11:05.500203Z  INFO vma::soak: soak started duration_s=600 hostile=true
+2026-11-11T19:11:05.585254Z  WARN vma_clock: frame clock missed slots index=4 missed=1 total_missed=1
+2026-11-11T19:11:07.478793Z  INFO vma_io_gst::devices: capture device id=mediafoundation:@device:sw:{860BB310-5D01-11D0-BD3B-00A0C911CE86}\{8E14549A-DB61-4309-AFA1-3578E927E938} name=vMix Video
+2026-11-11T19:11:07.478810Z  INFO vma_io_gst::devices: capture device id=mediafoundation:@device:sw:{860BB310-5D01-11D0-BD3B-00A0C911CE86}\{8E14549A-DB61-4309-AFA1-3578E927F974} name=vMix Video External 2
+2026-11-11T19:11:07.478811Z  INFO vma_io_gst::devices: capture device id=mediafoundation:@device:sw:{860BB310-5D01-11D0-BD3B-00A0C911CE86}\{8E14549A-DB61-4309-AFA1-3578E927FAA4} name=vMix Video External 3
+2026-11-11T19:11:07.478812Z  INFO vma_io_gst::devices: capture device id=mediafoundation:@device:sw:{860BB310-5D01-11D0-BD3B-00A0C911CE86}\{8E14549A-DB61-4309-AFA1-3578E927FBB4} name=vMix Video External 3 YV12
+2026-11-11T19:11:07.478813Z  INFO vma_io_gst::devices: capture device id=mediafoundation:@device:sw:{860BB310-5D01-11D0-BD3B-00A0C911CE86}\{8E14549A-DB61-4309-AFA1-3578E927FCC4} name=vMix Video External 4
+2026-11-11T19:11:07.478813Z  INFO vma_io_gst::devices: capture device id=mediafoundation:@device:sw:{860BB310-5D01-11D0-BD3B-00A0C911CE86}\{8E14549A-DB61-4309-AFA1-3578E927FDD4} name=vMix Video External 4 YV12
+2026-11-11T19:11:07.478814Z  INFO vma_io_gst::devices: capture device id=mediafoundation:@device:sw:{860BB310-5D01-11D0-BD3B-00A0C911CE86}\{8E14549A-DB61-4309-AFA1-3578E927FF92} name=vMix Video YV12
+2026-11-11T19:11:07.478815Z  INFO vma_io_gst::devices: capture device id=mediafoundation:@device:sw:{860BB310-5D01-11D0-BD3B-00A0C911CE86}\{8E14549A-DB61-4309-AFA1-3578E927FF94} name=vMix Video External 2 YV12
+2026-11-11T19:11:07.478815Z  INFO vma_io_gst::devices: capture device id=mediafoundation:@device:sw:{860BB310-5D01-11D0-BD3B-00A0C911CE86}\{A3FCE0F5-3493-419F-958A-ABA1250EC20B} name=OBS Virtual Camera
+2026-11-11T19:11:07.715952Z ERROR vma_engine::render: uncaptured GPU error error=Validation Error
+
+Caused by:
+  In Surface::configure
+    Failed to wait for GPU to come idle before reconfiguring the Surface
+
+2026-11-11T19:11:07.717564Z ERROR vma_engine::render: uncaptured GPU error error=Validation Error
+
+Caused by:
+  In a CommandEncoder, label = 'encoder'
+    In a set_scissor_rect command
+      Scissor Rect { x: 1095, y: 0, w: 455, h: 630 } is not contained in the render target (1468, 673, 1)
+
+2026-11-11T19:11:07.717584Z ERROR vma_engine::render: uncaptured GPU error error=Validation Error
+
+Caused by:
+  In Queue::submit
+    In a set_scissor_rect command
+      Scissor Rect { x: 1095, y: 0, w: 455, h: 630 } is not contained in the render target (1468, 673, 1)
+
+2026-11-11T19:11:10.457664Z  INFO vma_io_gst::audio_devices: audio device kind="source" id=wasapi2:{0.0.0.00000000}.{1951f040-3673-4bd1-9cdf-7ad8da900d6f} name=Haut-parleurs (Realtek(R) Audio)
+2026-11-11T19:11:10.457679Z  INFO vma_io_gst::audio_devices: audio device kind="source" id=wasapi2:{0.0.0.00000000}.{8e1688d6-5a24-4518-9660-0c64381c43f9} name=AI Noise-cancelling Output (ASUS Utility)
+2026-11-11T19:11:10.457681Z  INFO vma_io_gst::audio_devices: audio device kind="source" id=wasapi2:{0.0.1.00000000}.{7fe044a9-20f7-4b5c-a6d6-167497875e66} name=AI Noise-cancelling Input (ASUS Utility)
+2026-11-11T19:11:10.457682Z  INFO vma_io_gst::audio_devices: audio device kind="source" id=wasapi2:{0.0.1.00000000}.{fc911e2a-73ae-42aa-aead-42b1ad5e7b68} name=Réseau de microphones (Realtek(R) Audio)
+2026-11-11T19:11:10.457683Z  INFO vma_io_gst::audio_devices: audio device kind="source" id=wasapi2:{2EEF81BE-33FA-4800-9670-1CD474972C3F} name=Default Audio Capture Device
+2026-11-11T19:11:10.457684Z  INFO vma_io_gst::audio_devices: audio device kind="source" id=wasapi2:{E6327CAD-DCEC-4949-AE8A-991E976A79D2} name=Default Audio Render Device
+2026-11-11T19:11:10.457685Z  INFO vma_io_gst::audio_devices: audio device kind="source" id=wasapi:{0.0.1.00000000}.{7fe044a9-20f7-4b5c-a6d6-167497875e66} name=AI Noise-cancelling Input (ASUS Utility)
+2026-11-11T19:11:10.457686Z  INFO vma_io_gst::audio_devices: audio device kind="source" id=wasapi:{0.0.1.00000000}.{fc911e2a-73ae-42aa-aead-42b1ad5e7b68} name=Réseau de microphones (Realtek(R) Audio)
+2026-11-11T19:11:10.457687Z  INFO vma_io_gst::audio_devices: audio device kind="sink" id=wasapi2:{0.0.0.00000000}.{1951f040-3673-4bd1-9cdf-7ad8da900d6f} name=Haut-parleurs (Realtek(R) Audio)
+2026-11-11T19:11:10.457688Z  INFO vma_io_gst::audio_devices: audio device kind="sink" id=wasapi2:{0.0.0.00000000}.{8e1688d6-5a24-4518-9660-0c64381c43f9} name=AI Noise-cancelling Output (ASUS Utility)
+2026-11-11T19:11:10.457689Z  INFO vma_io_gst::audio_devices: audio device kind="sink" id=wasapi2:{E6327CAD-DCEC-4949-AE8A-991E976A79D2} name=Default Audio Render Device
+2026-11-11T19:11:10.457691Z  INFO vma_io_gst::audio_devices: audio device kind="sink" id=wasapi:{0.0.0.00000000}.{1951f040-3673-4bd1-9cdf-7ad8da900d6f} name=Haut-parleurs (Realtek(R) Audio)
+2026-11-11T19:11:10.457692Z  INFO vma_io_gst::audio_devices: audio device kind="sink" id=wasapi:{0.0.0.00000000}.{8e1688d6-5a24-4518-9660-0c64381c43f9} name=AI Noise-cancelling Output (ASUS Utility)
+2026-11-11T19:11:22.215801Z ERROR vma_engine::render: uncaptured GPU error error=Validation Error
+
+Caused by:
+  In Surface::configure
+    Failed to wait for GPU to come idle before reconfiguring the Surface
+
+2026-11-11T19:11:22.216610Z ERROR vma_engine::render: uncaptured GPU error error=Validation Error
+
+Caused by:
+  In a CommandEncoder, label = 'encoder'
+    In a set_scissor_rect command
+      Scissor Rect { x: 827, y: 0, w: 455, h: 630 } is not contained in the render target (1200, 673, 1)
+
+2026-11-11T19:11:22.216625Z ERROR vma_engine::render: uncaptured GPU error error=Validation Error
+
+Caused by:
+  In Queue::submit
+    In a set_scissor_rect command
+      Scissor Rect { x: 827, y: 0, w: 455, h: 630 } is not contained in the render target (1200, 673, 1)
+
+2026-11-11T19:11:37.215859Z ERROR vma_engine::render: uncaptured GPU error error=Validation Error
+
+Caused by:
+  In Surface::configure
+    Failed to wait for GPU to come idle before reconfiguring the Surface
+
+2026-11-11T19:11:37.216894Z ERROR vma_engine::render: uncaptured GPU error error=Validation Error
+
+Caused by:
+  In a CommandEncoder, label = 'encoder'
+    In a set_scissor_rect command
+      Scissor Rect { x: 1343, y: 0, w: 455, h: 690 } is not contained in the render target (1738, 644, 1)
+
+2026-11-11T19:11:37.216907Z ERROR vma_engine::render: uncaptured GPU error error=Validation Error
+
+Caused by:
+  In Queue::submit
+    In a set_scissor_rect command
+      Scissor Rect { x: 1343, y: 0, w: 455, h: 690 } is not contained in the render target (1738, 644, 1)
+
+2026-11-11T19:14:21.215796Z ERROR vma_engine::render: uncaptured GPU error error=Validation Error
+
+Caused by:
+  In Surface::configure
+    Failed to wait for GPU to come idle before reconfiguring the Surface
+
+2026-11-11T19:15:05.515836Z ERROR vma_engine::render: uncaptured GPU error error=Validation Error
+
+Caused by:
+  In Surface::configure
+    Failed to wait for GPU to come idle before reconfiguring the Surface
+
+2026-11-11T19:15:05.517020Z ERROR vma_engine::render: uncaptured GPU error error=Validation Error
+
+Caused by:
+  In a CommandEncoder, label = 'encoder'
+    In a set_scissor_rect command
+      Scissor Rect { x: 614, y: 0, w: 455, h: 1082 } is not contained in the render target (897, 538, 1)
+
+2026-11-11T19:15:05.517032Z ERROR vma_engine::render: uncaptured GPU error error=Validation Error
+
+Caused by:
+  In Queue::submit
+    In a set_scissor_rect command
+      Scissor Rect { x: 614, y: 0, w: 455, h: 1082 } is not contained in the render target (897, 538, 1)
+
+2026-11-11T19:15:22.715746Z ERROR vma_engine::render: uncaptured GPU error error=Validation Error
+
+Caused by:
+  In Surface::configure
+    Failed to wait for GPU to come idle before reconfiguring the Surface
+
+2026-11-11T19:15:22.716614Z ERROR vma_engine::render: uncaptured GPU error error=Validation Error
+
+Caused by:
+  In a CommandEncoder, label = 'encoder'
+    In a set_scissor_rect command
+      Scissor Rect { x: 390, y: 0, w: 455, h: 644 } is not contained in the render target (823, 605, 1)
+
+2026-11-11T19:15:22.716624Z ERROR vma_engine::render: uncaptured GPU error error=Validation Error
+
+Caused by:
+  In Queue::submit
+    In a set_scissor_rect command
+      Scissor Rect { x: 390, y: 0, w: 455, h: 644 } is not contained in the render target (823, 605, 1)
+
+2026-11-11T19:16:08.215768Z ERROR vma_engine::render: uncaptured GPU error error=Validation Error
+
+Caused by:
+  In Surface::configure
+    Failed to wait for GPU to come idle before reconfiguring the Surface
+
+2026-11-11T19:16:08.216710Z ERROR vma_engine::render: uncaptured GPU error error=Validation Error
+
+Caused by:
+  In a CommandEncoder, label = 'encoder'
+    In a set_scissor_rect command
+      Scissor Rect { x: 819, y: 0, w: 455, h: 1021 } is not contained in the render target (1358, 983, 1)
+
+2026-11-11T19:16:08.216723Z ERROR vma_engine::render: uncaptured GPU error error=Validation Error
+
+Caused by:
+  In Queue::submit
+    In a set_scissor_rect command
+      Scissor Rect { x: 819, y: 0, w: 455, h: 1021 } is not contained in the render target (1358, 983, 1)
+
+2026-11-11T19:17:20.715807Z ERROR vma_engine::render: uncaptured GPU error error=Validation Error
+
+Caused by:
+  In Surface::configure
+    Failed to wait for GPU to come idle before reconfiguring the Surface
+
+2026-11-11T19:17:20.716813Z ERROR vma_engine::render: uncaptured GPU error error=Validation Error
+
+Caused by:
+  In a CommandEncoder, label = 'encoder'
+    In a set_scissor_rect command
+      Scissor Rect { x: 1364, y: 0, w: 455, h: 1022 } is not contained in the render target (1762, 984, 1)
+
+2026-11-11T19:17:20.716822Z ERROR vma_engine::render: uncaptured GPU error error=Validation Error
+
+Caused by:
+  In Queue::submit
+    In a set_scissor_rect command
+      Scissor Rect { x: 1364, y: 0, w: 455, h: 1022 } is not contained in the render target (1762, 984, 1)
+
+2026-11-11T19:18:11.515758Z ERROR vma_engine::render: uncaptured GPU error error=Validation Error
+
+Caused by:
+  In Surface::configure
+    Failed to wait for GPU to come idle before reconfiguring the Surface
+
+2026-11-11T19:18:11.517148Z ERROR vma_engine::render: uncaptured GPU error error=Validation Error
+
+Caused by:
+  In a CommandEncoder, label = 'encoder'
+    In a set_scissor_rect command
+      Scissor Rect { x: 1465, y: 0, w: 455, h: 1080 } is not contained in the render target (1180, 541, 1)
+
+2026-11-11T19:18:11.517182Z ERROR vma_engine::render: uncaptured GPU error error=Validation Error
+
+Caused by:
+  In Queue::submit
+    In a set_scissor_rect command
+      Scissor Rect { x: 1465, y: 0, w: 455, h: 1080 } is not contained in the render target (1180, 541, 1)
+
+2026-11-11T19:18:35.515782Z ERROR vma_engine::render: uncaptured GPU error error=Validation Error
+
+Caused by:
+  In Surface::configure
+    Failed to wait for GPU to come idle before reconfiguring the Surface
+
+2026-11-11T19:19:23.215976Z ERROR vma_engine::render: uncaptured GPU error error=Validation Error
+
+Caused by:
+  In Surface::configure
+    Failed to wait for GPU to come idle before reconfiguring the Surface
+
+2026-11-11T19:19:23.216910Z ERROR vma_engine::render: uncaptured GPU error error=Validation Error
+
+Caused by:
+  In a CommandEncoder, label = 'encoder'
+    In a set_scissor_rect command
+      Scissor Rect { x: 500, y: 0, w: 455, h: 1057 } is not contained in the render target (1015, 1028, 1)
+
+2026-11-11T19:19:23.216921Z ERROR vma_engine::render: uncaptured GPU error error=Validation Error
+
+Caused by:
+  In Queue::submit
+    In a set_scissor_rect command
+      Scissor Rect { x: 500, y: 0, w: 455, h: 1057 } is not contained in the render target (1015, 1028, 1)
+
+2026-11-11T19:19:56.515754Z ERROR vma_engine::render: uncaptured GPU error error=Validation Error
+
+Caused by:
+  In Surface::configure
+    Failed to wait for GPU to come idle before reconfiguring the Surface
+
+2026-11-11T19:19:56.517065Z ERROR vma_engine::render: uncaptured GPU error error=Validation Error
+
+Caused by:
+  In a CommandEncoder, label = 'encoder'
+    In a set_scissor_rect command
+      Scissor Rect { x: 1465, y: 0, w: 455, h: 1080 } is not contained in the render target (1638, 729, 1)
+
+2026-11-11T19:19:56.517084Z ERROR vma_engine::render: uncaptured GPU error error=Validation Error
+
+Caused by:
+  In Queue::submit
+    In a set_scissor_rect command
+      Scissor Rect { x: 1465, y: 0, w: 455, h: 1080 } is not contained in the render target (1638, 729, 1)
+
+2026-11-11T19:20:10.046197Z  WARN vma_clock: frame clock missed slots index=27227 missed=1 total_missed=2
+2026-11-11T19:20:10.171616Z  WARN vma_clock: frame clock missed slots index=27233 missed=3 total_missed=5
+2026-11-11T19:20:10.207244Z  WARN vma_clock: frame clock missed slots index=27235 missed=1 total_missed=6
+2026-11-11T19:20:15.909711Z  WARN vma_engine::render: slow tick encode frame=27520 total_ms=5.8359 uploads_ms=0.0056 mixers_ms=1.3177 output_ms=0.0 thumbnails_ms=0.013699999999999999 finish_ms=4.4989 overlays=0
+2026-11-11T19:20:21.215862Z ERROR vma_engine::render: uncaptured GPU error error=Validation Error
+
+Caused by:
+  In Surface::configure
+    Failed to wait for GPU to come idle before reconfiguring the Surface
+
+2026-11-11T19:20:21.217233Z ERROR vma_engine::render: uncaptured GPU error error=Validation Error
+
+Caused by:
+  In a CommandEncoder, label = 'encoder'
+    In a set_scissor_rect command
+      Scissor Rect { x: 1418, y: 0, w: 455, h: 1058 } is not contained in the render target (1906, 1029, 1)
+
+2026-11-11T19:20:21.217250Z ERROR vma_engine::render: uncaptured GPU error error=Validation Error
+
+Caused by:
+  In Queue::submit
+    In a set_scissor_rect command
+      Scissor Rect { x: 1418, y: 0, w: 455, h: 1058 } is not contained in the render target (1906, 1029, 1)
+
+2026-11-11T19:20:22.894750Z  WARN vma_clock: frame clock missed slots index=27869 missed=1 total_missed=7
+2026-11-11T19:20:22.922020Z  WARN vma_clock: frame clock missed slots index=27871 missed=1 total_missed=8
+2026-11-11T19:20:23.666044Z  WARN vma_engine::render: slow tick encode frame=27908 total_ms=10.5358 uploads_ms=0.0045000000000000005 mixers_ms=10.2616 output_ms=0.0 thumbnails_ms=0.0166 finish_ms=0.25310000000000005 overlays=0
+2026-11-11T19:20:35.029966Z  WARN vma_engine::render: slow tick encode frame=28476 total_ms=9.458599999999999 uploads_ms=0.0087 mixers_ms=1.5164 output_ms=0.0 thumbnails_ms=0.014 finish_ms=7.919499999999999 overlays=0
+2026-11-11T19:20:37.815804Z ERROR vma_engine::render: uncaptured GPU error error=Validation Error
+
+Caused by:
+  In Surface::configure
+    Failed to wait for GPU to come idle before reconfiguring the Surface
+
+2026-11-11T19:20:37.817383Z ERROR vma_engine::render: uncaptured GPU error error=Validation Error
+
+Caused by:
+  In a CommandEncoder, label = 'encoder'
+    In a set_scissor_rect command
+      Scissor Rect { x: 1482, y: 0, w: 455, h: 849 } is not contained in the render target (1933, 901, 1)
+
+2026-11-11T19:20:37.817410Z ERROR vma_engine::render: uncaptured GPU error error=Validation Error
+
+Caused by:
+  In Queue::submit
+    In a set_scissor_rect command
+      Scissor Rect { x: 1482, y: 0, w: 455, h: 849 } is not contained in the render target (1933, 901, 1)
+
+2026-11-11T19:20:38.515755Z ERROR vma_engine::render: uncaptured GPU error error=Validation Error
+
+Caused by:
+  In Surface::configure
+    Failed to wait for GPU to come idle before reconfiguring the Surface
+
+2026-11-11T19:20:38.516810Z ERROR vma_engine::render: uncaptured GPU error error=Validation Error
+
+Caused by:
+  In a CommandEncoder, label = 'encoder'
+    In a set_scissor_rect command
+      Scissor Rect { x: 1465, y: 0, w: 455, h: 991 } is not contained in the render target (1157, 627, 1)
+
+2026-11-11T19:20:38.516824Z ERROR vma_engine::render: uncaptured GPU error error=Validation Error
+
+Caused by:
+  In Queue::submit
+    In a set_scissor_rect command
+      Scissor Rect { x: 1465, y: 0, w: 455, h: 991 } is not contained in the render target (1157, 627, 1)
+
+2026-11-11T19:20:39.032758Z  WARN vma_engine::render: slow tick encode frame=28676 total_ms=6.799 uploads_ms=0.0046 mixers_ms=4.2858 output_ms=0.0 thumbnails_ms=0.0131 finish_ms=2.4955 overlays=0
+2026-11-11T19:20:40.223461Z  WARN vma_engine::render: slow tick encode frame=28735 total_ms=16.622899999999998 uploads_ms=0.0212 mixers_ms=16.3754 output_ms=0.0 thumbnails_ms=0.0003 finish_ms=0.22599999999999998 overlays=0
+2026-11-11T19:20:40.277901Z  WARN vma_engine::render: slow tick encode frame=28738 total_ms=9.733 uploads_ms=0.0078 mixers_ms=9.5003 output_ms=0.0 thumbnails_ms=0.0135 finish_ms=0.21139999999999998 overlays=0
+2026-11-11T19:20:50.915802Z ERROR vma_engine::render: uncaptured GPU error error=Validation Error
+
+Caused by:
+  In Surface::configure
+    Failed to wait for GPU to come idle before reconfiguring the Surface
+
+2026-11-11T19:21:05.502353Z  INFO vma::soak: soak finished report=C:\Users\<utilisateur>\Desktop\VMA\Rapports\2026-11-11-phase0-hostile-windows.md passed=false end=Completed
+2026-11-11T19:21:05.522520Z  INFO vma_engine::control: control thread stopped
+2026-11-11T19:21:05.523921Z  INFO vma_io_gst::runtime: io thread stopped
+2026-11-11T19:21:05.536162Z  INFO vma_engine::render: render thread stopped
+2026-11-11T19:21:05.536683Z  INFO vma_engine::audio: audio thread stopped
+2026-11-11T19:21:05.536703Z  INFO vma_engine::outputs: output thread stopped
