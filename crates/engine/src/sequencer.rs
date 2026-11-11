@@ -57,8 +57,8 @@ pub struct Composition {
     pub preview: Option<InputId>,
     /// Outputs only (not the UI's Program view): 0 = Program, 1 = black.
     pub fade_to_black: f32,
-    /// A full-screen output is on.
-    pub fullscreen: bool,
+    /// What each full-screen output shows (`None`: off).
+    pub fullscreens: [Option<crate::ViewSource>; crate::MAX_FULLSCREENS],
     /// Overlay channels visible on this tick, in the order of [`OverlayChannel::ALL`].
     pub overlays: [Option<OverlayShown>; OverlayChannel::COUNT],
     /// The stinger playing over the Program (under the overlays), if one is.
@@ -246,7 +246,7 @@ impl Sequencer {
             domain: plan.domain,
             preview: plan.preview,
             fade_to_black: ftb_ratio(ftb),
-            fullscreen: plan.fullscreen,
+            fullscreens: plan.fullscreens,
             overlays,
             stinger: None,
         };
@@ -352,7 +352,7 @@ mod tests {
             }),
             domain: MixDomain::Gamma,
             ftb: PlanFtb::default(),
-            fullscreen: false,
+            fullscreens: Default::default(),
             overlays: Default::default(),
         }
     }

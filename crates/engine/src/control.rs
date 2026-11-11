@@ -17,6 +17,7 @@ use crate::audio_plan::AudioPlanWriter;
 use crate::command::{Command, CommandId, Source, StingerSlot};
 use crate::feed::{Attach, FeedReader, FeedStats};
 use crate::journal::{JournalLine, JournalSender, Origin, Outcome, utc_rfc3339};
+use crate::multiview::MultiviewWriter;
 use crate::plan::PlanWriter;
 use crate::sequencer::RenderFeedback;
 use crate::sources::{SourceSync, SourceUpdate};
@@ -352,6 +353,8 @@ pub(crate) struct Controller {
     snapshot: Arc<ArcSwap<State>>,
     plan: PlanWriter,
     audio_plan: Option<AudioPlanWriter>,
+    /// The MultiView's cells and titles (ADR 0014).
+    multiview: Option<MultiviewWriter>,
     feedback: Arc<RenderFeedback>,
     journal: Option<JournalSender>,
     stats: Arc<ControlStats>,
@@ -389,6 +392,7 @@ impl Controller {
                 snapshot,
                 plan,
                 audio_plan: None,
+                multiview: None,
                 feedback,
                 journal,
                 stats,
@@ -453,6 +457,12 @@ impl Controller {
     pub(crate) fn set_audio_plan(&mut self, writer: AudioPlanWriter) {
         writer.publish(&self.state.audio_plan());
         self.audio_plan = Some(writer);
+    }
+
+    /// The render thread reads the MultiView's plan from `writer`'s from now on.
+    pub(crate) fn set_multiview(&mut self, mut writer: MultiviewWriter) {
+        writer.publish(&self.state);
+        self.multiview = Some(writer);
     }
 
     pub(crate) fn set_device_lost_grace(&mut self, grace: Duration) {
@@ -665,6 +675,9 @@ impl Controller {
         self.plan.publish(&self.state.plan());
         if let Some(audio) = &self.audio_plan {
             audio.publish(&self.state.audio_plan());
+        }
+        if let Some(multiview) = &mut self.multiview {
+            multiview.publish(&self.state);
         }
         self.snapshot.store(Arc::new(self.state.clone()));
     }

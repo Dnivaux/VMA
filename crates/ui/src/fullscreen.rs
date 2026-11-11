@@ -186,6 +186,8 @@ struct WindowState {
 /// The full-screen window, shown while a full-screen output is on and its screen connected.
 #[derive(Debug)]
 pub(crate) struct FullscreenWindow {
+    /// Which full-screen output: the first or the second, in the order of the outputs.
+    index: usize,
     shared: Arc<Mutex<WindowState>>,
     stats: Arc<FullscreenStats>,
     resolution: Resolution,
@@ -195,11 +197,13 @@ pub(crate) struct FullscreenWindow {
 
 impl FullscreenWindow {
     pub(crate) fn new(
+        index: usize,
         reader: FrameReader,
         textures: [TextureId; 3],
         resolution: Resolution,
     ) -> Self {
         Self {
+            index,
             shared: Arc::new(Mutex::new(WindowState {
                 reader,
                 textures,
@@ -225,10 +229,16 @@ impl FullscreenWindow {
         screens: &[Screen],
         commands: &CommandSender,
     ) {
-        let on = state.outputs.iter().find_map(|o| match &o.spec {
-            OutputSpec::Fullscreen(f) if o.status.is_on() => Some((o.id, f.screen.as_deref())),
-            _ => None,
-        });
+        let on = state
+            .outputs
+            .iter()
+            .filter_map(|o| match &o.spec {
+                OutputSpec::Fullscreen(f) => Some((o, f)),
+                _ => None,
+            })
+            .nth(self.index)
+            .filter(|(o, _)| o.status.is_on())
+            .map(|(o, f)| (o.id, f.screen.as_deref()));
         // No screen known (the application did not list them): let the system choose.
         let placement = on.and_then(|(id, wanted)| {
             if screens.is_empty() {
@@ -246,7 +256,7 @@ impl FullscreenWindow {
             self.open = true;
         }
         let mut builder = ViewportBuilder::default()
-            .with_title("VMA — Program")
+            .with_title(format!("VMA — plein écran {}", self.index + 1))
             // For the compositor's window rules (Wayland app id, X11 class).
             .with_app_id(FULLSCREEN_APP_ID)
             .with_decorations(false)
@@ -263,7 +273,7 @@ impl FullscreenWindow {
         let reader = reader.clone();
         let aspect = self.resolution.width() as f32 / self.resolution.height().max(1) as f32;
         ctx.show_viewport_deferred(
-            ViewportId::from_hash_of("vma-fullscreen"),
+            ViewportId::from_hash_of(("vma-fullscreen", self.index)),
             builder,
             move |ui, class| {
                 if class == ViewportClass::EmbeddedWindow {

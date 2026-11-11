@@ -384,7 +384,7 @@ impl<'a> App<'a> {
                 program: register(&readers.program),
                 preview: register(&readers.preview),
                 thumbnails: register(&readers.thumbnails),
-                fullscreen: register(&readers.fullscreen),
+                fullscreens: readers.fullscreens.each_ref().map(register),
             }
         };
         if options.ndi {
@@ -583,6 +583,7 @@ fn start_fullscreen(
         vma_engine::Command::AddOutput {
             spec: vma_engine::OutputSpec::Fullscreen(vma_engine::FullscreenSpec {
                 screen: Some(screen),
+                source: Default::default(),
             }),
             name: None,
         },

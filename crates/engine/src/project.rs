@@ -9,8 +9,8 @@ use serde::{Deserialize, Serialize};
 use vma_core::{AudioBus, OverlayChannel};
 
 use crate::command::{
-    AutoPlay, Command, InputKey, InputSpec, MixDomain, StingerSlot, TRANSITION_BUTTONS,
-    TransitionSetting,
+    AutoPlay, Command, InputKey, InputSpec, MixDomain, MultiviewSettings, StingerSlot,
+    TRANSITION_BUTTONS, TransitionSetting,
 };
 use crate::output_spec::OutputSpec;
 use crate::state::{BusState, Format, InputAudio, Monitor, State};
@@ -38,6 +38,9 @@ pub struct ProjectSnapshot {
     pub buses: [BusState; 3],
     pub monitor: Monitor,
     pub ftb_ms: u32,
+    /// ADR 0014; its cells name inputs by their keys, kept by the project.
+    #[serde(default)]
+    pub multiview: MultiviewSettings,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -127,6 +130,7 @@ impl State {
             buses: self.audio.buses,
             monitor: self.audio.monitor.clone(),
             ftb_ms: self.ftb.duration_ms,
+            multiview: self.multiview.clone(),
         }
     }
 }
@@ -277,6 +281,14 @@ mod tests {
             Command::SetMonitor {
                 device: Some(DeviceId("casque".into())),
                 solo_mode: SoloMode::Pfl,
+            },
+            Command::SetMultiview {
+                settings: MultiviewSettings {
+                    layout: crate::command::MultiviewLayout::PlusFourteen,
+                    titles_below: true,
+                    names_on_views: true,
+                    slots: vec![crate::command::MultiviewSlot::Empty],
+                },
             },
             Command::AddOutput {
                 spec: OutputSpec::Rtmp(RtmpSpec {

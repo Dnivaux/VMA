@@ -13,7 +13,7 @@ use vma_core::FrameRate;
 use vma_core::{AudioBus, Container, OutputId, VideoCodec};
 use vma_engine::{
     Command, FullscreenSpec, MAX_OUTPUTS, MAX_TRANSITION_MS, OutputSpec, OutputState, OutputStatus,
-    RecordSpec, RtmpSpec, STREAM_SLOTS, Secret, SrtMode, SrtSpec, VIDEO_KBPS_RANGE,
+    RecordSpec, RtmpSpec, STREAM_SLOTS, Secret, SrtMode, SrtSpec, VIDEO_KBPS_RANGE, ViewSource,
 };
 
 use super::icons::{self, Icon};
@@ -401,11 +401,18 @@ impl Switcher {
                     video_kbps: None,
                 }));
             }
-            let has_fullscreen = state.outputs.iter().any(|o| o.spec.is_fullscreen());
-            if !has_fullscreen
+            let fullscreens = state
+                .outputs
+                .iter()
+                .filter(|o| o.spec.is_fullscreen())
+                .count();
+            if fullscreens < vma_engine::MAX_FULLSCREENS
                 && ui
                     .add_enabled(!full, egui::Button::new("+ Plein écran"))
-                    .on_hover_text("Le Program (après FTB) en plein écran sur un écran")
+                    .on_hover_text(
+                        "Le Program (après FTB), la Preview ou la MultiView en plein écran sur un \
+                         écran (deux au plus)",
+                    )
                     .clicked()
             {
                 self.send(
@@ -414,6 +421,7 @@ impl Switcher {
                     Command::AddOutput {
                         spec: OutputSpec::Fullscreen(FullscreenSpec {
                             screen: default_screen(view.screens),
+                            source: ViewSource::Program,
                         }),
                         name: None,
                     },
@@ -484,10 +492,20 @@ fn summary(spec: &OutputSpec) -> String {
             rate(s.video_kbps)
         ),
         OutputSpec::Fullscreen(f) => format!(
-            "Program après FTB · écran {}",
+            "{} · écran {}",
+            source_label(f.source),
             f.screen.as_deref().unwrap_or("par défaut")
         ),
         OutputSpec::Ndi(n) => format!("Program non compressé · nom « {} »", n.name),
+    }
+}
+
+/// What a full-screen output shows, as the operator reads it.
+fn source_label(source: ViewSource) -> &'static str {
+    match source {
+        ViewSource::Program => "Program après FTB",
+        ViewSource::Preview => "Preview",
+        ViewSource::Multiview => "MultiView",
     }
 }
 
@@ -597,6 +615,25 @@ fn spec_editor(
                             if ui.selectable_label(chosen, screen.label()).clicked() {
                                 fullscreen.screen = Some(screen.name.clone());
                             }
+                        }
+                    })
+                    .response
+                    .labelled_by(label.id);
+                ui.end_row();
+                let label = ui.label("Montre");
+                egui::ComboBox::from_id_salt("view_source")
+                    .selected_text(source_label(fullscreen.source))
+                    .show_ui(ui, |ui| {
+                        for source in [
+                            ViewSource::Program,
+                            ViewSource::Preview,
+                            ViewSource::Multiview,
+                        ] {
+                            ui.selectable_value(
+                                &mut fullscreen.source,
+                                source,
+                                source_label(source),
+                            );
                         }
                     })
                     .response

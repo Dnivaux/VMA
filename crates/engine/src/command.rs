@@ -254,12 +254,83 @@ pub enum Command {
         input: InputId,
         key: InputKey,
     },
+    /// The MultiView's layout and titles (ADR 0014).
+    SetMultiview {
+        settings: MultiviewSettings,
+    },
     /// Replaces the show by a project's (ADR 0013), as the commands that build it would: each
     /// part checked as such, the parts refused listed in [`State::load_problems`](crate::State).
     /// Refused as a whole while a transition runs or an output is active.
     LoadProject {
         project: Box<crate::project::ProjectSnapshot>,
     },
+}
+
+/// The arrangements of the MultiView (ADR 0014 § 1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MultiviewLayout {
+    /// Preview and Program, 8 inputs under them.
+    #[default]
+    PlusEight,
+    PlusFourteen,
+    PlusTwo,
+    /// As `PlusEight`, without titles nor meters.
+    Clean,
+}
+
+impl MultiviewLayout {
+    pub const ALL: [Self; 4] = [
+        Self::PlusEight,
+        Self::PlusFourteen,
+        Self::PlusTwo,
+        Self::Clean,
+    ];
+
+    /// Input cells.
+    pub fn inputs(self) -> usize {
+        match self {
+            Self::PlusEight | Self::Clean => 8,
+            Self::PlusFourteen => 14,
+            Self::PlusTwo => 2,
+        }
+    }
+}
+
+/// Input cells at most (the largest layout).
+pub const MULTIVIEW_INPUTS: usize = 14;
+
+/// What goes in an input cell of the MultiView.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MultiviewSlot {
+    /// The next input in display order not placed elsewhere.
+    #[default]
+    Auto,
+    /// This input, wherever it is in the show (by its key: kept by a project).
+    Input(InputKey),
+    Empty,
+}
+
+/// The MultiView's settings (ADR 0014 § 1–3).
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MultiviewSettings {
+    pub layout: MultiviewLayout,
+    /// Titles under the pictures (else above).
+    pub titles_below: bool,
+    /// The Preview and Program cells are titled with their input's name (else « Preview »,
+    /// « Program »).
+    pub names_on_views: bool,
+    /// The input cells in order (« Personnaliser »); missing ones are `Auto`.
+    pub slots: Vec<MultiviewSlot>,
+}
+
+impl MultiviewSettings {
+    /// Too many slots are refused.
+    pub fn validate(&self) -> bool {
+        self.slots.len() <= MULTIVIEW_INPUTS
+    }
 }
 
 /// The stable key of an input (ADR 0013): a GUID, by which the compat API and a project name

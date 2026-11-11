@@ -12,12 +12,15 @@ use vma_core::{
 };
 
 use crate::audio_plan::{AudioPlan, PlanInput};
+use crate::command::MultiviewSettings;
 use crate::command::{
     AutoPlay, Command, Db, DeviceId, Effect, InputKey, InputSpec, MAX_AUDIO_DELAY_MS,
     MAX_HTML_TEXT, MAX_TRANSITION_MS, MixDomain, StingerSlot, TRANSITION_BUTTONS,
     TransitionSetting,
 };
-use crate::output_spec::{InvalidSpec, MAX_OUTPUTS, OutputSpec, RecordSpec, STREAM_SLOTS};
+use crate::output_spec::{
+    InvalidSpec, MAX_FULLSCREENS, MAX_OUTPUTS, OutputSpec, RecordSpec, STREAM_SLOTS, ViewSource,
+};
 use crate::plan::{PlanFtb, PlanOverlay, PlanProgress, PlanTransition, RenderPlan};
 use crate::project::{LoadProblem, ProjectSnapshot};
 
@@ -373,7 +376,10 @@ pub enum Rejection {
     OutputStopping(OutputId),
     #[error("an output cannot change kind (recording, stream, full screen, NDI®)")]
     OutputKindChanged,
-    #[error("there is already a full-screen output")]
+    #[error(
+        "there are already {} full-screen outputs",
+        crate::output_spec::MAX_FULLSCREENS
+    )]
     FullscreenExists,
     #[error("there is already an NDI® output")]
     NdiExists,
@@ -411,6 +417,11 @@ pub enum Rejection {
     InvalidJson(String),
     #[error("another input already has the key {0}")]
     KeyTaken(InputKey),
+    #[error(
+        "the MultiView has {} input cells at most",
+        crate::command::MULTIVIEW_INPUTS
+    )]
+    MultiviewSlots,
 }
 
 /// What [`State::load_project`] gathers while it applies its commands.
@@ -695,6 +706,9 @@ pub struct State {
     /// The stinger slots, in the order of [`StingerSlot::ALL`].
     #[serde(default)]
     pub stingers: [StingerState; StingerSlot::COUNT],
+    /// The MultiView (ADR 0014).
+    #[serde(default)]
+    pub multiview: MultiviewSettings,
     /// What the last [`Command::LoadProject`] could not load (empty: all of it).
     #[serde(default)]
     pub load_problems: Vec<LoadProblem>,
@@ -770,6 +784,7 @@ impl State {
             audio: AudioState::default(),
             overlays: Default::default(),
             stingers: Default::default(),
+            multiview: MultiviewSettings::default(),
             load_problems: Vec::new(),
             project_loads: 0,
             key_seed: 0,
@@ -867,10 +882,7 @@ impl State {
             preview: self.preview,
             transition,
             domain: self.mix_domain,
-            fullscreen: self
-                .outputs
-                .iter()
-                .any(|o| o.spec.is_fullscreen() && o.status.is_on()),
+            fullscreens: self.fullscreen_sources(),
             ftb: PlanFtb {
                 black: self.ftb.active,
                 frames: TransitionSetting::fade(self.ftb.duration_ms)
@@ -1443,6 +1455,13 @@ impl State {
                 Ok(Change { changed: true, io })
             }
             Command::LoadProject { project } => self.load_project(project),
+            Command::SetMultiview { settings } => {
+                if !settings.validate() {
+                    return Err(Rejection::MultiviewSlots);
+                }
+                self.multiview = settings.clone();
+                Ok(Change::changed())
+            }
             Command::SeedInputKeys { seed } => {
                 self.key_seed = *seed;
                 Ok(Change::changed())
@@ -1472,8 +1491,13 @@ impl State {
             return Err(Rejection::TooManyOutputs);
         }
         spec.validate()?;
-        // One Program picture for the screen (one reader of its triple buffer).
-        if spec.is_fullscreen() && self.outputs.iter().any(|o| o.spec.is_fullscreen()) {
+        // One picture per full-screen window (one reader of each triple buffer).
+        let fullscreens = self
+            .outputs
+            .iter()
+            .filter(|o| o.spec.is_fullscreen())
+            .count();
+        if spec.is_fullscreen() && fullscreens >= crate::output_spec::MAX_FULLSCREENS {
             return Err(Rejection::FullscreenExists);
         }
         // One NDI® output in Phase 3 (`phase-3.md` § 6).
@@ -2094,6 +2118,12 @@ impl State {
             ));
         }
         settings.push((
+            Command::SetMultiview {
+                settings: project.multiview.clone(),
+            },
+            "MultiView".into(),
+        ));
+        settings.push((
             Command::SetMonitor {
                 device: project.monitor.device.clone(),
                 solo_mode: project.monitor.solo_mode,
@@ -2159,6 +2189,19 @@ impl State {
             changed: true,
             io: load.io,
         })
+    }
+
+    /// What each full-screen output shows while on, in the order of the outputs.
+    pub fn fullscreen_sources(&self) -> [Option<ViewSource>; MAX_FULLSCREENS] {
+        let mut sources = [None; MAX_FULLSCREENS];
+        let shown = self.outputs.iter().filter_map(|o| match &o.spec {
+            OutputSpec::Fullscreen(f) => Some(o.status.is_on().then_some(f.source)),
+            _ => None,
+        });
+        for (slot, source) in sources.iter_mut().zip(shown) {
+            *slot = source;
+        }
+        sources
     }
 
     /// A key for new input `id` that no input has yet (a project may have set any key).
@@ -4096,21 +4139,26 @@ mod tests {
         let spec = |screen: &str| {
             OutputSpec::Fullscreen(FullscreenSpec {
                 screen: Some(screen.into()),
+                source: Default::default(),
             })
         };
         let mut s = state();
         let fs = add_output(&mut s, spec("DP-2"));
         assert_eq!(s.output(fs).unwrap().name, "Plein écran");
         assert_eq!(s.output(fs).unwrap().slot, None, "not a stream destination");
-        assert!(!s.plan().fullscreen);
-        // One full screen (one reader of its frames).
+        assert_eq!(s.plan().fullscreens, [None, None]);
+        // Two full screens at most (one reader of each one's frames, ADR 0014 § 4).
         let again = Command::AddOutput {
             spec: spec("HDMI-A-1"),
             name: None,
         };
+        s.apply(&again).unwrap();
         assert_eq!(s.apply(&again), Err(Rejection::FullscreenExists));
+        let second = s.outputs.last().unwrap().id;
+        s.apply(&Command::RemoveOutput { output: second }).unwrap();
         let blank = OutputSpec::Fullscreen(FullscreenSpec {
             screen: Some(" ".into()),
+            source: Default::default(),
         });
         assert_eq!(
             s.apply(&Command::UpdateOutput {
@@ -4137,11 +4185,15 @@ mod tests {
                 target: Some("DP-2".into()),
             }
         );
-        assert!(s.plan().fullscreen);
+        assert_eq!(s.plan().fullscreens[0], Some(ViewSource::Program));
         assert_eq!(status(&s, REC), OutputStatus::Idle);
         s.apply(&Command::StartRecording).unwrap();
         s.apply(&Command::StopRecording).unwrap();
-        assert!(s.plan().fullscreen, "StopRecording leaves it on");
+        assert_eq!(
+            s.plan().fullscreens[0],
+            Some(ViewSource::Program),
+            "StopRecording leaves it on"
+        );
         assert_eq!(
             s.apply(&Command::UpdateOutput {
                 output: fs,
@@ -4154,12 +4206,12 @@ mod tests {
         let io = s.apply(&Command::StopOutput { output: fs }).unwrap();
         assert!(io.is_empty(), "{io:?}");
         assert_eq!(status(&s, fs), OutputStatus::Idle);
-        assert!(!s.plan().fullscreen);
+        assert_eq!(s.plan().fullscreens, [None, None]);
 
         s.apply(&Command::StartOutput { output: fs }).unwrap();
         let io = s.apply(&Command::RemoveOutput { output: fs }).unwrap();
         assert!(io.is_empty(), "{io:?}");
-        assert!(!s.plan().fullscreen);
+        assert_eq!(s.plan().fullscreens, [None, None]);
         // Gone: a new one can be added.
         add_output(&mut s, spec("eDP-1"));
     }

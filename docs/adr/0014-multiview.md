@@ -37,11 +37,13 @@
 4. **Sources des sorties** : le plein écran et le NDI® prennent une source : Program
    (défaut), Preview ou MultiView ; **deux plein écran** possibles, un par écran.
 5. **Rendu** : une passe à part du thread de rendu, faite **seulement si une sortie la
-   montre** : des quadrilatères texturés (vignettes de l'atlas, Preview, Program), des
-   rectangles pleins (bordures, vumètres, bandeaux) et les titres. Les titres sont rastérisés
-   **hors du rendu**, quand un nom change, dans une texture de titres arrivant par le même
-   chemin que les images des inputs (tampon de transfert, copie enregistrée par le rendu,
-   ADR 0004 amendement 1) : le rendu ne fait ni texte ni téléversement bloquant.
+   montre** : des quadrilatères texturés (vignettes de l'atlas, peint à chaque tick tant que la
+   MultiView est montrée ; Preview, Program), des rectangles pleins (bandeaux, bordures,
+   vumètres lus sans verrou) et les titres. Les titres sont rastérisés **hors du rendu et hors
+   de `vma-control`**, sur un thread à part (`vma-titles`), quand ils changent ; le rendu les
+   copie dans sa texture de titres quand leur version change (rare : un nom, la disposition).
+   Mise en œuvre (2026-11-11) : une première version rastérisait sur `vma-control` et retardait
+   ses commandes de plusieurs secondes en build de test ; d'où le thread à part.
 6. **Police des titres** : celle d'egui (Ubuntu, Ubuntu Font Licence 1.0, déjà embarquée),
    contours lus par `skrifa` (comme egui, MIT ou Apache-2.0) et rastérisés par
    `ab_glyph_rasterizer` (Apache-2.0) ; `ab_glyph` écarté : il tire `ttf-parser`, signalé non

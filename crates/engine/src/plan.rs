@@ -9,6 +9,7 @@ use std::sync::atomic::{AtomicU64, Ordering, fence};
 use vma_core::{InputId, OverlayChannel};
 
 use crate::command::{Effect, MixDomain, StingerSlot};
+use crate::output_spec::{MAX_FULLSCREENS, ViewSource};
 
 /// How a planned transition progresses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,8 +61,9 @@ pub struct RenderPlan {
     pub transition: Option<PlanTransition>,
     pub domain: MixDomain,
     pub ftb: PlanFtb,
-    /// A full-screen output is on: the render thread fills its frames.
-    pub fullscreen: bool,
+    /// What each full-screen output shows while on (`None`: off): the render thread fills
+    /// its frames.
+    pub fullscreens: [Option<ViewSource>; MAX_FULLSCREENS],
     /// In the order of [`OverlayChannel::ALL`].
     pub overlays: [PlanOverlay; OverlayChannel::COUNT],
 }
@@ -105,7 +107,34 @@ fn decode_overlay(w: u64) -> PlanOverlay {
     }
 }
 
+/// 2 bits per full-screen output: 0 off, 1 Program, 2 Preview, 3 MultiView.
+fn encode_fullscreens(sources: [Option<ViewSource>; MAX_FULLSCREENS]) -> u64 {
+    sources.iter().enumerate().fold(0, |bits, (n, s)| {
+        let code = match s {
+            None => 0,
+            Some(ViewSource::Program) => 1,
+            Some(ViewSource::Preview) => 2,
+            Some(ViewSource::Multiview) => 3,
+        };
+        bits | (code << (2 * n))
+    })
+}
+
+fn decode_fullscreens(bits: u64) -> [Option<ViewSource>; MAX_FULLSCREENS] {
+    std::array::from_fn(|n| match (bits >> (2 * n)) & 3 {
+        1 => Some(ViewSource::Program),
+        2 => Some(ViewSource::Preview),
+        3 => Some(ViewSource::Multiview),
+        _ => None,
+    })
+}
+
 impl RenderPlan {
+    /// A full-screen output shows the MultiView.
+    pub fn wants_multiview(&self) -> bool {
+        self.fullscreens.contains(&Some(ViewSource::Multiview))
+    }
+
     fn encode(&self) -> [u64; WORDS] {
         let id = |i: Option<InputId>| i.map_or(0, |i| u64::from(i.0) + 1);
         let cut = self.transition.map_or(0, |t| u64::from(t.cut));
@@ -137,7 +166,7 @@ impl RenderPlan {
             bits | (domain << 56),
             u64::from(self.ftb.black)
                 | (u64::from(self.ftb.frames) << 1)
-                | (u64::from(self.fullscreen) << 40),
+                | (encode_fullscreens(self.fullscreens) << 40),
             cut,
             o1,
             o2,
@@ -200,7 +229,7 @@ impl RenderPlan {
                 black: ftb & 1 == 1,
                 frames: ((ftb >> 1) & 0xffff_ffff) as u32,
             },
-            fullscreen: (ftb >> 40) & 1 == 1,
+            fullscreens: decode_fullscreens(ftb >> 40),
             overlays: [o1, o2, o3, o4].map(decode_overlay),
         }
     }
@@ -334,7 +363,10 @@ mod tests {
                 black: n.is_multiple_of(3),
                 frames: n * 11,
             },
-            fullscreen: n.is_multiple_of(4),
+            fullscreens: [
+                n.is_multiple_of(4).then_some(ViewSource::Program),
+                n.is_multiple_of(3).then_some(ViewSource::Multiview),
+            ],
             overlays: std::array::from_fn(|c| {
                 let c = c as u32;
                 PlanOverlay {
@@ -366,7 +398,7 @@ mod tests {
                 black: true,
                 frames: u32::MAX,
             },
-            fullscreen: true,
+            fullscreens: [Some(ViewSource::Preview), Some(ViewSource::Multiview)],
             ..RenderPlan::default()
         };
         assert_eq!(RenderPlan::decode(edge.encode()), edge);

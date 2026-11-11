@@ -990,6 +990,7 @@ fn with_fullscreen(mut state: State, screen: &str, on: bool) -> (State, OutputId
         .apply(&Command::AddOutput {
             spec: OutputSpec::Fullscreen(FullscreenSpec {
                 screen: Some(screen.into()),
+                source: Default::default(),
             }),
             name: None,
         })
@@ -1016,7 +1017,8 @@ fn fullscreen_output_screen_choice_start_and_stop() {
         h.state().sent(),
         [Command::AddOutput {
             spec: OutputSpec::Fullscreen(FullscreenSpec {
-                screen: Some("DP-2".into())
+                screen: Some("DP-2".into()),
+                source: Default::default(),
             }),
             name: None,
         }]
@@ -1027,8 +1029,12 @@ fn fullscreen_output_screen_choice_start_and_stop() {
     h.state_mut().screens = screens();
     open_outputs(&mut h);
     assert!(
-        h.query_by_label("+ Plein écran").is_none(),
-        "one full screen"
+        h.query_by_label("+ Plein écran").is_some(),
+        "a second full screen may be added (ADR 0014)"
+    );
+    assert!(
+        h.query_by_label("Montre").is_some(),
+        "what it shows: Program, Preview, MultiView"
     );
     h.get_by_label("Écran").click();
     h.run();
@@ -1039,6 +1045,7 @@ fn fullscreen_output_screen_choice_start_and_stop() {
     h.run();
     let edp = OutputSpec::Fullscreen(FullscreenSpec {
         screen: Some("eDP-1".into()),
+        source: Default::default(),
     });
     assert_eq!(
         h.state().sent(),

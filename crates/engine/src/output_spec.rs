@@ -117,13 +117,29 @@ impl Default for NdiSpec {
     }
 }
 
-/// The full-screen output.
+/// Full-screen outputs at most (ADR 0014 § 4: one per screen, two like the reference).
+pub const MAX_FULLSCREENS: usize = 2;
+
+/// What a full-screen output shows (ADR 0014 § 4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ViewSource {
+    /// The Program after FTB, as the other outputs.
+    #[default]
+    Program,
+    Preview,
+    Multiview,
+}
+
+/// A full-screen output.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct FullscreenSpec {
     /// Name of the screen, as the windowing system gives it (« DP-2 », « HDMI-A-1 »…);
     /// `None`: the first screen of the list. A screen that is not connected leaves the output
     /// on, not shown, until it comes back.
     pub screen: Option<String>,
+    #[serde(default)]
+    pub source: ViewSource,
 }
 
 /// A local recording (defaults: `phase-2.md` § 6).

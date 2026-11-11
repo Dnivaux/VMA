@@ -42,7 +42,8 @@ pub struct OutputTextures {
     pub program: [TextureId; 3],
     pub preview: [TextureId; 3],
     pub thumbnails: [TextureId; 3],
-    pub fullscreen: [TextureId; 3],
+    /// One set per full-screen output.
+    pub fullscreens: [[TextureId; 3]; vma_engine::MAX_FULLSCREENS],
 }
 
 /// What the UI needs from `vma-io` (capture devices, files). Implemented by the application
@@ -139,7 +140,8 @@ pub struct MainUi {
     preview: FrameReader,
     thumbnails: FrameReader,
     textures: OutputTextures,
-    fullscreen: FullscreenWindow,
+    /// One window per full-screen output.
+    fullscreens: [FullscreenWindow; vma_engine::MAX_FULLSCREENS],
     screens: Screens,
     switcher: Switcher,
     adapter: String,
@@ -165,7 +167,7 @@ impl MainUi {
             program,
             preview,
             thumbnails,
-            fullscreen,
+            fullscreens,
         } = readers;
         let resolution = engine.config().resolution;
         Self {
@@ -173,7 +175,14 @@ impl MainUi {
             program,
             preview,
             thumbnails,
-            fullscreen: FullscreenWindow::new(fullscreen, textures.fullscreen, resolution),
+            fullscreens: {
+                let [r0, r1] = fullscreens;
+                let [t0, t1] = textures.fullscreens;
+                [
+                    FullscreenWindow::new(0, r0, t0, resolution),
+                    FullscreenWindow::new(1, r1, t1, resolution),
+                ]
+            },
             screens,
             textures,
             switcher: Switcher::default(),
@@ -187,7 +196,7 @@ impl MainUi {
 
     /// What the full-screen window showed (statistics panel, soak report).
     pub fn fullscreen_stats(&self) -> std::sync::Arc<FullscreenStats> {
-        self.fullscreen.stats()
+        self.fullscreens[0].stats()
     }
 
     /// Draws one UI frame.
@@ -207,7 +216,7 @@ impl MainUi {
                         &self.engine,
                         self.io.as_ref(),
                         &self.program,
-                        &self.fullscreen.stats(),
+                        &self.fullscreens[0].stats(),
                         &self.adapter,
                     );
                 });
@@ -281,8 +290,9 @@ impl MainUi {
         if let Some(settings) = self.switcher.take_api_request() {
             self.api.apply(settings);
         }
-        self.fullscreen
-            .show(ui.ctx(), &state, &self.engine.state(), &screens, &commands);
+        for window in &mut self.fullscreens {
+            window.show(ui.ctx(), &state, &self.engine.state(), &screens, &commands);
+        }
         self.files(ui.ctx());
 
         // Program and Preview change every tick: keep repainting at the display rate.

@@ -1,4 +1,6 @@
-use crate::audio::{self, AudioMeters, AudioStats, AudioThread, AudioTick, OnAir, TickSender};
+use crate::audio::{
+    self, AudioMeters, AudioStats, AudioThread, AudioTick, Level, OnAir, TickSender,
+};
 use crate::audio_plan::audio_plan_channel;
 use crate::command::MixDomain;
 use crate::control::{
@@ -7,6 +9,8 @@ use crate::control::{
 };
 use crate::feed::{ATTACH_CAPACITY, FeedRegistry};
 use crate::journal::{self, Journal, JournalStats};
+use crate::multiview::{MultiviewShared, MultiviewWriter};
+use crate::output_spec::{MAX_FULLSCREENS, ViewSource};
 use crate::outputs::{self, ActiveOutputs, Delivery, OutputHub, OutputSettings, SyncTest};
 use crate::plan::plan_channel;
 use crate::readback::{RING, Ring, RingWriter};
@@ -22,6 +26,9 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 use vma_clock::{ClockStats, FrameClock, StreamClock, SystemTime, TickGrid};
+use vma_compositor::multiview::{
+    CellPicture, CellTally, MAX_CELLS, MultiviewCell, MultiviewPainter, MultiviewScene,
+};
 use vma_compositor::thumbnails::{self, ATLAS_CELLS, ThumbnailPainter};
 use vma_compositor::{
     FramePipelines, Key, Keys, Mix, MixSpace, Mixer, OutputLook, OutputStage, RenderTarget, Source,
@@ -123,8 +130,9 @@ pub struct Readers {
     pub preview: FrameReader,
     /// Thumbnail atlas, refreshed every other tick (see `vma_compositor::thumbnails`).
     pub thumbnails: FrameReader,
-    /// The Program after FTB, for the full-screen output: published only while it is on.
-    pub fullscreen: FrameReader,
+    /// What each full-screen output shows (Program after FTB, Preview or MultiView), in the
+    /// order of the full-screen outputs: published only while it is on.
+    pub fullscreens: [FrameReader; MAX_FULLSCREENS],
 }
 
 /// Handle on the running engine: the `vma-render` and `vma-control` threads (and
@@ -213,7 +221,22 @@ impl RenderEngine {
         let (preview, preview_reader) = output(targets("preview"));
         let (thumbs, thumbs_reader) =
             output([0, 1, 2].map(|i| thumbnails::new_atlas(&device, &format!("thumbnails[{i}]"))));
-        let (fullscreen, fullscreen_reader) = output(targets("fullscreen"));
+        let [
+            (fullscreen0, fullscreen0_reader),
+            (fullscreen1, fullscreen1_reader),
+        ] = [
+            output(targets("fullscreen0")),
+            output(targets("fullscreen1")),
+        ];
+        // Reads the Preview, Program and atlas of every slot (ADR 0014).
+        let multiview_painter = MultiviewPainter::new(
+            &device,
+            config.resolution,
+            preview.frames.targets.each_ref(),
+            program.frames.targets.each_ref(),
+            thumbs.frames.targets.each_ref(),
+        );
+        let multiview = crate::multiview::shared();
         let mixers = [
             // Program with the overlay channels keyed over it; Preview without (Q5).
             Mixer::with_keys(&device, config.resolution),
@@ -305,6 +328,7 @@ impl RenderEngine {
         controller.set_io(io_tx);
         controller.set_audio_plan(audio_plan_writer);
         controller.set_device_lost_grace(config.device_lost_grace);
+        controller.set_multiview(MultiviewWriter::new(Arc::clone(&multiview))?);
         let input_stats = controller.input_stats();
         let timelines = Timelines::default();
         let (commands, command_rx) = command_channel();
@@ -339,7 +363,11 @@ impl RenderEngine {
             program,
             preview,
             thumbs,
-            fullscreen,
+            fullscreens: [fullscreen0, fullscreen1],
+            multiview_painter,
+            multiview: Arc::clone(&multiview),
+            labels_seen: 0,
+            meters: audio_meters.clone(),
             stage,
             ring: RingWriter::new(ring),
             ready_tx,
@@ -425,7 +453,7 @@ impl RenderEngine {
                 program: program_reader,
                 preview: preview_reader,
                 thumbnails: thumbs_reader,
-                fullscreen: fullscreen_reader,
+                fullscreens: [fullscreen0_reader, fullscreen1_reader],
             },
         ))
     }
@@ -611,8 +639,14 @@ struct RenderWorker {
     program: Output,
     preview: Output,
     thumbs: Output,
-    /// Program after FTB, for the full-screen output.
-    fullscreen: Output,
+    /// What each full-screen output shows.
+    fullscreens: [Output; MAX_FULLSCREENS],
+    multiview_painter: MultiviewPainter,
+    /// Cells and titles, from `vma-control`.
+    multiview: MultiviewShared,
+    /// Version of the titles written to the GPU.
+    labels_seen: u64,
+    meters: AudioMeters,
     sequencer: Sequencer,
     sources: SourceTable,
     /// The stinger rings (ADR 0010 § 5).
@@ -754,6 +788,87 @@ impl RenderWorker {
         })
     }
 
+    /// The MultiView of this tick into every full screen showing it (ADR 0014): the views and
+    /// the atlas just rendered, tally from the composition, meters as they are now.
+    fn encode_multiview(&mut self, encoder: &mut wgpu::CommandEncoder, composition: &Composition) {
+        let plan = self.multiview.plan.load();
+        let titles = self.multiview.titles.load();
+        if titles.version != self.labels_seen {
+            // Rare (a title changed): one copy of the title texture.
+            self.multiview_painter
+                .write_labels(&self.queue, &titles.image);
+            self.labels_seen = titles.version;
+        }
+        let on_air = |id: InputId| {
+            composition.to == Some(id)
+                || (composition.from == Some(id) && composition.mix < 1.0)
+                || composition
+                    .overlays
+                    .iter()
+                    .flatten()
+                    .any(|o| o.input == id && o.opacity > 0.0)
+        };
+        let tally = |id: InputId| {
+            if on_air(id) {
+                CellTally::Program
+            } else if composition.preview == Some(id) {
+                CellTally::Preview
+            } else {
+                CellTally::None
+            }
+        };
+        let peak = |level| self.meters.read(level).map(|[_, post]| post.peak);
+        let title = |line: usize| titles.image.widths.get(line).map(|w| (line, *w));
+        let mut cells = [MultiviewCell::default(); MAX_CELLS];
+        {
+            let [preview, program, inputs @ ..] = &mut cells;
+            *preview = MultiviewCell {
+                picture: CellPicture::Preview,
+                tally: CellTally::Preview,
+                title: title(0),
+                meter: composition.preview.and_then(|id| peak(Level::Input(id))),
+            };
+            *program = MultiviewCell {
+                picture: CellPicture::Program,
+                tally: CellTally::Program,
+                title: title(1),
+                meter: peak(Level::Bus(vma_core::AudioBus::Master)),
+            };
+            for (n, (cell, id)) in inputs.iter_mut().zip(plan.inputs).enumerate() {
+                let Some(id) = id else {
+                    continue;
+                };
+                let atlas = self
+                    .sources
+                    .iter()
+                    .find(|(_, source, _)| *source == id)
+                    .map(|(slot, _, _)| slot);
+                *cell = MultiviewCell {
+                    picture: atlas.map_or(CellPicture::Empty, CellPicture::Thumbnail),
+                    tally: tally(id),
+                    title: title(n + 2),
+                    meter: peak(Level::Input(id)),
+                };
+            }
+        }
+        let scene = MultiviewScene {
+            layout: plan.layout,
+            titles_below: plan.titles_below,
+            preview_slot: self.preview.producer.back(),
+            program_slot: self.program.producer.back(),
+            atlas_slot: self.thumbs.producer.back(),
+            cells,
+        };
+        for (out, source) in self.fullscreens.iter().zip(composition.fullscreens) {
+            if source == Some(ViewSource::Multiview)
+                && let Some(target) = out.frames.targets.get(out.producer.back())
+            {
+                self.multiview_painter
+                    .encode(&self.queue, encoder, target.view(), &scene);
+            }
+        }
+    }
+
     /// Renders Program, Preview, (every other tick) the thumbnails and (with an output
     /// attached, or the full screen on) the output stage in one submission, then publishes
     /// them. Returns the CPU time spent encoding, submitting, and on the output stage (part of
@@ -788,7 +903,10 @@ impl RenderWorker {
             }),
             overlays: composition.overlays.map(|o| self.key(o, frame)),
         };
-        let with_thumbnails = frame.is_multiple_of(2);
+        let shows = |source| composition.fullscreens.contains(&Some(source));
+        let multiview = shows(ViewSource::Multiview);
+        // The MultiView's input cells show the atlas: painted every tick then.
+        let with_thumbnails = frame.is_multiple_of(2) || multiview;
 
         for ((mixer, out), (mix, keys)) in self
             .mixers
@@ -804,16 +922,7 @@ impl RenderWorker {
         // After the Program mixer, which wrote the Program this stage reads.
         let mut output = Duration::ZERO;
         let attached = self.active_outputs.any();
-        let fullscreen = composition
-            .fullscreen
-            .then(|| {
-                self.fullscreen
-                    .frames
-                    .targets
-                    .get(self.fullscreen.producer.back())
-            })
-            .flatten();
-        if attached || fullscreen.is_some() {
+        if attached || shows(ViewSource::Program) {
             let started = Instant::now();
             let look = OutputLook {
                 fade_to_black: composition.fade_to_black,
@@ -829,12 +938,34 @@ impl RenderWorker {
                     self.stats.record_output_drop();
                 }
             }
-            if let Some(target) = fullscreen {
-                self.stage.encode_rgba8(&mut encoder, target.view());
+            for (out, source) in self.fullscreens.iter().zip(composition.fullscreens) {
+                if source == Some(ViewSource::Program)
+                    && let Some(target) = out.frames.targets.get(out.producer.back())
+                {
+                    self.stage.encode_rgba8(&mut encoder, target.view());
+                }
             }
             output = started.elapsed();
         }
-        let fullscreen = fullscreen.is_some();
+        // The Preview as it is, for a full screen showing it (same size and format).
+        if let Some(preview) = self
+            .preview
+            .frames
+            .targets
+            .get(self.preview.producer.back())
+        {
+            for (out, source) in self.fullscreens.iter().zip(composition.fullscreens) {
+                if source == Some(ViewSource::Preview)
+                    && let Some(target) = out.frames.targets.get(out.producer.back())
+                {
+                    encoder.copy_texture_to_texture(
+                        preview.texture().as_image_copy(),
+                        target.texture().as_image_copy(),
+                        preview.texture().size(),
+                    );
+                }
+            }
+        }
         let thumbs_slot = self.thumbs.producer.back();
         if with_thumbnails
             && let (Some(atlas), Some(cells)) = (
@@ -857,6 +988,11 @@ impl RenderWorker {
                     value.store(id.0.saturating_add(1), Ordering::Relaxed);
                 }
             }
+        }
+
+        // After the atlas and the views it samples.
+        if multiview {
+            self.encode_multiview(&mut encoder, composition);
         }
 
         let painted = Instant::now();
@@ -890,8 +1026,10 @@ impl RenderWorker {
         if with_thumbnails {
             publish(&mut self.thumbs, frame);
         }
-        if fullscreen {
-            publish(&mut self.fullscreen, frame);
+        for (out, source) in self.fullscreens.iter_mut().zip(composition.fullscreens) {
+            if source.is_some() {
+                publish(out, frame);
+            }
         }
         times
     }

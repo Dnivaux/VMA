@@ -14,6 +14,7 @@ mod command;
 mod control;
 mod feed;
 mod journal;
+mod multiview;
 mod output_spec;
 mod outputs;
 mod plan;
@@ -34,8 +35,9 @@ pub use audio::{
 pub use audio_plan::AudioPlan;
 pub use command::{
     AutoPlay, Command, CommandId, Db, DeviceId, Effect, HtmlUrl, InputKey, InputSpec, InvalidKey,
-    MAX_AUDIO_DELAY_MS, MAX_HTML_TEXT, MAX_TRANSITION_MS, MixDomain, Source, SrtSource,
-    StingerSlot, TRANSITION_BUTTONS, TransitionSetting,
+    MAX_AUDIO_DELAY_MS, MAX_HTML_TEXT, MAX_TRANSITION_MS, MULTIVIEW_INPUTS, MixDomain,
+    MultiviewLayout, MultiviewSettings, MultiviewSlot, Source, SrtSource, StingerSlot,
+    TRANSITION_BUTTONS, TransitionSetting,
 };
 pub use control::{
     CommandProbe, CommandSender, ControlStats, InputFeedStats, InputStatsReader, IoEvent,
@@ -44,9 +46,11 @@ pub use control::{
 };
 pub use feed::{FeedError, FeedRegistry, FeedStats, FeedStatsSnapshot, FrameSink};
 pub use journal::{Journal, JournalLine, JournalStats, Origin, Outcome, ReplayError, replay};
+pub use multiview::slot_inputs as multiview_inputs;
 pub use output_spec::{
-    FullscreenSpec, InvalidSpec, MAX_OUTPUTS, NdiSpec, OutputSpec, RecordSpec, RtmpSpec,
-    SRT_LATENCY_RANGE, STREAM_SLOTS, Secret, SrtMode, SrtSpec, VIDEO_KBPS_RANGE,
+    FullscreenSpec, InvalidSpec, MAX_FULLSCREENS, MAX_OUTPUTS, NdiSpec, OutputSpec, RecordSpec,
+    RtmpSpec, SRT_LATENCY_RANGE, STREAM_SLOTS, Secret, SrtMode, SrtSpec, VIDEO_KBPS_RANGE,
+    ViewSource,
 };
 pub use outputs::{
     AUDIO_CHANNELS, AUDIO_RATE, BEEP_HZ, BEEP_SAMPLES, CONSUMER_QUEUE, DistributionSnapshot,

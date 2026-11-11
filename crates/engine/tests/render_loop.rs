@@ -96,7 +96,10 @@ fn spawn_with_journal(rate: FrameRate, resolution: Resolution, journal: Journal)
         reader: readers.program,
         preview: readers.preview,
         thumbnails: readers.thumbnails,
-        fullscreen: readers.fullscreen,
+        fullscreen: {
+            let [first, _] = readers.fullscreens;
+            first
+        },
         device: gpu.device,
         queue: gpu.queue,
         adapter,
@@ -718,6 +721,7 @@ fn fullscreen_frames_show_the_program_after_ftb_while_on() {
     send(Command::AddOutput {
         spec: OutputSpec::Fullscreen(FullscreenSpec {
             screen: Some("DP-2".into()),
+            source: Default::default(),
         }),
         name: None,
     });
@@ -779,6 +783,89 @@ fn fullscreen_frames_show_the_program_after_ftb_while_on() {
 
 /// Adds an input fed from outside (a file spec: no `io-gst` yet, so nothing opens it) and
 /// attaches a 320 × 180 RGBA feed to it.
+/// Phase 5, E12 (engine side, ADR 0014): a full screen showing the MultiView gets Preview,
+/// Program and the inputs in their cells, with their tally borders; they follow a Cut.
+#[test]
+fn a_full_screen_shows_the_multiview() {
+    use vma_compositor::multiview::{MultiviewLayout, cell_layout, cells};
+    let size = Resolution::new(640, 360).unwrap();
+    let mut spawned = spawn_with_journal(FrameRate::FPS_50, size, Journal::Disabled);
+    let commands = spawned.engine.commands();
+    let feedback = spawned.engine.feedback();
+    let state = spawned.engine.state();
+    let send = |command| commands.send(Source::Ui, command).unwrap();
+    for (r, g) in [(220, 20), (20, 200)] {
+        send(Command::AddInput {
+            spec: InputSpec::Color {
+                color: Rgb8::new(r, g, 30),
+            },
+            name: None,
+        });
+    }
+    send(Command::AddOutput {
+        spec: OutputSpec::Fullscreen(FullscreenSpec {
+            screen: None,
+            source: vma_engine::ViewSource::Multiview,
+        }),
+        name: None,
+    });
+    assert!(wait_for(Duration::from_secs(2), || state
+        .load()
+        .outputs
+        .iter()
+        .any(|o| o.spec.is_fullscreen())));
+    let fs = state.load().outputs.last().unwrap().id;
+    send(Command::StartOutput { output: fs });
+    let (rects, _) = cells(MultiviewLayout::PlusEight, size);
+    let at = |n: usize| {
+        let (picture, _) = cell_layout(rects[n], true, false, 360.0);
+        (
+            picture,
+            (picture.x + picture.w / 2.0) as u32,
+            (picture.y + picture.h / 2.0) as u32,
+        )
+    };
+    let red = |p: [u8; 4]| p[0] > 180 && p[1] < 60;
+    let green = |p: [u8; 4]| p[1] > 160 && p[0] < 60;
+    let check = |spawned: &mut Spawned,
+                 program: &dyn Fn([u8; 4]) -> bool,
+                 preview: &dyn Fn([u8; 4]) -> bool| {
+        let from = feedback.last_frame() + 3;
+        let (img, w) = read_frame(spawned, Out::Fullscreen, from);
+        let (_, x, y) = at(0);
+        assert!(
+            preview(pixel(&img, w, x, y)),
+            "Preview cell {:?}",
+            pixel(&img, w, x, y)
+        );
+        let (picture, x, y) = at(1);
+        assert!(
+            program(pixel(&img, w, x, y)),
+            "Program cell {:?}",
+            pixel(&img, w, x, y)
+        );
+        let border = pixel(&img, w, picture.x as u32 - 2, y);
+        assert!(border[0] > 180 && border[1] < 60, "red border {border:?}");
+        let (_, x, y) = at(2);
+        assert!(
+            red(pixel(&img, w, x, y)),
+            "first input cell {:?}",
+            pixel(&img, w, x, y)
+        );
+        let (_, x, y) = at(3);
+        assert!(
+            green(pixel(&img, w, x, y)),
+            "second input cell {:?}",
+            pixel(&img, w, x, y)
+        );
+    };
+    check(&mut spawned, &red, &green);
+    send(Command::Cut);
+    assert!(wait_for(Duration::from_secs(2), || state.load().program
+        == Some(state.load().inputs[1].id)));
+    check(&mut spawned, &green, &red);
+}
+
 fn add_fed_input(spawned: &Spawned) -> (vma_core::InputId, vma_engine::FrameSink) {
     add_fed_input_with(spawned, vma_core::AlphaMode::Opaque)
 }
