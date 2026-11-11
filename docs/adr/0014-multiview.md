@@ -55,6 +55,11 @@
 - **Un moteur de texte complet (`cosmic-text`, `glyphon`)** : des titres d'une ligne n'en ont
   pas besoin ; il viendra peut-être avec les titres natifs (ADR 0002).
 
+## Report (2026-11-11)
+La MultiView vers le NDI® est reportée (décision du mainteneur) : elle demande une deuxième
+conversion NV12 et un deuxième circuit de sortie à côté de ceux du Program. Le NDI® reste le
+Program.
+
 ## Conséquences
 - `OutputSpec::Fullscreen` et `OutputSpec::Ndi` gagnent une source ; la règle « un seul plein
   écran » devient « un par écran, deux au plus ».

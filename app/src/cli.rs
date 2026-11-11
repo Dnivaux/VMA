@@ -59,6 +59,11 @@ Options :
                          avant d'être finalisées et l'application fermée (défaut : 10)
   --soak <secondes>      soak : tourne N secondes, écrit un rapport, quitte
                          (code 0 = réussi, 2 = images manquées ou répétées)
+  --api-load             pendant le soak, un client de l'API compat TCP (127.0.0.1:8099) :
+                         une commande toutes les 100 ms, l'état XML toutes les 250 ms (E13)
+  --fullscreen-source <source>
+                         ce que montre le plein écran de --fullscreen : program (défaut),
+                         preview ou multiview
   --hostile              pendant le soak, agresse la fenêtre en continu
                          (redimensionne, maximise, plein écran, minimise, déplace)
   --report <chemin>      fichier du rapport de soak (défaut : soak-report.md)
@@ -95,6 +100,8 @@ pub struct Options {
     pub record: Option<PathBuf>,
     /// Full screen from start-up on this screen (name, or number from 1).
     pub fullscreen: Option<String>,
+    /// What that full screen shows.
+    pub fullscreen_source: vma_engine::ViewSource,
     /// Stream from start-up to this RTMP(S) server.
     pub stream: Option<StreamOption>,
     /// Sync test on the outputs (flash and beep every second).
@@ -142,6 +149,8 @@ pub struct SoakOptions {
     pub html_data: bool,
     /// One transition in three is stinger 1 (button 2).
     pub stinger: bool,
+    /// A client of the compat API runs during the soak (E13).
+    pub api_load: bool,
 }
 
 /// Environment variable holding the stream key, to keep it out of the command line.
@@ -192,6 +201,8 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> anyhow::Result<Options> 
     let mut sync_check = None;
     let mut soak_secs = None;
     let mut hostile = false;
+    let mut api_load = false;
+    let mut fullscreen_source = vma_engine::ViewSource::Program;
     let mut report = None;
     let mut help = false;
     let mut journal_dir = Some(PathBuf::from(DEFAULT_JOURNAL_DIR));
@@ -255,6 +266,15 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> anyhow::Result<Options> 
             "--no-autosave" => autosave = false,
             "--no-api" => api = false,
             "--fullscreen" => fullscreen = Some(value::<String>(&mut args, &arg)?),
+            "--fullscreen-source" => {
+                fullscreen_source = match value::<String>(&mut args, &arg)?.as_str() {
+                    "program" => vma_engine::ViewSource::Program,
+                    "preview" => vma_engine::ViewSource::Preview,
+                    "multiview" => vma_engine::ViewSource::Multiview,
+                    other => bail!("--fullscreen-source : {other} (program, preview ou multiview)"),
+                }
+            }
+            "--api-load" => api_load = true,
             "--stream" => stream_url = Some(value::<String>(&mut args, &arg)?),
             "--stream-key" => stream_key = Some(value::<String>(&mut args, &arg)?),
             "--sync-test" => sync_test = true,
@@ -283,9 +303,10 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> anyhow::Result<Options> 
             sync_check: sync_check.clone(),
             html_data,
             stinger: stinger.is_some(),
+            api_load,
         }),
-        None if hostile || report.is_some() || sync_check.is_some() => {
-            bail!("--hostile, --report et --sync-check exigent --soak")
+        None if hostile || report.is_some() || sync_check.is_some() || api_load => {
+            bail!("--hostile, --report, --sync-check et --api-load exigent --soak")
         }
         None => None,
     };
@@ -346,6 +367,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> anyhow::Result<Options> 
         api,
         record,
         fullscreen,
+        fullscreen_source,
         gpu_loss_grace,
         stream,
         sync_test,
@@ -554,8 +576,15 @@ mod tests {
                 sync_check: None,
                 html_data: false,
                 stinger: false,
+                api_load: false,
             })
         );
+        let o =
+            parse_str("--soak 60 --api-load --fullscreen 2 --fullscreen-source multiview").unwrap();
+        assert!(o.soak.unwrap().api_load);
+        assert_eq!(o.fullscreen_source, vma_engine::ViewSource::Multiview);
+        assert!(parse_str("--api-load").is_err());
+        assert!(parse_str("--fullscreen-source mosaic").is_err());
         let o = parse_str(
             "--soak 60 --html https://x.example/a.html --overlay-image o.png --overlays \
              --stinger s.mov --html-data",

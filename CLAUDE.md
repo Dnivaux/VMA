@@ -54,6 +54,7 @@ cargo run --release -- --fullscreen 2 --soak 600 --report …
 VMA_STREAM_KEY=k cargo run --release -- --stream rtmp://127.0.0.1/live --sync-test --soak 60 --sync-check rtmp://127.0.0.1/live/k
 VMA_MEDIAMTX=…/mediamtx tests/soak/phase2-b1-b2.sh       # B1 + B2 : 1 h, 6 inputs, enregistrement + stream
 VMA_MEDIAMTX=…/mediamtx tests/soak/phase3-c14.sh         # C14 : 1 h, 6 sources synchro avec son (±100 ppm), mélangeur, enr. + stream + NDI
+VMA_MEDIAMTX=…/mediamtx tests/soak/phase5-e13.sh         # E13 : 20 min, D11 + MultiView en plein écran + client de l'API compat (--api-load)
 # GPU perdu : noir sur les sorties pendant N s (défaut 10), puis finalisation et sortie en erreur :
 cargo run --release -- --record /tmp/vma-rec --gpu-loss-grace 5
 

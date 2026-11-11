@@ -1,5 +1,6 @@
 //! VMA — main binary: wires the window, the engine and the UI together.
 
+mod api_load;
 mod cli;
 mod screens;
 mod soak;
@@ -392,7 +393,7 @@ impl<'a> App<'a> {
         }
         // `--fullscreen`: the full-screen output present and on from the start.
         if let Some(wanted) = &options.fullscreen {
-            start_fullscreen(&engine, wanted, &screens.list())?;
+            start_fullscreen(&engine, wanted, options.fullscreen_source, &screens.list())?;
         }
 
         let render_stats = engine.render_stats();
@@ -566,6 +567,7 @@ fn start_ndi(engine: &RenderEngine) -> anyhow::Result<()> {
 fn start_fullscreen(
     engine: &RenderEngine,
     wanted: &str,
+    source: vma_engine::ViewSource,
     screens: &[vma_ui::Screen],
 ) -> anyhow::Result<()> {
     let by_number = wanted
@@ -583,7 +585,7 @@ fn start_fullscreen(
         vma_engine::Command::AddOutput {
             spec: vma_engine::OutputSpec::Fullscreen(vma_engine::FullscreenSpec {
                 screen: Some(screen),
-                source: Default::default(),
+                source,
             }),
             name: None,
         },

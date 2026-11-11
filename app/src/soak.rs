@@ -381,6 +381,14 @@ fn run(
 ) -> anyhow::Result<bool> {
     let started = Instant::now();
     let started_wall = std::time::SystemTime::now();
+    // E13: a client of the compat API for the whole run.
+    let api_load = if options.api_load {
+        let address =
+            std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, vma_api::COMPAT_TCP_PORT));
+        Some(crate::api_load::ApiLoad::start(address).context("API load client")?)
+    } else {
+        None
+    };
     let mut sent = [0u64; Action::ALL.len()];
     let mut step = 0u64;
     let mut transitions = 0u64;
@@ -626,6 +634,7 @@ fn run(
         }
     }
 
+    let api_load = api_load.map(crate::api_load::ApiLoad::finish);
     if options.hostile {
         // Leave the window in a sane state.
         ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
@@ -647,6 +656,7 @@ fn run(
         phase4_warm: phase4_warm.as_ref(),
         stingers,
         data_sent,
+        api_load: api_load.as_ref(),
     };
     let (report, passed) = report(options, soak, &run);
     if let Some(dir) = options
@@ -693,6 +703,8 @@ struct Run<'a> {
     stingers: u64,
     /// Data updates sent to an HTML input.
     data_sent: u64,
+    /// `--api-load`: what the client of the compat API saw (E13).
+    api_load: Option<&'a crate::api_load::ApiLoadReport>,
 }
 
 /// One master period of the soak's 50 ms steps, a second.
@@ -1088,7 +1100,10 @@ fn report(options: &SoakOptions, soak: &SoakContext, run: &Run<'_>) -> (String, 
         && outputs_ok
         && sync_ok
         && audio_ok
-        && phase4_ok;
+        && phase4_ok
+        && run
+            .api_load
+            .is_none_or(crate::api_load::ApiLoadReport::passed);
     let mode = if options.hostile { "hostile" } else { "calme" };
     let ms = |d: Duration| format!("{:.3} ms", d.as_secs_f64() * 1000.0);
 
@@ -1396,6 +1411,20 @@ fn report(options: &SoakOptions, soak: &SoakContext, run: &Run<'_>) -> (String, 
 
     if let Some((text, _)) = &phase4 {
         s.push_str(text);
+    }
+    if let Some(api) = run.api_load {
+        let _ = writeln!(
+            s,
+            "## API compat (E13)\nUn client TCP sur 127.0.0.1:{} : une commande toutes les 100 ms (`SetTransitionDuration3`, `PING`), l'état XML toutes les 250 ms.\n\n| Mesure | Valeur |\n|---|---|\n| Commandes | {} ({} erreurs) |\n| Lectures du XML | {} ({} erreurs) |\n| Réponse la plus lente | {} |\n| XML le plus long | {} octets |\n| Arrêt prématuré | {} |\n",
+            vma_api::COMPAT_TCP_PORT,
+            api.commands,
+            api.command_errors,
+            api.xml_reads,
+            api.xml_errors,
+            ms(api.longest_answer),
+            api.largest_xml,
+            api.failure.as_deref().unwrap_or("non"),
+        );
     }
     let _ = writeln!(
         s,
