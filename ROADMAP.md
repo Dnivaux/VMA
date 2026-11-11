@@ -282,4 +282,5 @@ vérifiées dans la documentation publique : [`api-compat.md`](docs/specs/api-co
 |---|---|
 | `vma-io-html::real_helper::the_sound_of_a_page_reaches_its_feed` (CI Windows) | Run 43064182339 (2026-11-11) : 106 560 échantillons en 2 s (53 280 /s, tolérance 48 000 ± 10 %), rattrapage après une pause du runner ; vert aux runs précédents, code non touché par la Phase 5 ; job relancé. À surveiller avec le démarrage de CEF sous Windows (Phase 4 étape 4, ⏸) |
 
-## Phase 6 — Sport · ⬜
+## Phase 6 — Sport · *spec proposée le 2026-11-11, en attente de validation*
+Spec et plan : [`phase-6.md`](docs/specs/phase-6.md) (enregistrement ISO, replay : enregistrement continu par caméra, marquage, ralenti, multi-angle, envoi à l'antenne ; critères F1–F9, questions Q1–Q14). La Phase 5 reste à clore (E9, raccourcis).
