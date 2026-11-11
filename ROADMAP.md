@@ -243,8 +243,12 @@ la crate Phosphor n'est pas encore à egui 0.37), formes et textes propres à VM
 |---|---|
 | 1. Checklist d'observation de l'interface pour la partenaire (où est chaque zone, actions les plus fréquentes et leur ordre, raccourcis, ce qui la gênerait si ça bougeait) ; pas de capture à reproduire | Rédigée (2026-11-11), réponses attendues : [`observation-reference-interface.md`](docs/manual-tests/observation-reference-interface.md), d'après l'inventaire du guide public de la référence ([`ui-inventaire-reference.md`](docs/specs/ui-inventaire-reference.md) : zones, tuiles, mélangeur, réglages, écarts avec VMA ; la référence n'a pas de raccourcis par défaut, il faut ceux de la partenaire) |
 | 2. ADR 0011 « Identité visuelle » (palette, typographie, jeu d'icônes, principes de disposition), à valider | ⬜ |
-| 3. Passe sur l'UI : disposition d'après la checklist, icônes, thème ; tests d'UI inchangés (boutons trouvés par leur nom accessible) | ⬜ |
+| 3. Passe sur l'UI : disposition d'après la checklist, icônes, thème ; tests d'UI inchangés (boutons trouvés par leur nom accessible) | **Disposition faite d'abord** (décision du mainteneur, 2026-11-11 : la partenaire compare ensuite) : d'après l'inventaire du guide public ([`ui.md`](docs/specs/ui.md), « Interface familière ») : barre du bas (Ajouter, sorties en bouton + « … », Plein écran), Réglages en haut à droite, « … » des boutons de transition, overlay channels sous la T-Bar, tuile titre en haut + bouton Son, plusieurs rangées, taille des vignettes. Tests d'UI d'avant inchangés et verts, 5 nouveaux ; capture sans fenêtre (`screenshot`, ignoré). Icônes et thème : après l'ADR 0011 |
 | 4. Relecture du déroulé par la partenaire | ⬜ |
+
+| Test ignoré | Raison |
+|---|---|
+| `vma-ui::switcher::screenshot_of_the_main_window` | Capture de la fenêtre principale pour relecture (`target/ui-screenshots/main.png`), sans critère ; demande un GPU : `cargo test -p vma-ui --test switcher -- --ignored screenshot` |
 
 **Placement décidé par le mainteneur (2026-11-10)** : après la revue de la Phase 4 ; l'essai CEF
 (étape 4) passe d'abord. Hors du périmètre de la Phase 4 (BRIEF §10) : n'avance que sur demande.

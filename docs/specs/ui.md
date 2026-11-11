@@ -240,6 +240,58 @@ refusées, `journal_dropped`.
   état enfoncé, aucun bouton pour un son seul, réglage d'un channel),
   `tally::tests::an_input_in_an_overlay_is_on_air`.
 
+## Interface familière — passe de disposition (2026-11-11)
+Demandée par le mainteneur avant les réponses de la partenaire : la disposition suit ce que
+dit le guide public de la référence ([`ui-inventaire-reference.md`](ui-inventaire-reference.md)),
+la partenaire compare ensuite ([`observation-reference-interface.md`](../manual-tests/observation-reference-interface.md)).
+Remplace le schéma de « Disposition » ci-dessus. Pas d'icônes ni de thème encore (ADR 0011) :
+les polices fournies par egui n'ont presque aucun symbole, les boutons restent en texte.
+```
+┌──────────────────────────────────────────────────────────────── [Réglages] [À propos] ┐
+│ PREVIEW · n nom (vert)        │ Quick Play   │ PROGRAM · n nom (rouge)               │
+│                               │ Cut          │                                       │
+│  (contrôles si vidéo)         │ 1 · Fade [… ]│  (contrôles si vidéo)                 │
+│                               │ 2 · Fade [… ]│                                       │
+│                               │ 3 · Fade [… ]│                                       │
+│                               │ 4 · Cut  [… ]│                                       │
+│                               │ FTB          │                                       │
+│                               │ ║ T-Bar ║    │                                       │
+│                               │ Overlays     │                                       │
+│                               │ [1][2][3][4] │                                       │
+├─ (séparateur à tirer : plus de rangées d'inputs) ──────────────┬─────────────────────┤
+│ ┌ n nom ──┐ ┌ n nom ──┐ ┌ n nom ──┐ …  (rangées qui se suivent)│ Mélangeur audio     │
+│ │vignette │ │vignette │ │vignette │                            │                     │
+│ │× QP Cut Loop│                                                │                     │
+│ │1 2 3 4 Son│                                                  │                     │
+├────────────────────────────────────────────────────────────────┴─────────────────────┤
+│ + Ajouter │ Enregistrer […] Streamer […] Plein écran […] │ Sorties    Mélangeur  Statistiques │
+└──────────────────────────────────────────────────────────────────────────────────────┘
+```
+- **Barre du haut** : messages à gauche (place des presets, Phase 5) ; Réglages et À propos à
+  droite.
+- **Barre du bas** : « + Ajouter » ; chaque sortie est un bouton qui démarre / arrête
+  (durée à côté quand elle tourne) et un « … » qui ouvre ses réglages (fenêtre Sorties), comme
+  le rouage de la référence. **Plein écran** : démarre / arrête le plein écran ; sans plein
+  écran, ouvre Sorties. À droite : Mélangeur et Statistiques (bascules).
+- **Colonne centrale** : « … » à côté de chaque bouton de transition (effet et durée ; le clic
+  droit reste) ; sous la T-Bar, un bouton par **overlay channel** (nom accessible « Canal
+  d'overlay n ») : allumé quand le channel montre son input, un clic le sort
+  (`OverlayOut`) ou rentre l'input qu'il montrait en dernier (`OverlayIn`) ; grisé s'il n'a
+  jamais servi.
+- **Tuile** : titre en haut (numéro, nom ; double-clic = réglages), vignette (clic = Preview,
+  double-clic = réglages), puis × QP Cut Loop, puis 1–4 et **Son** (`SetInputMute`, rouge
+  « Muet » quand coupé, nom accessible « Son de l'input n ») pour un input qui a du son.
+- **Plusieurs rangées** : les tuiles passent à la ligne ; le séparateur au-dessus des inputs se
+  tire. Au démarrage, les inputs prennent la hauteur que Preview et Program laissent.
+- **Réglages → Affichage** : vignettes petites (128 × 72), moyennes (160 × 90, défaut),
+  grandes (224 × 126) ; réglage de l'UI, pas une commande (non sauvegardé avant les projets).
+- **Capture sans fenêtre** pour relire la disposition : `cargo test -p vma-ui --test switcher
+  -- --ignored screenshot` → `target/ui-screenshots/main.png` (egui_kittest + wgpu, en test
+  seulement).
+- Reste pour plus tard (petites fonctions, une par une) : catégories, cadenas, annuler la
+  fermeture, grand aperçu, instantané, pause live, overlay en Preview (clic droit), replier
+  une tuile, réordonner par glisser.
+
 ## Critères d'acceptation
 | Critère | Test |
 |---|---|

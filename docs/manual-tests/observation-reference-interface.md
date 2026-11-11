@@ -1,6 +1,6 @@
 # Observation de la référence — l'interface au quotidien
 
-**Pour qui** : la partenaire, qui utilise le logiciel de référence en émission.
+**Pour qui** : qui utilise le logiciel de référence en émission.
 **But** : que l'interface de VMA lui soit **familière** : les mêmes zones aux mêmes endroits, les
 mêmes gestes, les mêmes raccourcis. L'apparence (couleurs, icônes, police) sera celle de VMA.
 **Règle** (BRIEF §2.1) : on **décrit avec ses mots**. Pas de captures d'écran, pas de copie de
@@ -18,6 +18,27 @@ place de `…`. « ? » si elle ne sait pas, « jamais » si elle ne s'en sert p
 réponse utile.
 
 Fréquence, quand on la demande : **S** = à chaque émission, **P** = parfois, **J** = jamais.
+
+## 0. D'abord : VMA tel qu'il est
+L'interface de VMA a été disposée d'après le guide public de la référence (2026-11-11) :
+[`images/vma-interface-2026-11-11.png`](images/vma-interface-2026-11-11.png) (fenêtre 1920 ×
+1040, six inputs, un overlay ; les vues montrent des aplats à la place de la vidéo). Les
+boutons sont en texte pour l'instant : icônes et couleurs viendront ensuite.
+
+Ce qu'on y voit : Preview à gauche, Program à droite, au centre Quick Play, Cut, les 4 boutons
+de transition (« … » à côté : effet et durée), FTB, T-Bar, puis les 4 overlays ; en bas, les
+inputs sur plusieurs rangées (titre, vignette, × QP Cut Loop, 1 2 3 4, Son) et le mélangeur à
+droite ; tout en bas, Ajouter, Enregistrer, Streamer, Plein écran (« … » : leurs réglages),
+Sorties, et à droite Mélangeur et Statistiques ; Réglages en haut à droite.
+
+- [ ] En regardant l'image : qu'est-ce qui n'est **pas à l'endroit** où elle l'attend ?
+  → …
+- [ ] Qu'est-ce qui **manque** et dont elle se sert à chaque émission ?
+  → …
+- [ ] Qu'est-ce qui est **en trop** ou la gênerait ?
+  → …
+
+Les questions suivantes précisent ses habitudes ; y répondre même si l'image lui convient.
 
 ## 1. Son poste
 - [ ] Combien d'écrans, de quelle taille / résolution ? Sur lequel est la fenêtre principale, sur
