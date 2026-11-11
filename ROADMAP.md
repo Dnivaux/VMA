@@ -232,7 +232,7 @@ page plus petite que le Program centrée à sa taille, moteur de titres natif (Q
 | `vma-io-gst::flash_hunt::every_flash_reaches_the_outputs_whole` | Chasse en temps réel de 20 min par défaut (`VMA_HUNT_SECS`), habillage D11 avec `VMA_HUNT_DRESSED` ; lancée à la main sur la machine de dev : `cargo test --release -p vma-io-gst --test flash_hunt -- --ignored --nocapture` |
 | `vma-compositor::staging_speed` (5 tests), `vma-engine::feed_speed` | Mesures de vitesse de copie vers le GPU, sans critère : dépendent de l'état d'énergie du GPU de la machine ; lancées à la main (commandes en tête des fichiers) |
 
-## Chantier demandé — Interface familière à l'opératrice de la référence · ⬜ *(après la revue de la Phase 4)*
+## Chantier demandé — Interface familière à l'opératrice de la référence · *en cours (2026-11-11)*
 Demande du mainteneur (2026-11-09) : l'interface doit **ressembler** à celle de la référence pour
 que la partenaire qui l'utilise au quotidien ne soit pas perdue, **sans la copier** (BRIEF §2,
 clean room) : mêmes zones à l'écran, mêmes gestes, mêmes raccourcis et mêmes réactions ;
@@ -241,7 +241,7 @@ la crate Phosphor n'est pas encore à egui 0.37), formes et textes propres à VM
 
 | Étape | État |
 |---|---|
-| 1. Checklist d'observation de l'interface pour la partenaire (où est chaque zone, actions les plus fréquentes et leur ordre, raccourcis, ce qui la gênerait si ça bougeait) ; pas de capture à reproduire | ⬜ |
+| 1. Checklist d'observation de l'interface pour la partenaire (où est chaque zone, actions les plus fréquentes et leur ordre, raccourcis, ce qui la gênerait si ça bougeait) ; pas de capture à reproduire | Rédigée (2026-11-11), réponses attendues : [`observation-reference-interface.md`](docs/manual-tests/observation-reference-interface.md), d'après l'inventaire du guide public de la référence ([`ui-inventaire-reference.md`](docs/specs/ui-inventaire-reference.md) : zones, tuiles, mélangeur, réglages, écarts avec VMA ; la référence n'a pas de raccourcis par défaut, il faut ceux de la partenaire) |
 | 2. ADR 0011 « Identité visuelle » (palette, typographie, jeu d'icônes, principes de disposition), à valider | ⬜ |
 | 3. Passe sur l'UI : disposition d'après la checklist, icônes, thème ; tests d'UI inchangés (boutons trouvés par leur nom accessible) | ⬜ |
 | 4. Relecture du déroulé par la partenaire | ⬜ |
