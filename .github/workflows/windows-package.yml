@@ -51,6 +51,7 @@ jobs:
             if ($LASTEXITCODE -eq 0) { Write-Host "${e}: present (GPL)"; $failed += $e } else { Write-Host "${e}: absent, as it should" }
           }
           if ($failed) { throw "package GStreamer: $($failed -join ', ')" }
+          exit 0 # the last --exists (x265enc absent) left 1 in $LASTEXITCODE
       - name: Smoke test (5 s soak from the package; no GPU on the runner, frames may miss)
         shell: pwsh
         env:
