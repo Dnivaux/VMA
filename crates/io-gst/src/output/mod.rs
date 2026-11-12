@@ -23,7 +23,7 @@
 //! - Stop: detach the feed from the hub (dropping it sends EOS once its last frame is pushed),
 //!   then [`GstOutput::stop`] waits for the file to be finalised.
 
-mod encoder;
+pub(crate) mod encoder;
 #[cfg(test)]
 pub(crate) mod tests;
 

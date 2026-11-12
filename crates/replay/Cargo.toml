@@ -1,11 +1,15 @@
 [package]
 name = "vma-replay"
-description = "Instant replay: per-camera ring buffers, slow motion. Phase 6."
+description = "Instant replay (ADR 0015, 0016): per-input recordings on disk (segments and index), events, the player's timing."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+tracing.workspace = true
 
 [lints]
 workspace = true

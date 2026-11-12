@@ -38,6 +38,7 @@ vma-io-ndi = { path = "crates/io-ndi" }
 vma-io-html = { path = "crates/io-html" }
 vma-project = { path = "crates/project" }
 vma-api = { path = "crates/api" }
+vma-replay = { path = "crates/replay" }
 
 # External crates — licence noted for each (rule 2.6). Enforced by deny.toml.
 wgpu = "30.0"                                                # MIT OR Apache-2.0

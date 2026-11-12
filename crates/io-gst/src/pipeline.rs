@@ -140,6 +140,8 @@ struct Shared {
     looping: AtomicBool,
     /// Video files: the last segment was pushed without Loop (pictures may still be queued).
     segment_done: AtomicBool,
+    /// Its recorder, if it is recorded (Phase 6, ADR 0015).
+    record: arc_swap::ArcSwapOption<crate::record::RecordTap>,
 }
 
 impl Shared {
@@ -394,6 +396,7 @@ impl GstInput {
             source_alpha: AtomicBool::new(false),
             looping: AtomicBool::new(false),
             segment_done: AtomicBool::new(false),
+            record: arc_swap::ArcSwapOption::empty(),
         });
         watch_source_alpha(&convert, &sink, &shared);
         let (notes_tx, notes) = crossbeam_channel::bounded(16);
@@ -595,6 +598,15 @@ impl GstInput {
         if let Err(e) = self.pipeline.set_state(state) {
             tracing::warn!(error = %e, ?state, "state change failed");
         }
+    }
+
+    /// Records its pictures from now on (`None`: no more).
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "driven by the replay commands, Phase 6 step 4")
+    )]
+    pub(crate) fn set_recorder(&self, tap: Option<crate::record::RecordTap>) {
+        self.shared.record.store(tap.map(Arc::new));
     }
 
     /// Pictures delivered so far.
@@ -1287,6 +1299,10 @@ impl<F: Feeds> Stream<F> {
             )
         {
             tracing::warn!(input = %self.input, error = %e, "picture refused");
+        }
+        // The same picture to the recorder, if any (never waits).
+        if let (Some(tap), Some(at_ns)) = (self.shared.record.load().as_ref(), stream_ns) {
+            tap.offer(sample, at_ns);
         }
         self.next_frame += 1;
         self.shared.pictures.fetch_add(1, Ordering::Relaxed);

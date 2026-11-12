@@ -26,6 +26,7 @@ mod ndi;
 mod output;
 mod outputs;
 mod pipeline;
+pub mod record;
 mod runtime;
 pub mod still;
 mod stinger;

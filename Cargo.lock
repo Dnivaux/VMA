@@ -5252,6 +5252,7 @@ dependencies = [
  "vma-engine",
  "vma-io-html",
  "vma-io-ndi",
+ "vma-replay",
  "wgpu",
 ]
 
@@ -5294,6 +5295,10 @@ dependencies = [
 [[package]]
 name = "vma-replay"
 version = "0.0.1"
+dependencies = [
+ "thiserror 2.0.21",
+ "tracing",
+]
 
 [[package]]
 name = "vma-ui"

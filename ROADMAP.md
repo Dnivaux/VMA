@@ -282,5 +282,21 @@ vérifiées dans la documentation publique : [`api-compat.md`](docs/specs/api-co
 |---|---|
 | `vma-io-html::real_helper::the_sound_of_a_page_reaches_its_feed` (CI Windows) | Run 43064182339 (2026-11-11) : 106 560 échantillons en 2 s (53 280 /s, tolérance 48 000 ± 10 %), rattrapage après une pause du runner ; vert aux runs précédents, code non touché par la Phase 5 ; job relancé. À surveiller avec le démarrage de CEF sous Windows (Phase 4 étape 4, ⏸) |
 
-## Phase 6 — Sport · *spec proposée le 2026-11-11, en attente de validation*
-Spec et plan : [`phase-6.md`](docs/specs/phase-6.md) (enregistrement ISO, replay : enregistrement continu par caméra, marquage, ralenti, multi-angle, envoi à l'antenne ; critères F1–F9, questions Q1–Q14). La Phase 5 reste à clore (E9, raccourcis).
+## Phase 6 — Sport · *en cours (2026-11-12)*
+Spec et plan **validés le 2026-11-11** : [`phase-6.md`](docs/specs/phase-6.md) (enregistrement ISO, replay : enregistrement continu par caméra, marquage, ralenti, multi-angle, envoi à l'antenne ; critères F1–F9). La Phase 5 reste à clore (E9, raccourcis).
+
+| Étape | État | Preuve |
+|---|---|---|
+| 1. ADR 0015 (enregistrement), 0016 (lecteur) | ✅ | [ADR 0015](docs/adr/0015-enregistrement-replay.md), [ADR 0016](docs/adr/0016-lecteur-replay.md) acceptés |
+| 2. Branche d'enregistrement par input, encodeur tout-intra, segments, index horodaté | ✅ | `vma-replay::segments` (segments de 2 s + index de 24 o par image, lus pendant l'écriture, effacement au-delà de la durée gardée) ; `vma-io-gst::record` (prise de l'image au moment où elle part vers le feed, **copiée** — les tampons d'une caméra ne sont jamais retenus —, file d'une demi-seconde, H.264 GOP 1 par l'échelle d'encodeurs) ; test : une source live 50p enregistrée 2 s, chaque image écrite, une toutes les 20 ms sur l'horloge partagée, **chacune décodée seule** (NVENC ici, openh264 en CI) ; 518 tests verts (nextest) |
+| 3. ISO (MKV avec le son) | ⬜ | |
+| 4. Session, événements, commandes | ⬜ | |
+| 5. Lecteur, input Replay A | ⬜ | |
+| 6. Multi-angle, « Rejouer » automatique | ⬜ | |
+| 7. UI Replay | ⬜ | |
+| 8. API compat et native | ⬜ | |
+| 9. Soak, checklist, arrêt pour revue | ⬜ | |
+
+| Problème connu | Détail |
+|---|---|
+| `cargo test -p vma-io-gst --lib record` se bloque | Vu le 2026-11-12 (20 h à 100 % d'un cœur, thread d'un test `output::tests`) ; reproduit **sur le commit d'avant la Phase 6** : antérieur, propre à `cargo test`, qui fait tourner ces tests dans un seul processus. Avec `cargo nextest` (outil du projet et de la CI : un processus par test, délais), les 9 tests passent. À examiner |

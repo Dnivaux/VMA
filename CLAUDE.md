@@ -26,7 +26,8 @@ Mélangeur vidéo live open source en Rust (switcher, streaming, enregistrement)
 cargo run                                   # lance l'application (fenêtre + Program)
 cargo fmt --all                             # formatage
 cargo clippy --workspace --all-targets -- -D warnings
-cargo nextest run --workspace               # tests (cargo test fonctionne aussi)
+cargo nextest run --workspace               # tests (préférer nextest : sous `cargo test`, des tests
+                                            # d'enregistrement d'io-gst se bloquent ensemble, ROADMAP Phase 6)
 cargo deny check                            # licences, advisories, sources
 cargo +1.95 check --workspace --all-targets # MSRV
 
