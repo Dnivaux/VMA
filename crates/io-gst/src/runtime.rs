@@ -776,11 +776,13 @@ impl Worker {
             },
             InputSpec::Replay { channel } => {
                 tracing::info!(%input, %channel, "opening replay channel");
+                let events = self.port.events.clone();
                 match crate::replay_player::ReplayPlayer::start(
                     input,
                     self.port.feeds.clone(),
                     self.port.ticks,
                     crate::stream_clock(),
+                    move |cue| send(&events, IoEvent::ReplayEnded { input, cue }),
                 ) {
                     Ok(player) => self.players.push((input, player)),
                     Err(e) => lost(e.to_string()),

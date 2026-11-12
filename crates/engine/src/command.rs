@@ -319,6 +319,22 @@ pub enum Command {
     ReplayStep {
         frames: i32,
     },
+    /// Plays from another replay camera, at the same moment (ADR 0016, F5).
+    ReplayAngle {
+        input: InputId,
+    },
+    /// « Rejouer » (ADR 0016 § 5): an event (`None`: the last one) in Replay A at the replay
+    /// speed, with the transition of the replay button there and, at its end, back to the
+    /// input that was on air.
+    ReplayAuto {
+        #[serde(default)]
+        id: Option<u32>,
+    },
+    /// The speed (percent) and the transition button (1–4) of « Rejouer ».
+    SetReplayAuto {
+        speed: u8,
+        button: u8,
+    },
     /// The MultiView's layout and titles (ADR 0014).
     SetMultiview {
         settings: MultiviewSettings,

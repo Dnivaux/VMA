@@ -1086,6 +1086,94 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    /// F6, the BRIEF's acceptance in two actions: « −2 s » then « Rejouer »: the transition of
+    /// button 1 to Replay A, the event at 50 % (4 s), the transition back to the camera that
+    /// was on air.
+    #[test]
+    fn mark_then_rejouer_goes_to_the_replay_and_back() {
+        let (mut engine, _device) = spawn_engine_with(EngineConfig {
+            rate: FrameRate::FPS_50,
+            stream_clock: Some(crate::stream_clock()),
+            ..EngineConfig::default()
+        });
+        let io = IoRuntime::start(engine.take_io_port().unwrap()).unwrap();
+        let state = engine.state();
+        let spec = sync_source(FrameRate::FPS_50, 0, 0);
+        send(
+            &engine,
+            Command::AddInput {
+                spec: spec.clone(),
+                name: None,
+            },
+        );
+        let camera = wait_live(&state, &spec);
+        let replay = vma_engine::InputSpec::Replay {
+            channel: vma_engine::ReplayChannel::A,
+        };
+        let dir = folder("rejouer");
+        for command in [
+            Command::CutDirect { input: camera },
+            Command::AddInput {
+                spec: replay.clone(),
+                name: None,
+            },
+            Command::SetReplaySession {
+                folder: Some(dir.clone()),
+                keep_minutes: 10,
+                kbps: 8_000,
+            },
+            Command::SetReplayCameras {
+                inputs: vec![camera],
+            },
+            Command::StartReplayRecording,
+        ] {
+            send(&engine, command);
+        }
+        std::thread::sleep(Duration::from_secs(3));
+        // Live from its first picture, once it plays.
+        let replay_input = state
+            .load()
+            .replay_input(vma_engine::ReplayChannel::A)
+            .unwrap();
+        // The two actions.
+        send(
+            &engine,
+            Command::ReplayMark {
+                mark: vma_engine::Mark::Last { seconds: 2 },
+                at_ns: None,
+            },
+        );
+        send(&engine, Command::ReplayAuto { id: None });
+        let t0 = Instant::now();
+        let fade = state.load().buttons[0].duration_ms;
+        let wait_program = |want: vma_core::InputId, within: Duration| {
+            let end = Instant::now() + within;
+            while state.load().program != Some(want) || state.load().transition.is_some() {
+                assert!(
+                    Instant::now() < end,
+                    "{want} not on air: {:?}",
+                    state.load().program
+                );
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            t0.elapsed()
+        };
+        let there = wait_program(replay_input, Duration::from_millis(u64::from(fade) + 1_000));
+        let back = wait_program(camera, Duration::from_secs(8));
+        eprintln!("fade {fade} ms; on the replay after {there:?}, back after {back:?}");
+        // The event: 100 pictures at 50 %, 4 s from the « Rejouer », then the way back.
+        let expected = Duration::from_millis(4_000 + u64::from(fade));
+        assert!(
+            back >= expected - Duration::from_millis(200)
+                && back <= expected + Duration::from_millis(600),
+            "back after {back:?}, expected about {expected:?}"
+        );
+        assert_eq!(state.load().replay.auto, None);
+        drop(engine);
+        drop(io);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     /// F2: a recorder that cannot write (here its folder is under a file, as a full disk would
     /// stop it) is reported in the state; the input stays live, the show goes on.
     #[test]

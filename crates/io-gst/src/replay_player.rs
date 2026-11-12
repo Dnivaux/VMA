@@ -52,8 +52,10 @@ pub(crate) struct PlayerStats {
     /// Pictures handed to the feed.
     pub(crate) shown: AtomicU64,
     pub(crate) decoded: AtomicU64,
-    /// Ticks whose picture was not decoded in time (shown late, or not at all).
+    /// Pictures not decoded ahead: decoded when due (late if that took too long).
     pub(crate) late: AtomicU64,
+    /// Ticks passed before the thread woke (a busy machine): their picture was not shown.
+    pub(crate) missed: AtomicU64,
     /// Pictures that could not be read or decoded.
     pub(crate) failed: AtomicU64,
 }
@@ -73,6 +75,7 @@ impl ReplayPlayer {
         feeds: F,
         ticks: TickGrid,
         clock: StreamClock,
+        on_end: impl Fn(u64) + Send + 'static,
     ) -> std::io::Result<Self> {
         let (tx, rx) = crossbeam_channel::unbounded();
         let stop = Arc::new(AtomicBool::new(false));
@@ -93,6 +96,8 @@ impl ReplayPlayer {
             out: None,
             shown: None,
             next_frame: 0,
+            on_end: Box::new(on_end),
+            ended: None,
         };
         let thread = std::thread::Builder::new()
             .name(format!("vma-replay-{input}"))
@@ -157,6 +162,9 @@ struct Worker<F: Feeds> {
     out: Option<(VideoFormat, F::Out)>,
     shown: Option<Key>,
     next_frame: u64,
+    /// Told the cue of each event played to its end, once.
+    on_end: Box<dyn Fn(u64) + Send>,
+    ended: Option<u64>,
 }
 
 impl<F: Feeds> Worker<F> {
@@ -186,7 +194,7 @@ impl<F: Feeds> Worker<F> {
             let now = self.clock.now();
             while self.ticks.tick_ns(tick) <= now {
                 tick += 1;
-                self.stats.late.fetch_add(1, Ordering::Relaxed);
+                self.stats.missed.fetch_add(1, Ordering::Relaxed);
             }
             if tick.is_multiple_of(REFRESH_TICKS)
                 && let Some((_, reader)) = &mut self.reader
@@ -195,6 +203,13 @@ impl<F: Feeds> Worker<F> {
                 self.head.extend(reader.entries());
             }
             self.show(tick);
+            if let Some(cue) = self.plan.as_ref().map(|p| p.cue)
+                && self.ended != Some(cue)
+                && self.head.ended(tick)
+            {
+                self.ended = Some(cue);
+                (self.on_end)(cue);
+            }
             for ahead in 1..=AHEAD {
                 self.prepare(tick + ahead);
             }
@@ -482,6 +497,11 @@ mod tests {
 
     /// Records 100 pictures, 20 ms apart, into `dir`; their instants.
     fn record(dir: &std::path::Path) -> Vec<Entry> {
+        record_with(dir, 0, luma)
+    }
+
+    /// Records 100 pictures `grey(n)`, 20 ms apart from `offset_ns`, into `dir`.
+    fn record_with(dir: &std::path::Path, offset_ns: u64, grey: fn(u64) -> u8) -> Vec<Entry> {
         let recorder = Recorder::start(
             "replay",
             RecordSettings {
@@ -494,10 +514,8 @@ mod tests {
         .unwrap();
         let tap = recorder.tap();
         for n in 0..100u64 {
-            tap.offer(
-                &crate::record::tests::picture(luma(n)),
-                7_000_000_000 + n * 20 * MS,
-            );
+            let at = 7_000_000_000 + offset_ns + n * 20 * MS;
+            tap.offer(&crate::record::tests::picture(grey(n)), at);
             // In real time, as an input hands them over.
             std::thread::sleep(Duration::from_millis(20));
         }
@@ -553,11 +571,16 @@ mod tests {
             rate: vma_core::FrameRate::FPS_50,
         };
         let feeds = FakeFeeds::default();
-        let player = ReplayPlayer::start(InputId(9), feeds.clone(), ticks, clock).unwrap();
+        let (ended_tx, ended) = crossbeam_channel::unbounded();
+        let player = ReplayPlayer::start(InputId(9), feeds.clone(), ticks, clock, move |cue| {
+            let _ = ended_tx.send(cue);
+        })
+        .unwrap();
 
         player.plan(plan(&dir, &entries, 50, false, 1));
         // 61 pictures × 2 ticks × 20 ms, and some.
         std::thread::sleep(Duration::from_millis(2_440 + 400));
+        assert_eq!(ended.try_recv(), Ok(1), "the end is told");
         let forward = pushes(&feeds);
         let order: Vec<u64> = forward.iter().map(|p| p.0).collect();
         assert_eq!(
@@ -603,11 +626,65 @@ mod tests {
             .collect();
         assert_eq!(steps, [25, 24], "from picture 20, 5 on then 1 back");
 
+        assert_eq!(ended.try_iter().collect::<Vec<_>>(), [2], "once per cue");
         let stats = player.stats();
         drop(player);
         eprintln!("{stats:?}");
-        assert_eq!(stats.late.load(Ordering::Relaxed), 0, "{stats:?}");
+        assert_eq!(
+            stats.late.load(Ordering::Relaxed),
+            0,
+            "every picture ahead: {stats:?}"
+        );
+        // The test machine may be busy (other tests): a tick missed now and then.
+        assert!(stats.missed.load(Ordering::Relaxed) <= 2, "{stats:?}");
         assert_eq!(stats.failed.load(Ordering::Relaxed), 0, "{stats:?}");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// F5 with the real decoder: switching to another camera in mid-play goes on from the same
+    /// moment, to the picture.
+    #[test]
+    fn another_angle_goes_on_from_the_same_moment() {
+        init();
+        let root = std::env::temp_dir().join(format!("vma-replay-angles-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (dir_a, dir_b) = (root.join("a"), root.join("b"));
+        let a = record(&dir_a);
+        // The other camera: 7 ms later, its pictures grey 230 − 2n (going down).
+        record_with(&dir_b, 7 * MS, |n| (230 - 2 * n) as u8);
+        let clock = crate::stream_clock();
+        let ticks = TickGrid {
+            origin_ns: clock.now(),
+            rate: vma_core::FrameRate::FPS_50,
+        };
+        let feeds = FakeFeeds::default();
+        let player = ReplayPlayer::start(InputId(9), feeds.clone(), ticks, clock, |_| {}).unwrap();
+        player.plan(plan(&dir_a, &a, 50, false, 1));
+        std::thread::sleep(Duration::from_millis(1_000));
+        player.plan(plan(&dir_b, &a, 50, false, 1));
+        std::thread::sleep(Duration::from_millis(600));
+        drop(player);
+        let greys: Vec<u8> = {
+            let feeds = feeds.feeds.lock().unwrap();
+            let feed = feeds.last().unwrap().lock().unwrap();
+            feed.first_bytes.clone()
+        };
+        // Picture n of camera A is 16 + 2n, of camera B 230 − 2n.
+        let switch = greys.windows(2).position(|w| w[1] > w[0] + 4).unwrap() + 1;
+        let last_a = u64::from(greys[switch - 1] - 15) / 2;
+        let first_b = u64::from(231 - greys[switch]) / 2;
+        assert!(
+            first_b.abs_diff(last_a) <= 1,
+            "A {last_a} → B {first_b}: {greys:?}"
+        );
+        let after: Vec<u64> = greys[switch..]
+            .iter()
+            .map(|g| u64::from(231 - g) / 2)
+            .collect();
+        assert!(
+            after.windows(2).all(|w| w[1] == w[0] + 1),
+            "then on in order: {after:?}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

@@ -447,6 +447,8 @@ pub enum Rejection {
     UnknownEvent(u32),
     #[error("no replay event")]
     NoEvent,
+    #[error("{0} is not a replay camera")]
+    NotACamera(InputId),
     #[error("no replay input (channel {0})")]
     NoReplayInput(crate::replay::ReplayChannel),
     #[error("there is already a replay input for channel {0}")]
@@ -616,6 +618,8 @@ pub enum Event {
     },
     /// The recorder of `input` stopped on an error (Phase 6: a full disk).
     RecordFailed { input: InputId, reason: String },
+    /// The player of replay input `input` reached the end of its event (cue `cue`).
+    ReplayEnded { input: InputId, cue: u64 },
     /// The GPU was lost at master frame `frame`: the outputs get black (ADR 0006 § 7).
     DeviceLost { frame: u64 },
     /// The grace period after the loss is over: every output is finalised.
@@ -1181,6 +1185,11 @@ impl State {
                 });
                 true
             }
+            Event::ReplayEnded { input, cue } => {
+                let change = self.replay_ended(*input, *cue);
+                io.extend(change.io);
+                change.changed
+            }
             Event::DeviceLost { frame } => {
                 let first = self.device_lost.is_none();
                 if first {
@@ -1547,6 +1556,22 @@ impl State {
             }
             Command::ReplayReverse { on } => self.player(|p| p.reverse = *on),
             Command::ReplayStep { frames } => self.step_player(*frames),
+            Command::ReplayAngle { input } => {
+                if !self.replay.cameras.contains(input) {
+                    return Err(Rejection::NotACamera(*input));
+                }
+                self.player(|p| p.angle = Some(*input))
+            }
+            Command::ReplayAuto { id } => self.auto_replay(*id),
+            Command::SetReplayAuto { speed, button } => {
+                self.button(*button)?;
+                if *speed > vma_replay::MAX_SPEED {
+                    return Err(Rejection::ReplaySettings);
+                }
+                self.replay.auto_speed = *speed;
+                self.replay.auto_button = *button;
+                Ok(Change::changed())
+            }
             Command::SetMultiview { settings } => {
                 if !settings.validate() {
                     return Err(Rejection::MultiviewSlots);
@@ -1907,7 +1932,7 @@ impl State {
 
     /// Starts a transition with `setting` (a Cut effect or a zero duration cuts at once).
     /// Checks that `setting` can run now (a stinger must be ready).
-    fn playable(&self, setting: TransitionSetting) -> Result<(), Rejection> {
+    pub(crate) fn playable(&self, setting: TransitionSetting) -> Result<(), Rejection> {
         match setting.effect {
             Effect::Stinger(slot) => self
                 .stinger(slot)
@@ -1917,7 +1942,12 @@ impl State {
         }
     }
 
-    fn start(&mut self, setting: TransitionSetting, to: InputId, ending: Ending) -> Change {
+    pub(crate) fn start(
+        &mut self,
+        setting: TransitionSetting,
+        to: InputId,
+        ending: Ending,
+    ) -> Change {
         let from = self.program;
         let frames = match setting.effect {
             // Checked by `playable`: as long as the file.
@@ -2032,7 +2062,7 @@ impl State {
         id
     }
 
-    fn button(&self, button: u8) -> Result<TransitionSetting, Rejection> {
+    pub(crate) fn button(&self, button: u8) -> Result<TransitionSetting, Rejection> {
         usize::from(button)
             .checked_sub(1)
             .and_then(|i| self.buttons.get(i))
@@ -2336,7 +2366,7 @@ impl State {
             .ok_or(Rejection::UnknownInput(input))
     }
 
-    fn require_idle(&self) -> Result<(), Rejection> {
+    pub(crate) fn require_idle(&self) -> Result<(), Rejection> {
         match self.transition {
             Some(_) => Err(Rejection::TransitionRunning),
             None => Ok(()),

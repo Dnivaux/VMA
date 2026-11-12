@@ -268,6 +268,8 @@ pub enum IoEvent {
     },
     /// The recorder of `input` stopped on an error (a full disk): the show goes on.
     RecordFailed { input: InputId, reason: String },
+    /// The player of replay input `input` reached the end of the event of cue `cue`.
+    ReplayEnded { input: InputId, cue: u64 },
 }
 
 /// Requests from `vma-control` to `vma-io`, in order.
@@ -573,6 +575,10 @@ impl Controller {
             IoEvent::RecordFailed { input, reason } => {
                 tracing::warn!(%input, %reason, "recording stopped");
                 self.event(Event::RecordFailed { input, reason });
+            }
+            IoEvent::ReplayEnded { input, cue } => {
+                tracing::info!(%input, cue, "replay event played");
+                self.event(Event::ReplayEnded { input, cue });
             }
         }
     }

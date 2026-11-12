@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use vma_core::InputId;
 
 use crate::command::InputSpec;
-use crate::state::{Change, IoRequest, Rejection, State};
+use crate::state::{Change, Ending, IoRequest, Rejection, State};
 
 /// Cameras recorded for the replay at most (the reference's 8; 4 measured, `phase-6.md` Q3).
 pub const MAX_REPLAY_CAMERAS: usize = 8;
@@ -41,6 +41,8 @@ pub struct PlayerState {
     pub playing: bool,
     /// +1 whenever the player must start the event again.
     pub cue: u64,
+    /// The camera chosen while playing (`None`: the event's angle).
+    pub angle: Option<InputId>,
 }
 
 impl Default for PlayerState {
@@ -51,8 +53,17 @@ impl Default for PlayerState {
             reverse: false,
             playing: false,
             cue: 0,
+            angle: None,
         }
     }
+}
+
+/// A « Rejouer » under way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AutoReplay {
+    pub cue: u64,
+    /// On air when it started (`None`: nothing was).
+    pub back_to: Option<InputId>,
 }
 
 /// What the player of a replay input plays.
@@ -159,6 +170,11 @@ pub struct ReplayState {
     pub failures: Vec<RecordFailure>,
     /// The replay channel A.
     pub player: PlayerState,
+    /// « Rejouer »: its speed (percent) and transition button (Q14: 50 %, button 1).
+    pub auto_speed: u8,
+    pub auto_button: u8,
+    /// « Rejouer » under way: back to that input when the event of that cue ends.
+    pub auto: Option<AutoReplay>,
     next_event: u32,
 }
 
@@ -177,6 +193,9 @@ impl Default for ReplayState {
             marking: None,
             failures: Vec::new(),
             player: PlayerState::default(),
+            auto_speed: 50,
+            auto_button: 1,
+            auto: None,
             next_event: 1,
         }
     }
@@ -452,8 +471,9 @@ impl State {
         let event = player
             .event
             .and_then(|id| self.replay.events.iter().find(|e| e.id == id));
-        let angle = event
-            .and_then(|e| e.angle)
+        let angle = player
+            .angle
+            .or_else(|| event.and_then(|e| e.angle))
             .filter(|a| self.replay.cameras.contains(a))
             .or_else(|| self.replay.cameras.first().copied())
             .and_then(|camera| self.camera_folder(camera));
@@ -497,7 +517,66 @@ impl State {
         player.event = Some(id);
         player.playing = true;
         player.cue += 1;
+        player.angle = None;
+        // The operator takes over: no automatic return.
+        self.replay.auto = None;
         self.player_change()
+    }
+
+    /// « Rejouer » (ADR 0016 § 5, Q14).
+    pub(crate) fn auto_replay(&mut self, id: Option<u32>) -> Result<Change, Rejection> {
+        let input = self
+            .replay_input(ReplayChannel::A)
+            .ok_or(Rejection::NoReplayInput(ReplayChannel::A))?;
+        let setting = self.button(self.replay.auto_button)?;
+        let on_air = self.program == Some(input);
+        if !on_air {
+            self.require_idle()?;
+            self.playable(setting)?;
+        }
+        let back_to = match self.replay.auto {
+            // « Rejouer » again while one runs: the same way back.
+            Some(auto) if on_air => auto.back_to,
+            _ => self.program.filter(|p| *p != input),
+        };
+        let mut change = self.play_event(id)?;
+        let player = &mut self.replay.player;
+        player.speed = self.replay.auto_speed;
+        player.reverse = false;
+        self.replay.auto = Some(AutoReplay {
+            cue: player.cue,
+            back_to,
+        });
+        // The plan again, with the replay's speed.
+        change
+            .io
+            .retain(|r| !matches!(r, IoRequest::ReplayPlayer { .. }));
+        change.io.extend(self.player_change()?.io);
+        if !on_air {
+            let to_replay = self.start(setting, input, Ending::Direct);
+            change.io.extend(to_replay.io);
+        }
+        Ok(change)
+    }
+
+    /// The player reached the end of its event: a « Rejouer » goes back on air.
+    pub(crate) fn replay_ended(&mut self, input: InputId, cue: u64) -> Change {
+        let Some(auto) = self.replay.auto.filter(|a| a.cue == cue) else {
+            return Change::default();
+        };
+        self.replay.auto = None;
+        let mut change = Change::changed();
+        let back = auto.back_to.filter(|b| self.input(*b).is_some());
+        let on_air = self.program == Some(input) && self.transition.is_none();
+        if let (Some(back), true) = (back, on_air)
+            && let Ok(setting) = self.button(self.replay.auto_button)
+            && self.playable(setting).is_ok()
+        {
+            change
+                .io
+                .extend(self.start(setting, back, Ending::Direct).io);
+        }
+        change
     }
 
     pub(crate) fn player(
@@ -526,6 +605,14 @@ impl State {
             if event.angle == Some(input) {
                 event.angle = None;
             }
+        }
+        if self.replay.player.angle == Some(input) {
+            self.replay.player.angle = None;
+        }
+        if let Some(auto) = &mut self.replay.auto
+            && auto.back_to == Some(input)
+        {
+            auto.back_to = None;
         }
     }
 }
@@ -846,5 +933,150 @@ mod tests {
         );
         let plan = players(&s.apply(&Command::ReplayPlay).unwrap()).remove(0);
         assert!(plan.playing && plan.reverse && plan.speed == 50);
+    }
+
+    /// A show with a camera on air, a second camera, Replay A, two events.
+    fn on_air() -> (State, InputId, InputId, InputId) {
+        let mut s = show();
+        let (a, b) = (s.inputs[0].id, s.inputs[1].id);
+        s.apply(&Command::AddInput {
+            spec: InputSpec::Replay {
+                channel: ReplayChannel::A,
+            },
+            name: None,
+        })
+        .unwrap();
+        let replay = s.replay_input(ReplayChannel::A).unwrap();
+        s.apply(&Command::SetReplaySession {
+            folder: Some("/ssd".into()),
+            keep_minutes: 60,
+            kbps: 50_000,
+        })
+        .unwrap();
+        s.apply(&Command::SetReplayCameras { inputs: vec![a, b] })
+            .unwrap();
+        s.apply(&Command::CutDirect { input: a }).unwrap();
+        s.apply(&Command::SetPreview { input: b }).unwrap();
+        for at in [100u64, 200] {
+            s.apply(&Command::ReplayMark {
+                mark: Mark::Last { seconds: 5 },
+                at_ns: Some(at * 1_000_000_000),
+            })
+            .unwrap();
+        }
+        (s, a, b, replay)
+    }
+
+    fn done(s: &mut State) {
+        let id = s.transition.unwrap().id();
+        s.apply_event(&crate::state::Event::TransitionDone { id });
+    }
+
+    /// F6, Q14: « Rejouer » takes the last event to Replay A at 50 % with the transition of
+    /// button 1 (the Preview untouched), and at its end goes back to the camera on air before.
+    #[test]
+    fn rejouer_goes_to_the_replay_and_back() {
+        let (mut s, a, b, replay) = on_air();
+        let io = s.apply(&Command::ReplayAuto { id: None }).unwrap();
+        let plan = players(&io).pop().unwrap();
+        assert_eq!((plan.speed, plan.playing, plan.cue), (50, true, 1));
+        assert_eq!(plan.in_ns, 195_000_000_000, "the last event");
+        assert!(s.transition.is_some(), "button 1's transition");
+        done(&mut s);
+        assert_eq!((s.program, s.preview), (Some(replay), Some(b)));
+        assert_eq!(
+            s.replay.auto,
+            Some(AutoReplay {
+                cue: 1,
+                back_to: Some(a)
+            })
+        );
+        // The end of another cue changes nothing.
+        s.apply_event(&crate::state::Event::ReplayEnded {
+            input: replay,
+            cue: 7,
+        });
+        assert!(s.transition.is_none());
+        s.apply_event(&crate::state::Event::ReplayEnded {
+            input: replay,
+            cue: 1,
+        });
+        assert!(s.transition.is_some(), "back");
+        done(&mut s);
+        assert_eq!(
+            (s.program, s.preview, s.replay.auto),
+            (Some(a), Some(b), None)
+        );
+    }
+
+    /// The operator takes over: cut elsewhere during the replay, or a replay played by hand:
+    /// no automatic return. « Rejouer » again on air keeps the way back.
+    #[test]
+    fn the_operator_keeps_the_last_word() {
+        let (mut s, a, b, replay) = on_air();
+        s.apply(&Command::ReplayAuto { id: None }).unwrap();
+        done(&mut s);
+        s.apply(&Command::ReplayAuto { id: Some(1) }).unwrap();
+        assert!(s.transition.is_none(), "already on air: no transition");
+        assert_eq!(s.replay.auto.unwrap().back_to, Some(a), "the same way back");
+        s.apply(&Command::CutDirect { input: b }).unwrap();
+        s.apply_event(&crate::state::Event::ReplayEnded {
+            input: replay,
+            cue: 2,
+        });
+        assert_eq!(
+            (s.program, s.transition),
+            (Some(b), None),
+            "left where the operator put it"
+        );
+
+        s.apply(&Command::ReplayAuto { id: None }).unwrap();
+        done(&mut s);
+        s.apply(&Command::ReplayPlayEvent { id: Some(1) }).unwrap();
+        assert_eq!(s.replay.auto, None, "played by hand");
+
+        assert_eq!(
+            s.apply(&Command::SetReplayAuto {
+                speed: 25,
+                button: 5
+            }),
+            Err(Rejection::UnknownButton(5))
+        );
+        s.apply(&Command::SetReplayAuto {
+            speed: 25,
+            button: 2,
+        })
+        .unwrap();
+        s.apply(&Command::CutDirect { input: a }).unwrap();
+        let plan = players(&s.apply(&Command::ReplayAuto { id: None }).unwrap())
+            .pop()
+            .unwrap();
+        assert_eq!(plan.speed, 25);
+    }
+
+    /// F5: another camera while playing: the plan's angle changes, not its cue.
+    #[test]
+    fn another_angle_while_playing() {
+        let (mut s, a, b, _) = on_air();
+        let first = players(&s.apply(&Command::ReplayPlayEvent { id: None }).unwrap())
+            .pop()
+            .unwrap();
+        let plan = players(&s.apply(&Command::ReplayAngle { input: b }).unwrap())
+            .pop()
+            .unwrap();
+        let key_b = s.input(b).unwrap().key.to_string();
+        assert_eq!(plan.angle, Some(PathBuf::from("/ssd").join(key_b)));
+        assert_eq!(plan.cue, first.cue, "the same moment, not from the start");
+        let replay = s.replay_input(ReplayChannel::A).unwrap();
+        assert_eq!(
+            s.apply(&Command::ReplayAngle { input: replay }),
+            Err(Rejection::NotACamera(replay))
+        );
+        // A new event plays from its own angle again.
+        let next = players(&s.apply(&Command::ReplayPlayEvent { id: None }).unwrap())
+            .pop()
+            .unwrap();
+        assert_ne!(next.angle, plan.angle);
+        let _ = a;
     }
 }
