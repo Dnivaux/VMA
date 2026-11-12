@@ -141,7 +141,7 @@ struct Shared {
     /// Video files: the last segment was pushed without Loop (pictures may still be queued).
     segment_done: AtomicBool,
     /// Its recorder, if it is recorded (Phase 6, ADR 0015).
-    record: arc_swap::ArcSwapOption<crate::record::RecordTap>,
+    record: RecordSlot,
 }
 
 impl Shared {
@@ -354,13 +354,21 @@ impl GstInput {
     ) -> Result<Self, IoError> {
         let mut mode = None;
         let mut sync_source = None;
+        // Where the pictures and the sound of the input are offered when it is recorded.
+        let record = RecordSlot::default();
+        let sound = |ring: Option<RingWriter>| {
+            ring.map(|ring| SoundOut {
+                ring,
+                record: Arc::clone(&record),
+            })
+        };
         let (pipeline, convert, sink) = match &recipe.media {
             Media::Sync(spec) => {
                 let (pipeline, convert, sink, video, audio) = crate::sync_source::pipeline(spec)?;
                 let pad = audio
                     .static_pad("src")
                     .ok_or_else(|| IoError::Pipeline("appsrc without a pad".into()))?;
-                match feeds.audio(input) {
+                match sound(feeds.audio(input)) {
                     Some(ring) => crate::audio::link(&pipeline, &pad, ring, false)
                         .map_err(IoError::Pipeline)?,
                     None => discard(&pipeline, &pad),
@@ -369,9 +377,9 @@ impl GstInput {
                 (pipeline, convert, sink)
             }
             Media::Launch(source) => launch_pipeline(source)?,
-            Media::File(path) => file_pipeline(path, feeds.audio(input))?,
-            Media::Srt(source) => srt_pipeline(source, feeds.audio(input))?,
-            Media::Ndi(name) => ndi_pipeline(name, feeds.audio(input))?,
+            Media::File(path) => file_pipeline(path, sound(feeds.audio(input)))?,
+            Media::Srt(source) => srt_pipeline(source, sound(feeds.audio(input)))?,
+            Media::Ndi(name) => ndi_pipeline(name, sound(feeds.audio(input)))?,
             Media::Capture(capture) => {
                 let (source, chosen) = open_device(capture)?;
                 let parts = capture_pipeline(source, &chosen)?;
@@ -396,7 +404,7 @@ impl GstInput {
             source_alpha: AtomicBool::new(false),
             looping: AtomicBool::new(false),
             segment_done: AtomicBool::new(false),
-            record: arc_swap::ArcSwapOption::empty(),
+            record,
         });
         watch_source_alpha(&convert, &sink, &shared);
         let (notes_tx, notes) = crossbeam_channel::bounded(16);
@@ -679,7 +687,7 @@ fn launch_pipeline(source: &str) -> Result<Parts, IoError> {
 }
 
 /// `uridecodebin` → (first video stream) `videoconvert ! appsink`; other streams → `fakesink`.
-fn file_pipeline(path: &Path, audio: Option<RingWriter>) -> Result<Parts, IoError> {
+fn file_pipeline(path: &Path, audio: Option<SoundOut>) -> Result<Parts, IoError> {
     let pipeline_error = |e: &dyn std::fmt::Display| IoError::Pipeline(e.to_string());
     let absolute = std::path::absolute(path).map_err(|e| pipeline_error(&e))?;
     let uri = gst::glib::filename_to_uri(&absolute, None).map_err(|e| pipeline_error(&e))?;
@@ -706,10 +714,7 @@ fn file_pipeline(path: &Path, audio: Option<RingWriter>) -> Result<Parts, IoErro
 /// taken as it comes. Mode and latency go in the URI (as for the output); the passphrase is
 /// set on `srtsrc` (never in the URI nor in a message). `srtsrc` does not reconnect by
 /// itself: a lost stream is restarted by the common policy (1, 2, 5, 10 s).
-fn srt_pipeline(
-    source: &vma_engine::SrtSource,
-    audio: Option<RingWriter>,
-) -> Result<Parts, IoError> {
+fn srt_pipeline(source: &vma_engine::SrtSource, audio: Option<SoundOut>) -> Result<Parts, IoError> {
     let pipeline_error = |e: &dyn std::fmt::Display| IoError::Pipeline(e.to_string());
     let Some(passphrase) = source.passphrase.expose().map(str::to_owned) else {
         return Err(IoError::Pipeline(
@@ -775,7 +780,7 @@ fn srt_pipeline(
 /// plugin is registered and the runtime loaded by `vma_io_ndi` before any NDI input opens.
 /// A source that is not on the network fails after `connect-timeout`: lost, then the common
 /// policy (1, 2, 5, 10 s) tries again by its name.
-fn ndi_pipeline(name: &str, audio: Option<RingWriter>) -> Result<Parts, IoError> {
+fn ndi_pipeline(name: &str, audio: Option<SoundOut>) -> Result<Parts, IoError> {
     let pipeline_error = |e: &dyn std::fmt::Display| IoError::Pipeline(e.to_string());
     let source = gst::ElementFactory::make("ndisrc")
         .property("ndi-name", name)
@@ -807,7 +812,7 @@ fn route_decoded(
     decode: &gst::Element,
     pipeline: &gst::Pipeline,
     convert: &gst::Element,
-    audio: Option<RingWriter>,
+    audio: Option<SoundOut>,
     sync: bool,
 ) {
     let weak_pipeline = pipeline.downgrade();
@@ -1405,6 +1410,16 @@ fn spawn_release<F: Feeds>(
         })
         .map(|_| ())
         .map_err(|e| IoError::Pipeline(format!("cannot start the release thread: {e}")))
+}
+
+/// Where an input's pictures and sound go when it is recorded (Phase 6, ADR 0015).
+pub(crate) type RecordSlot = Arc<arc_swap::ArcSwapOption<crate::record::RecordTap>>;
+
+/// The sound of an input: its ring, and its recorder if it is recorded.
+#[derive(Debug)]
+pub(crate) struct SoundOut {
+    pub(crate) ring: RingWriter,
+    pub(crate) record: RecordSlot,
 }
 
 /// Stream time of a buffer in the master clock's time (ADR 0007 § 1): `base_time` of the

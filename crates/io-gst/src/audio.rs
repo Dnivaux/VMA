@@ -18,7 +18,7 @@ use gstreamer::prelude::*;
 use gstreamer_app as gst_app;
 use vma_audio::{CHANNELS, RingWriter, SAMPLE_RATE};
 
-use crate::pipeline::stream_time;
+use crate::pipeline::{RecordSlot, SoundOut, stream_time};
 
 /// The caps of the ring: interleaved `f32`, 48 kHz, stereo.
 pub(crate) fn ring_caps() -> gst::Caps {
@@ -35,9 +35,10 @@ pub(crate) fn ring_caps() -> gst::Caps {
 pub(crate) fn link(
     pipeline: &gst::Pipeline,
     pad: &gst::Pad,
-    ring: RingWriter,
+    out: SoundOut,
     sync: bool,
 ) -> Result<(), String> {
+    let SoundOut { ring, record } = out;
     let make = |factory: &str| {
         gst::ElementFactory::make(factory)
             .build()
@@ -82,7 +83,7 @@ pub(crate) fn link(
                 // Uncontended: only this callback writes the ring.
                 let mut ring = ring.lock().map_err(|_| gst::FlowError::Error)?;
                 let mut timing = timing.lock().map_err(|_| gst::FlowError::Error)?;
-                write(&mut ring, &mut timing, &sample, sink);
+                write(&mut ring, &mut timing, &sample, sink, &record);
                 Ok(gst::FlowSuccess::Ok)
             })
             .build(),
@@ -164,6 +165,7 @@ fn write(
     timing: &mut Timing,
     sample: &gst::Sample,
     sink: &gst_app::AppSink,
+    record: &RecordSlot,
 ) {
     let Some(buffer) = sample.buffer() else {
         return;
@@ -181,6 +183,10 @@ fn write(
     };
     if let Ok(map) = buffer.map_readable() {
         ring.push_le_bytes(ns, map.as_slice());
+        // The same sound to the recorder, if the input is recorded (never waits).
+        if let Some(tap) = record.load().as_ref() {
+            tap.offer_sound(ns, map.as_slice());
+        }
     }
 }
 

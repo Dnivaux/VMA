@@ -289,7 +289,7 @@ Spec et plan **validés le 2026-11-11** : [`phase-6.md`](docs/specs/phase-6.md) 
 |---|---|---|
 | 1. ADR 0015 (enregistrement), 0016 (lecteur) | ✅ | [ADR 0015](docs/adr/0015-enregistrement-replay.md), [ADR 0016](docs/adr/0016-lecteur-replay.md) acceptés |
 | 2. Branche d'enregistrement par input, encodeur tout-intra, segments, index horodaté | ✅ | `vma-replay::segments` (segments de 2 s + index de 24 o par image, lus pendant l'écriture, effacement au-delà de la durée gardée) ; `vma-io-gst::record` (prise de l'image au moment où elle part vers le feed, **copiée** — les tampons d'une caméra ne sont jamais retenus —, file d'une demi-seconde, H.264 GOP 1 par l'échelle d'encodeurs) ; test : une source live 50p enregistrée 2 s, chaque image écrite, une toutes les 20 ms sur l'horloge partagée, **chacune décodée seule** (NVENC ici, openh264 en CI) ; 518 tests verts (nextest) |
-| 3. ISO (MKV avec le son) | ⬜ | |
+| 3. ISO (MKV avec le son) | 🟡 | **Enregistreur ✅** : le H.264 encodé une fois part vers les segments du replay **et** vers un MKV ISO (`splitmuxsink` + `matroskamux` non « streamable », comme la Phase 2), avec le son de l'input pris dans sa branche son (datée sur l'horloge partagée) et encodé en AAC ; « un nouveau fichier toutes les *n* minutes » ; test : 2 s, **toutes les images et le son** relus, découpage en parties sans perte ; 519 tests verts (nextest). Reste : démarrer / arrêter par input et la fenêtre façon MultiCorder (avec les commandes de l'étape 4) ; le son des caméras de capture (branche séparée) n'est pas encore pris |
 | 4. Session, événements, commandes | ⬜ | |
 | 5. Lecteur, input Replay A | ⬜ | |
 | 6. Multi-angle, « Rejouer » automatique | ⬜ | |

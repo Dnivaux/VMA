@@ -108,7 +108,7 @@ pub(crate) struct ReadBack {
     audio: Vec<(u64, u64)>,
     /// Samples (per channel) where a beep starts, counted from the first one in the file.
     beeps: Vec<u64>,
-    audio_samples: u64,
+    pub(crate) audio_samples: u64,
     quiet_run: u64,
 }
 

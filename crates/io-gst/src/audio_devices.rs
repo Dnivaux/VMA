@@ -210,7 +210,13 @@ impl AudioInput {
             gst::PadProbeReturn::Ok
         });
         match feeds.audio(input) {
-            Some(ring) => crate::audio::link(&pipeline, &pad, ring, false)?,
+            Some(ring) => {
+                let out = crate::pipeline::SoundOut {
+                    ring,
+                    record: crate::pipeline::RecordSlot::default(),
+                };
+                crate::audio::link(&pipeline, &pad, out, false)?
+            }
             None => crate::pipeline::discard(&pipeline, &pad),
         }
         let (tx, errors) = crossbeam_channel::bounded(4);

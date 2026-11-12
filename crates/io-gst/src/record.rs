@@ -21,18 +21,31 @@ use crate::output::encoder::{self, VideoTuning};
 /// Pictures waiting for the encoder (half a second at 50p: the encoder's start fits in it);
 /// past this the newest are dropped (and counted).
 const QUEUE: usize = 25;
+/// With the sound: about as many runs of sound as pictures come.
+const QUEUE_WITH_SOUND: usize = 100;
 /// One segment every 2 s (ADR 0015 § 4).
 const SEGMENT_NS: u64 = 2_000_000_000;
 
 /// How an input is recorded.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RecordSettings {
-    /// The input's folder in the session.
-    pub folder: PathBuf,
+    /// The replay's segments: the input's folder in the session (`None`: ISO only).
+    pub folder: Option<PathBuf>,
     /// Bit rate, kbit/s (all-intra: ~100 000 for 1080p50).
     pub kbps: u32,
-    /// Pictures older than this are deleted (`None`: everything is kept, ISO).
+    /// Pictures older than this are deleted from the segments (`None`: all kept).
     pub keep: Option<Duration>,
+    /// An ISO file (MKV with the sound) of the same pictures, not encoded again.
+    pub iso: Option<IsoSettings>,
+}
+
+/// The ISO file of an input (the MultiCorder of the reference, `phase-6.md` Q7).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IsoSettings {
+    /// File name pattern with one `%03d` (the part number): `…/Caméra 1 %03d.mkv`.
+    pub location: PathBuf,
+    /// A new file every this long (`None`: one file).
+    pub split: Option<Duration>,
 }
 
 /// What a recorder did.
@@ -41,6 +54,8 @@ pub struct RecordStats {
     pub offered: AtomicU64,
     /// Dropped because the encoder was behind.
     pub dropped: AtomicU64,
+    /// Runs of sound dropped (queue full).
+    pub sound_dropped: AtomicU64,
     pub written: AtomicU64,
     /// Why it stopped (written once).
     pub failure: Mutex<Option<String>>,
@@ -65,24 +80,31 @@ impl RecordStats {
     }
 }
 
-/// A picture on its way to the recorder.
-struct Picture {
-    sample: gst::Sample,
-    at_ns: u64,
+/// A picture, or a run of sound (F32LE 48 kHz stereo), on its way to the recorder.
+enum Media {
+    Picture { sample: gst::Sample, at_ns: u64 },
+    Sound { bytes: Vec<u8>, at_ns: u64 },
 }
 
 /// The input's side: offers its pictures.
 #[derive(Debug, Clone)]
 pub struct RecordTap {
-    tx: crossbeam_channel::Sender<Picture>,
+    tx: crossbeam_channel::Sender<Media>,
     stats: Arc<RecordStats>,
+    /// The ISO takes the sound; the replay's segments do not.
+    sound: bool,
 }
 
-impl std::fmt::Debug for Picture {
+impl std::fmt::Debug for Media {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Picture")
-            .field("at_ns", &self.at_ns)
-            .finish()
+        match self {
+            Self::Picture { at_ns, .. } => f.debug_struct("Picture").field("at_ns", at_ns).finish(),
+            Self::Sound { at_ns, bytes } => f
+                .debug_struct("Sound")
+                .field("at_ns", at_ns)
+                .field("bytes", &bytes.len())
+                .finish(),
+        }
     }
 }
 
@@ -104,12 +126,29 @@ impl RecordTap {
             .buffer(&owned)
             .caps(&caps.to_owned())
             .build();
-        let picture = Picture {
-            sample: copy,
+        if self
+            .tx
+            .try_send(Media::Picture {
+                sample: copy,
+                at_ns,
+            })
+            .is_err()
+        {
+            self.stats.dropped.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    /// A run of the input's sound (F32LE 48 kHz stereo) starting at `at_ns`. Never waits.
+    pub(crate) fn offer_sound(&self, at_ns: u64, bytes: &[u8]) {
+        if !self.sound {
+            return;
+        }
+        let sound = Media::Sound {
+            bytes: bytes.to_vec(),
             at_ns,
         };
-        if self.tx.try_send(picture).is_err() {
-            self.stats.dropped.fetch_add(1, Ordering::Relaxed);
+        if self.tx.try_send(sound).is_err() {
+            self.stats.sound_dropped.fetch_add(1, Ordering::Relaxed);
         }
     }
 }
@@ -123,14 +162,15 @@ pub struct Recorder {
 
 impl Recorder {
     pub fn start(input: &str, settings: RecordSettings) -> std::io::Result<Self> {
-        let (tx, rx) = crossbeam_channel::bounded(QUEUE);
+        let sound = settings.iso.is_some();
+        let (tx, rx) = crossbeam_channel::bounded(if sound { QUEUE_WITH_SOUND } else { QUEUE });
         let stats = Arc::new(RecordStats::default());
         let thread_stats = Arc::clone(&stats);
         let thread = std::thread::Builder::new()
             .name(format!("vma-record-{input}"))
             .spawn(move || run(&rx, &settings, &thread_stats))?;
         Ok(Self {
-            tap: RecordTap { tx, stats },
+            tap: RecordTap { tx, stats, sound },
             thread: Some(thread),
         })
     }
@@ -169,6 +209,8 @@ impl Drop for Recorder {
 struct Encoding {
     pipeline: gst::Pipeline,
     src: gst_app::AppSrc,
+    /// The ISO's sound.
+    sound: Option<gst_app::AppSrc>,
     caps: gst::Caps,
     base_ns: u64,
 }
@@ -176,6 +218,9 @@ struct Encoding {
 impl Encoding {
     fn finish(self) {
         let _ = self.src.end_of_stream();
+        if let Some(sound) = &self.sound {
+            let _ = sound.end_of_stream();
+        }
         if let Some(bus) = self.pipeline.bus() {
             let _ = bus.timed_pop_filtered(
                 gst::ClockTime::from_seconds(5),
@@ -187,24 +232,29 @@ impl Encoding {
 }
 
 fn run(
-    rx: &crossbeam_channel::Receiver<Picture>,
+    rx: &crossbeam_channel::Receiver<Media>,
     settings: &RecordSettings,
     stats: &Arc<RecordStats>,
 ) {
     let keep = settings
         .keep
         .map(|k| u64::try_from(k.as_nanos()).unwrap_or(u64::MAX));
-    let writer = match SegmentWriter::new(&settings.folder, SEGMENT_NS, keep) {
-        Ok(w) => Arc::new(Mutex::new(w)),
-        Err(e) => {
-            stats.fail(e.to_string());
-            return;
-        }
+    let writer = match &settings.folder {
+        Some(folder) => match SegmentWriter::new(folder, SEGMENT_NS, keep) {
+            Ok(w) => Some(Arc::new(Mutex::new(w))),
+            Err(e) => {
+                stats.fail(e.to_string());
+                return;
+            }
+        },
+        None => None,
     };
     let mut encoding: Option<Encoding> = None;
+    // A caps change starts a new ISO file: its number.
+    let mut part = 0u32;
     loop {
-        let picture = match rx.recv_timeout(Duration::from_millis(100)) {
-            Ok(picture) => picture,
+        let media = match rx.recv_timeout(Duration::from_millis(100)) {
+            Ok(media) => media,
             Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
                 if stats.stopping.load(Ordering::Acquire) {
                     break;
@@ -216,14 +266,32 @@ fn run(
         if stats.failure().is_some() {
             break;
         }
-        let Some(caps) = picture.sample.caps().map(ToOwned::to_owned) else {
+        let (sample, at_ns) = match media {
+            Media::Picture { sample, at_ns } => (sample, at_ns),
+            Media::Sound { bytes, at_ns } => {
+                // Sound before the first picture has no place in the file.
+                if let Some(e) = &encoding
+                    && let Some(src) = &e.sound
+                    && at_ns >= e.base_ns
+                {
+                    let mut buffer = gst::Buffer::from_mut_slice(bytes);
+                    if let Some(b) = buffer.get_mut() {
+                        b.set_pts(gst::ClockTime::from_nseconds(at_ns - e.base_ns));
+                    }
+                    let _ = src.push_buffer(buffer);
+                }
+                continue;
+            }
+        };
+        let Some(caps) = sample.caps().map(ToOwned::to_owned) else {
             continue;
         };
         if encoding.as_ref().is_none_or(|e| e.caps != caps) {
             if let Some(old) = encoding.take() {
                 old.finish();
             }
-            match start(&caps, picture.at_ns, settings, &writer, stats) {
+            part += 1;
+            match start(&caps, at_ns, settings, writer.as_ref(), stats, part) {
                 Ok(e) => encoding = Some(e),
                 Err(reason) => {
                     stats.fail(reason);
@@ -231,13 +299,13 @@ fn run(
                 }
             }
         }
-        let (Some(e), Some(buffer)) = (&encoding, picture.sample.buffer()) else {
+        let (Some(e), Some(buffer)) = (&encoding, sample.buffer()) else {
             continue;
         };
         let mut buffer = buffer.copy();
         if let Some(b) = buffer.get_mut() {
             b.set_pts(gst::ClockTime::from_nseconds(
-                picture.at_ns.saturating_sub(e.base_ns),
+                at_ns.saturating_sub(e.base_ns),
             ));
             b.set_dts(gst::ClockTime::NONE);
             b.set_duration(gst::ClockTime::NONE);
@@ -252,14 +320,22 @@ fn run(
     }
 }
 
-/// `appsrc ! videoconvert ! <H.264, GOP 1> ! h264parse ! appsink`, the units written to the
-/// segments as they come out.
+fn make(name: &str) -> Result<gst::Element, String> {
+    gst::ElementFactory::make(name)
+        .build()
+        .map_err(|_| format!("élément {name} absent"))
+}
+
+/// `appsrc ! videoconvert ! <H.264, GOP 1> ! h264parse ! tee`, then the replay's segments
+/// (`appsink`) and the ISO (`h264parse ! splitmuxsink` with matroskamux, the sound encoded in
+/// AAC beside it): the pictures are encoded once.
 fn start(
     caps: &gst::Caps,
     base_ns: u64,
     settings: &RecordSettings,
-    writer: &Arc<Mutex<SegmentWriter>>,
+    writer: Option<&Arc<Mutex<SegmentWriter>>>,
     stats: &Arc<RecordStats>,
+    part: u32,
 ) -> Result<Encoding, String> {
     let (encoder, candidate, choice) = encoder::select(
         encoder::video_ladder(VideoCodec::H264),
@@ -276,11 +352,6 @@ fn start(
         },
     );
     *stats.encoder.lock().unwrap_or_else(PoisonError::into_inner) = Some(choice.element);
-    let make = |name: &str| {
-        gst::ElementFactory::make(name)
-            .build()
-            .map_err(|_| format!("élément {name} absent"))
-    };
     let src = gst_app::AppSrc::builder()
         .caps(caps)
         .format(gst::Format::Time)
@@ -297,54 +368,132 @@ fn start(
         .property("caps", &units)
         .build()
         .map_err(|_| "élément capsfilter absent".to_owned())?;
-    let sink = gst_app::AppSink::builder().sync(false).build();
+    let tee = make("tee")?;
     let pipeline = gst::Pipeline::with_name("vma-record");
-    let elements = [
+    let head = [
         src.upcast_ref::<gst::Element>(),
         &convert,
         &encoder,
         &parse,
         &filter,
-        sink.upcast_ref(),
+        &tee,
     ];
-    pipeline
-        .add_many(elements)
-        .map_err(|e| format!("pipeline d'enregistrement : {e}"))?;
-    gst::Element::link_many(elements).map_err(|e| format!("pipeline d'enregistrement : {e}"))?;
-    let writer = Arc::clone(writer);
-    let written = Arc::clone(stats);
-    sink.set_callbacks(
-        gst_app::AppSinkCallbacks::builder()
-            .new_sample(move |sink| {
-                let sample = sink.pull_sample().map_err(|_| gst::FlowError::Eos)?;
-                let Some(buffer) = sample.buffer() else {
-                    return Ok(gst::FlowSuccess::Ok);
-                };
-                let at_ns = buffer.pts().map_or(base_ns, |p| base_ns + p.nseconds());
-                let map = buffer.map_readable().map_err(|_| gst::FlowError::Error)?;
-                let result = writer
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .write(at_ns, &map);
-                match result {
-                    Ok(()) => {
-                        written.written.fetch_add(1, Ordering::Relaxed);
-                        Ok(gst::FlowSuccess::Ok)
+    let failed = |e: &dyn std::fmt::Display| format!("pipeline d'enregistrement : {e}");
+    pipeline.add_many(head).map_err(|e| failed(&e))?;
+    gst::Element::link_many(head).map_err(|e| failed(&e))?;
+
+    if let Some(writer) = writer {
+        let queue = make("queue")?;
+        let sink = gst_app::AppSink::builder().sync(false).build();
+        pipeline
+            .add_many([&queue, sink.upcast_ref()])
+            .map_err(|e| failed(&e))?;
+        gst::Element::link_many([&tee, &queue, sink.upcast_ref()]).map_err(|e| failed(&e))?;
+        let writer = Arc::clone(writer);
+        let written = Arc::clone(stats);
+        sink.set_callbacks(
+            gst_app::AppSinkCallbacks::builder()
+                .new_sample(move |sink| {
+                    let sample = sink.pull_sample().map_err(|_| gst::FlowError::Eos)?;
+                    let Some(buffer) = sample.buffer() else {
+                        return Ok(gst::FlowSuccess::Ok);
+                    };
+                    let at_ns = buffer.pts().map_or(base_ns, |p| base_ns + p.nseconds());
+                    let map = buffer.map_readable().map_err(|_| gst::FlowError::Error)?;
+                    let result = writer
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .write(at_ns, &map);
+                    match result {
+                        Ok(()) => {
+                            written.written.fetch_add(1, Ordering::Relaxed);
+                            Ok(gst::FlowSuccess::Ok)
+                        }
+                        Err(e) => {
+                            written.fail(e.to_string());
+                            Err(gst::FlowError::Error)
+                        }
                     }
-                    Err(e) => {
-                        written.fail(e.to_string());
-                        Err(gst::FlowError::Error)
-                    }
-                }
-            })
-            .build(),
-    );
+                })
+                .build(),
+        );
+    }
+
+    let mut sound = None;
+    if let Some(iso) = &settings.iso {
+        let queue = make("queue")?;
+        let reparse = make("h264parse")?;
+        let mux = make("matroskamux")?;
+        // Not « streamable »: a normal stop writes the duration and the index (Phase 2).
+        mux.set_property("streamable", false);
+        mux.set_property("writing-app", "VMA");
+        let split = make("splitmuxsink")?;
+        split.set_property("muxer", &mux);
+        let location = iso.location.to_string_lossy().into_owned();
+        // A caps change continues in the next part.
+        split.set_property("location", &location);
+        split.set_property(
+            "start-index",
+            i32::try_from(part.saturating_sub(1) * 1000).unwrap_or(0),
+        );
+        let split_ns = iso
+            .split
+            .map_or(0, |d| u64::try_from(d.as_nanos()).unwrap_or(u64::MAX));
+        split.set_property("max-size-time", split_ns);
+        if let Some(folder) = iso.location.parent() {
+            std::fs::create_dir_all(folder).map_err(|e| format!("{} : {e}", folder.display()))?;
+        }
+        pipeline
+            .add_many([&queue, &reparse, &split])
+            .map_err(|e| failed(&e))?;
+        gst::Element::link_many([&tee, &queue, &reparse]).map_err(|e| failed(&e))?;
+        let video_pad = split
+            .request_pad_simple("video")
+            .ok_or("splitmuxsink sans entrée vidéo")?;
+        reparse
+            .static_pad("src")
+            .ok_or("h264parse sans sortie")?
+            .link(&video_pad)
+            .map_err(|e| failed(&e))?;
+        // The sound: interleaved F32LE 48 kHz stereo, as the audio rings take it.
+        let (aac, aac_rung, _) = encoder::select(encoder::AAC, encoder::probe_element)
+            .map_err(|skipped| format!("aucun encodeur AAC ({})", encoder::list(&skipped)))?;
+        let _ = aac_rung;
+        encoder::tune_audio(&aac, 192);
+        let audio_src = gst_app::AppSrc::builder()
+            .caps(&crate::audio::ring_caps())
+            .format(gst::Format::Time)
+            .is_live(false)
+            .build();
+        let audio_convert = make("audioconvert")?;
+        let audio_parse = make("aacparse")?;
+        let audio_queue = make("queue")?;
+        let chain = [
+            audio_src.upcast_ref::<gst::Element>(),
+            &audio_convert,
+            &aac,
+            &audio_parse,
+            &audio_queue,
+        ];
+        pipeline.add_many(chain).map_err(|e| failed(&e))?;
+        gst::Element::link_many(chain).map_err(|e| failed(&e))?;
+        let audio_pad = split
+            .request_pad_simple("audio_%u")
+            .ok_or("splitmuxsink sans entrée son")?;
+        audio_queue
+            .static_pad("src")
+            .ok_or("queue sans sortie")?
+            .link(&audio_pad)
+            .map_err(|e| failed(&e))?;
+        sound = Some(audio_src);
+    }
     pipeline
         .set_state(gst::State::Playing)
         .map_err(|e| format!("l'enregistrement ne démarre pas : {e}"))?;
     Ok(Encoding {
         pipeline,
         src,
+        sound,
         caps: caps.clone(),
         base_ns,
     })
@@ -408,6 +557,107 @@ mod tests {
         ))
     }
 
+    /// A grey NV12 picture of 320 × 180 as an input hands it over.
+    fn picture(luma: u8) -> gst::Sample {
+        let info =
+            gstreamer_video::VideoInfo::builder(gstreamer_video::VideoFormat::Nv12, 320, 180)
+                .fps(gst::Fraction::new(25, 1))
+                .build()
+                .unwrap();
+        let mut bytes = vec![luma; 320 * 180];
+        bytes.extend(std::iter::repeat_n(128u8, 320 * 90));
+        gst::Sample::builder()
+            .buffer(&gst::Buffer::from_mut_slice(bytes))
+            .caps(&info.to_caps().unwrap())
+            .build()
+    }
+
+    /// 20 ms of a quiet tone, F32LE 48 kHz stereo.
+    fn sound() -> Vec<u8> {
+        (0..960)
+            .flat_map(|n| {
+                let v = (n as f32 * 0.05).sin() * 0.1;
+                [v.to_le_bytes(), v.to_le_bytes()].concat()
+            })
+            .collect()
+    }
+
+    /// Records 2 s (25p pictures, sound in 20 ms runs) into an ISO only.
+    fn record_iso(dir: &Path, split: Option<Duration>) -> Arc<RecordStats> {
+        let recorder = Recorder::start(
+            "iso",
+            RecordSettings {
+                folder: None,
+                kbps: 4_000,
+                keep: None,
+                iso: Some(IsoSettings {
+                    location: dir.join("Caméra 1 %03d.mkv"),
+                    split,
+                }),
+            },
+        )
+        .unwrap();
+        let tap = recorder.tap();
+        let base = 5_000_000_000u64;
+        for n in 0..100u64 {
+            let at = base + n * 20_000_000;
+            if n % 2 == 0 {
+                tap.offer(&picture((n % 200) as u8), at);
+            }
+            tap.offer_sound(at, &sound());
+            // In real time, as an input hands them over.
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let stats = recorder.stats();
+        recorder.finish();
+        stats
+    }
+
+    fn files(dir: &Path) -> Vec<PathBuf> {
+        let mut files: Vec<PathBuf> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .collect();
+        files.sort();
+        files
+    }
+
+    /// F1, Q7: the ISO is an MKV with every picture and the sound, the pictures not encoded
+    /// again; « a new file every » cuts it in parts.
+    #[test]
+    fn the_iso_is_an_mkv_with_its_sound() {
+        init();
+        let dir = folder("iso");
+        let stats = record_iso(&dir, None);
+        assert_eq!(stats.failure(), None);
+        assert_eq!(stats.dropped.load(Ordering::Relaxed), 0);
+        assert_eq!(stats.sound_dropped.load(Ordering::Relaxed), 0);
+        let written = files(&dir);
+        assert_eq!(written.len(), 1, "{written:?}");
+        assert!(written[0].ends_with("Caméra 1 000.mkv"), "{written:?}");
+        let (back, error) = crate::output::tests::read_back(&written[0]);
+        assert_eq!(error, None);
+        assert_eq!(back.video.len(), 50, "every picture");
+        assert!(
+            back.audio_samples.abs_diff(96_000) <= 2_048,
+            "2 s of sound: {} samples",
+            back.audio_samples
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let dir = folder("iso-split");
+        let stats = record_iso(&dir, Some(Duration::from_millis(500)));
+        assert_eq!(stats.failure(), None);
+        let parts = files(&dir);
+        assert!(parts.len() >= 3, "a part every 0.5 s: {parts:?}");
+        let pictures: usize = parts
+            .iter()
+            .map(|p| crate::output::tests::read_back(p).0.video.len())
+            .sum();
+        assert_eq!(pictures, 50, "no picture lost between the parts");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// ADR 0015 (F2): a live input recorded all-intra: every picture it hands its feed is in
     /// the recording, dated on the shared clock, and each one decodes alone.
     #[test]
@@ -427,9 +677,10 @@ mod tests {
         let recorder = Recorder::start(
             "test",
             RecordSettings {
-                folder: dir.clone(),
+                folder: Some(dir.clone()),
                 kbps: 8_000,
                 keep: None,
+                iso: None,
             },
         )
         .unwrap();
