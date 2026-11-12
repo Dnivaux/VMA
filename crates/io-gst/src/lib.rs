@@ -27,6 +27,7 @@ mod output;
 mod outputs;
 mod pipeline;
 pub mod record;
+mod replay_player;
 mod runtime;
 pub mod still;
 mod stinger;

@@ -87,7 +87,7 @@ Variables wgpu utiles : `WGPU_BACKEND=vulkan|dx12` ; `WGPU_ADAPTER_NAME=Intel` (
 | `crates/io-html` | Input HTML (ADR 0009, `docs/specs/io-html.md`) : `HtmlHost` (lance et surveille `vma-html`, TCP local + jeton, images par mémoire partagée), sans CEF ; binaire `vma-html` (feature `cef`, hors des builds ordinaires : mode service et sonde `--vma-probe`). |
 | `crates/project` | Fichier projet (ADR 0013) : `ProjectSnapshot` de `vma-engine` en JSON versionné (`.vma`), chemins des médias relatifs et absolus, clés de stream à part (`secrets.json`), écriture atomique, autosauvegarde (thread `vma-project`, 5 fichiers tournants). |
 | `crates/api` | API de contrôle (ADR 0012) sur un runtime tokio à part : native (`api-native.md` : `POST /commands`, `GET /state`, `/tally`, WebSocket `/events`, 127.0.0.1:8090) ; compat à venir (étapes 6–7). Tests contre `vma_engine::headless` (moteur sans rendu). |
-| `crates/replay` | Squelette vide (Phase 6). |
+| `crates/replay` | Replay (Phase 6, ADR 0015–0016), sans GStreamer : `segments` (enregistrement par input sur disque : segments de 2 s + index horodaté sur l'horloge partagée, lisible pendant l'écriture, effacement des plus anciens), `player` (`Playhead` : image montrée à chaque tick, en images de la caméra, vitesse, arrière, pas à pas, angle). L'enregistreur (`io-gst::record`) et le lecteur (`io-gst::replay_player`) sont dans `io-gst` ; l'état et les commandes dans `engine::replay`. |
 | `docs/adr/` | Décisions d'architecture (une par fichier, à faire valider). 0001 archi (acceptée avec amendements), 0002 décisions produit. |
 | `docs/specs/` | Une spec par module, avec critères d'acceptation. |
 | `docs/manual-tests/` | Checklists de tests sur matériel réel. |

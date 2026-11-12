@@ -16,6 +16,60 @@ pub const MAX_REPLAY_CAMERAS: usize = 8;
 /// Longest « −n s » event.
 pub const MAX_MARK_SECONDS: u32 = 120;
 
+/// A replay channel (A now, B later: `phase-6.md` Q5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum ReplayChannel {
+    A,
+}
+
+impl std::fmt::Display for ReplayChannel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::A => "A",
+        })
+    }
+}
+
+/// What a replay channel plays (ADR 0016 § 2): set by the commands; the position itself
+/// lives in the player (`vma-io`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PlayerState {
+    pub event: Option<u32>,
+    pub speed: u8,
+    pub reverse: bool,
+    pub playing: bool,
+    /// +1 whenever the player must start the event again.
+    pub cue: u64,
+}
+
+impl Default for PlayerState {
+    fn default() -> Self {
+        Self {
+            event: None,
+            speed: vma_replay::MAX_SPEED,
+            reverse: false,
+            playing: false,
+            cue: 0,
+        }
+    }
+}
+
+/// What the player of a replay input plays.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlayerPlan {
+    /// The segments of the angle played (`None`: nothing to play).
+    pub angle: Option<PathBuf>,
+    /// The event, on the shared clock.
+    pub in_ns: u64,
+    pub out_ns: u64,
+    pub speed: u8,
+    pub reverse: bool,
+    pub playing: bool,
+    /// A new value: start the event again (its end in reverse).
+    pub cue: u64,
+}
+
 /// What an input's recorder does (`vma-io` turns it into its encoding pipeline).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RecordPlan {
@@ -103,6 +157,8 @@ pub struct ReplayState {
     pub marking: Option<u64>,
     /// Recorders stopped on an error since the recordings were started.
     pub failures: Vec<RecordFailure>,
+    /// The replay channel A.
+    pub player: PlayerState,
     next_event: u32,
 }
 
@@ -120,6 +176,7 @@ impl Default for ReplayState {
             events: Vec::new(),
             marking: None,
             failures: Vec::new(),
+            player: PlayerState::default(),
             next_event: 1,
         }
     }
@@ -375,6 +432,92 @@ impl State {
         Ok(Change::changed())
     }
 
+    /// The input of replay channel `channel`.
+    pub fn replay_input(&self, channel: ReplayChannel) -> Option<InputId> {
+        self.inputs
+            .iter()
+            .find(|i| matches!(i.spec, InputSpec::Replay { channel: c } if c == channel))
+            .map(|i| i.id)
+    }
+
+    /// The folder of the recording of `camera` in the session.
+    fn camera_folder(&self, camera: InputId) -> Option<PathBuf> {
+        let folder = self.replay.folder.as_ref()?;
+        Some(folder.join(self.input(camera)?.key.to_string()))
+    }
+
+    /// What the player of channel A plays now.
+    fn player_plan(&self) -> PlayerPlan {
+        let player = &self.replay.player;
+        let event = player
+            .event
+            .and_then(|id| self.replay.events.iter().find(|e| e.id == id));
+        let angle = event
+            .and_then(|e| e.angle)
+            .filter(|a| self.replay.cameras.contains(a))
+            .or_else(|| self.replay.cameras.first().copied())
+            .and_then(|camera| self.camera_folder(camera));
+        PlayerPlan {
+            angle,
+            in_ns: event.map_or(0, |e| e.in_ns),
+            out_ns: event.map_or(0, |e| e.out_ns),
+            speed: player.speed,
+            reverse: player.reverse,
+            playing: player.playing,
+            cue: player.cue,
+        }
+    }
+
+    fn player_change(&self) -> Result<Change, Rejection> {
+        let input = self
+            .replay_input(ReplayChannel::A)
+            .ok_or(Rejection::NoReplayInput(ReplayChannel::A))?;
+        let mut change = Change::changed();
+        change.io.push(IoRequest::ReplayPlayer {
+            input,
+            plan: self.player_plan(),
+        });
+        Ok(change)
+    }
+
+    pub(crate) fn play_event(&mut self, id: Option<u32>) -> Result<Change, Rejection> {
+        self.replay_input(ReplayChannel::A)
+            .ok_or(Rejection::NoReplayInput(ReplayChannel::A))?;
+        let event = match id {
+            Some(id) => self
+                .replay
+                .events
+                .iter()
+                .find(|e| e.id == id)
+                .ok_or(Rejection::UnknownEvent(id))?,
+            None => self.replay.events.last().ok_or(Rejection::NoEvent)?,
+        };
+        let id = event.id;
+        let player = &mut self.replay.player;
+        player.event = Some(id);
+        player.playing = true;
+        player.cue += 1;
+        self.player_change()
+    }
+
+    pub(crate) fn player(
+        &mut self,
+        set: impl FnOnce(&mut PlayerState),
+    ) -> Result<Change, Rejection> {
+        self.replay_input(ReplayChannel::A)
+            .ok_or(Rejection::NoReplayInput(ReplayChannel::A))?;
+        set(&mut self.replay.player);
+        self.player_change()
+    }
+
+    pub(crate) fn step_player(&mut self, frames: i32) -> Result<Change, Rejection> {
+        let mut change = self.player(|p| p.playing = false)?;
+        if let Some(input) = self.replay_input(ReplayChannel::A) {
+            change.io.push(IoRequest::ReplayStep { input, frames });
+        }
+        Ok(change)
+    }
+
     /// An input removed: no more a camera nor an ISO input (its recorder stops with it).
     pub(crate) fn forget_recorded(&mut self, input: InputId) {
         self.replay.cameras.retain(|c| *c != input);
@@ -595,5 +738,113 @@ mod tests {
             s.apply(&Command::DeleteReplayEvent { id: 2 }),
             Err(Rejection::UnknownEvent(2))
         );
+    }
+
+    fn players(io: &[IoRequest]) -> Vec<PlayerPlan> {
+        io.iter()
+            .filter_map(|r| match r {
+                IoRequest::ReplayPlayer { plan, .. } => Some(plan.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// ADR 0016: one replay input per channel; « play » cues the last event (or the one
+    /// asked for) from its angle, the player keeps its speed and direction; steps pause it.
+    #[test]
+    fn the_replay_channel_plays_the_events() {
+        let mut s = show();
+        let (a, b) = (s.inputs[0].id, s.inputs[1].id);
+        assert_eq!(
+            s.apply(&Command::ReplayPlayEvent { id: None }),
+            Err(Rejection::NoReplayInput(ReplayChannel::A))
+        );
+        let replay = InputSpec::Replay {
+            channel: ReplayChannel::A,
+        };
+        let io = s
+            .apply(&Command::AddInput {
+                spec: replay.clone(),
+                name: None,
+            })
+            .unwrap();
+        let input = s.replay_input(ReplayChannel::A).unwrap();
+        assert_eq!(s.input(input).unwrap().name, "Replay A");
+        assert!(
+            io.iter()
+                .any(|r| matches!(r, IoRequest::Open { input: i, .. } if *i == input))
+        );
+        assert_eq!(
+            s.apply(&Command::AddInput {
+                spec: replay,
+                name: None,
+            }),
+            Err(Rejection::ReplayChannelTaken(ReplayChannel::A))
+        );
+        assert_eq!(
+            s.apply(&Command::ReplayPlayEvent { id: None }),
+            Err(Rejection::NoEvent)
+        );
+        s.apply(&Command::SetReplaySession {
+            folder: Some("/ssd".into()),
+            keep_minutes: 60,
+            kbps: 50_000,
+        })
+        .unwrap();
+        s.apply(&Command::SetReplayCameras { inputs: vec![a, b] })
+            .unwrap();
+        let sec = 1_000_000_000u64;
+        for at in [100, 200] {
+            s.apply(&Command::ReplayMark {
+                mark: Mark::Last { seconds: 5 },
+                at_ns: Some(at * sec),
+            })
+            .unwrap();
+        }
+        s.apply(&Command::EditReplayEvent {
+            id: 1,
+            angle: Some(b),
+            speed: None,
+            comment: String::new(),
+        })
+        .unwrap();
+        s.apply(&Command::ReplaySpeed { percent: 50 }).unwrap();
+        let plan = players(&s.apply(&Command::ReplayPlayEvent { id: None }).unwrap()).remove(0);
+        let (key_a, key_b) = (s.inputs[0].key.to_string(), s.inputs[1].key.to_string());
+        assert_eq!(
+            plan,
+            PlayerPlan {
+                angle: Some(PathBuf::from("/ssd").join(&key_a)),
+                in_ns: 195 * sec,
+                out_ns: 200 * sec,
+                speed: 50,
+                reverse: false,
+                playing: true,
+                cue: 1,
+            },
+            "the last event, from the first camera"
+        );
+        let plan = players(&s.apply(&Command::ReplayPlayEvent { id: Some(1) }).unwrap()).remove(0);
+        assert_eq!(
+            plan.angle,
+            Some(PathBuf::from("/ssd").join(&key_b)),
+            "its angle"
+        );
+        assert_eq!((plan.in_ns, plan.cue), (95 * sec, 2));
+
+        let plan = players(&s.apply(&Command::ReplayReverse { on: true }).unwrap()).remove(0);
+        assert_eq!((plan.reverse, plan.cue), (true, 2), "no new cue");
+        assert_eq!(
+            s.apply(&Command::ReplaySpeed { percent: 101 }),
+            Err(Rejection::ReplaySettings)
+        );
+        let io = s.apply(&Command::ReplayStep { frames: -1 }).unwrap();
+        assert!(!players(&io)[0].playing, "a step pauses");
+        assert!(
+            io.iter()
+                .any(|r| matches!(r, IoRequest::ReplayStep { frames: -1, .. }))
+        );
+        let plan = players(&s.apply(&Command::ReplayPlay).unwrap()).remove(0);
+        assert!(plan.playing && plan.reverse && plan.speed == 50);
     }
 }

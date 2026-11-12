@@ -998,6 +998,94 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    /// F4 through the engine: a camera recorded for the replay, « −2 s » marked, the event
+    /// played at 50 % in « Replay A »: its feed gets a new picture every other tick, the
+    /// last pictures of the event (recorded a moment before) included.
+    #[test]
+    fn an_event_plays_in_replay_a() {
+        let (mut engine, _device) = spawn_engine_with(EngineConfig {
+            rate: FrameRate::FPS_50,
+            stream_clock: Some(crate::stream_clock()),
+            ..EngineConfig::default()
+        });
+        let io = IoRuntime::start(engine.take_io_port().unwrap()).unwrap();
+        let state = engine.state();
+        let spec = sync_source(FrameRate::FPS_50, 0, 0);
+        send(
+            &engine,
+            Command::AddInput {
+                spec: spec.clone(),
+                name: None,
+            },
+        );
+        let camera = wait_live(&state, &spec);
+        let dir = folder("replay-a");
+        for command in [
+            Command::SetReplaySession {
+                folder: Some(dir.clone()),
+                keep_minutes: 10,
+                kbps: 8_000,
+            },
+            Command::SetReplayCameras {
+                inputs: vec![camera],
+            },
+            Command::StartReplayRecording,
+        ] {
+            send(&engine, command);
+        }
+        std::thread::sleep(Duration::from_secs(3));
+        let replay = vma_engine::InputSpec::Replay {
+            channel: vma_engine::ReplayChannel::A,
+        };
+        for command in [
+            Command::AddInput {
+                spec: replay.clone(),
+                name: None,
+            },
+            Command::ReplayMark {
+                mark: vma_engine::Mark::Last { seconds: 2 },
+                at_ns: None,
+            },
+            Command::ReplaySpeed { percent: 50 },
+            Command::ReplayPlayEvent { id: None },
+        ] {
+            send(&engine, command);
+        }
+        let input = wait_live(&state, &replay);
+        let received = || {
+            engine
+                .input_stats()
+                .load()
+                .iter()
+                .find(|(id, _)| *id == input)
+                .map(|(_, f)| f.snapshot())
+                .unwrap()
+        };
+        let start = received();
+        std::thread::sleep(Duration::from_secs(2));
+        let mid = received();
+        // 2 s at 50 %: 100 ticks, 50 pictures.
+        let pictures = mid.received - start.received;
+        assert!(
+            pictures.abs_diff(50) <= 3,
+            "{pictures} pictures in 2 s: {mid:?}"
+        );
+        assert_eq!(mid.upload_busy, 0, "{mid:?}");
+        // The event's 100 pictures in 4 s: then it holds its last one.
+        std::thread::sleep(Duration::from_millis(2_400));
+        let end = received();
+        let total = end.received;
+        std::thread::sleep(Duration::from_millis(500));
+        assert_eq!(received().received, total, "held on the last picture");
+        assert!(
+            total.abs_diff(100) <= 2,
+            "the whole event: {total} pictures"
+        );
+        drop(engine);
+        drop(io);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     /// F2: a recorder that cannot write (here its folder is under a file, as a full disk would
     /// stop it) is reported in the state; the input stays live, the show goes on.
     #[test]

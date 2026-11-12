@@ -298,6 +298,27 @@ pub enum Command {
     DeleteReplayEvent {
         id: u32,
     },
+    /// Plays an event in the replay channel A from its start (`id`: `None` = the last one),
+    /// at the channel's speed and direction (ADR 0016).
+    ReplayPlayEvent {
+        #[serde(default)]
+        id: Option<u32>,
+    },
+    /// Plays on from the picture shown.
+    ReplayPlay,
+    ReplayPause,
+    /// The channel's speed, percent (0 to 100).
+    ReplaySpeed {
+        percent: u8,
+    },
+    /// Plays backwards (or forwards again).
+    ReplayReverse {
+        on: bool,
+    },
+    /// Pauses and moves `frames` pictures (back if negative).
+    ReplayStep {
+        frames: i32,
+    },
     /// The MultiView's layout and titles (ADR 0014).
     SetMultiview {
         settings: MultiviewSettings,
@@ -588,6 +609,10 @@ pub enum InputSpec {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         css: Option<String>,
     },
+    /// A replay channel (Phase 6, ADR 0016): plays the events from the recorded cameras.
+    Replay {
+        channel: crate::replay::ReplayChannel,
+    },
 }
 
 /// Longest JSON, script or style sheet sent to an HTML input, in bytes.
@@ -707,6 +732,7 @@ impl InputSpec {
             Self::Srt(_) => InputKind::Srt,
             Self::Ndi { .. } => InputKind::Ndi,
             Self::Html { .. } => InputKind::Html,
+            Self::Replay { .. } => InputKind::Replay,
         }
     }
 
@@ -771,6 +797,7 @@ impl InputSpec {
                 .unwrap_or(name)
                 .to_owned(),
             Self::Html { url, .. } => html_name(url.expose()),
+            Self::Replay { channel } => format!("Replay {channel}"),
         }
     }
 }

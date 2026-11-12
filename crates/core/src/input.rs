@@ -23,6 +23,8 @@ pub enum InputKind {
     AudioDevice,
     /// Web page rendered off screen, with alpha (ADR 0009).
     Html,
+    /// A replay channel: plays the recorded cameras (ADR 0016).
+    Replay,
 }
 
 impl InputKind {

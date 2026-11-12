@@ -1,6 +1,6 @@
 [package]
 name = "vma-replay"
-description = "Instant replay (ADR 0015, 0016): per-input recordings on disk (segments and index), events, the player's timing."
+description = "Instant replay (ADR 0015, 0016): per-input recordings on disk (segments and index), the player's timing."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,6 +9,7 @@ publish.workspace = true
 
 [dependencies]
 thiserror.workspace = true
+vma-core.workspace = true
 tracing.workspace = true
 
 [lints]

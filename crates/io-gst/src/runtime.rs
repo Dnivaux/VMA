@@ -290,6 +290,7 @@ impl IoRuntime {
             infos: Arc::clone(&infos),
             recorders: Vec::new(),
             finishing: Vec::new(),
+            players: Vec::new(),
         };
         let thread_stop = Arc::clone(&stop);
         let thread = std::thread::Builder::new()
@@ -405,6 +406,8 @@ struct Worker {
     recorders: Vec<(InputId, crate::record::Recorder)>,
     /// Recorders finishing their files, waited for when `vma-io` stops.
     finishing: Vec<std::thread::JoinHandle<()>>,
+    /// One player per replay input (ADR 0016).
+    players: Vec<(InputId, crate::replay_player::ReplayPlayer)>,
 }
 
 impl Worker {
@@ -490,6 +493,7 @@ impl Worker {
             IoRequest::Open { input, spec } => self.open(input, &spec),
             IoRequest::Close { input } => {
                 self.record(input, None);
+                self.players.retain(|(id, _)| *id != input);
                 self.html.close(input);
                 self.pipelines.retain(|p| p.input != input);
                 self.audio_inputs.retain(|p| p.input != input);
@@ -527,6 +531,17 @@ impl Worker {
                 self.html.page(input, action);
             }
             IoRequest::Record { input, plan } => self.record(input, plan),
+            IoRequest::ReplayPlayer { input, plan } => {
+                match self.players.iter().find(|(id, _)| *id == input) {
+                    Some((_, player)) => player.plan(plan),
+                    None => tracing::debug!(%input, "replay plan for an input without a player"),
+                }
+            }
+            IoRequest::ReplayStep { input, frames } => {
+                if let Some((_, player)) = self.players.iter().find(|(id, _)| *id == input) {
+                    player.step(frames);
+                }
+            }
             IoRequest::SetMonitor { device } => match &mut self.headphones {
                 Some(headphones) => headphones.set_device(device),
                 None => tracing::debug!("headphones off: device not played"),
@@ -759,6 +774,18 @@ impl Worker {
                 // Refused with its reason, no new attempt (ADR 0008 § 3).
                 NdiStatus::Unavailable { reason } => lost(reason.clone()),
             },
+            InputSpec::Replay { channel } => {
+                tracing::info!(%input, %channel, "opening replay channel");
+                match crate::replay_player::ReplayPlayer::start(
+                    input,
+                    self.port.feeds.clone(),
+                    self.port.ticks,
+                    crate::stream_clock(),
+                ) {
+                    Ok(player) => self.players.push((input, player)),
+                    Err(e) => lost(e.to_string()),
+                }
+            }
             InputSpec::Html { url, size, css } => {
                 let events = &self.port.events;
                 self.html

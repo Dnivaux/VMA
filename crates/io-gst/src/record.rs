@@ -515,7 +515,7 @@ pub fn input_folder(session: &Path, input_key: &str) -> PathBuf {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::pipeline::GstInput;
     use crate::pipeline::tests::{FakeFeeds, init, live};
@@ -568,7 +568,7 @@ mod tests {
     }
 
     /// A grey NV12 picture of 320 × 180 as an input hands it over.
-    fn picture(luma: u8) -> gst::Sample {
+    pub(crate) fn picture(luma: u8) -> gst::Sample {
         let info =
             gstreamer_video::VideoInfo::builder(gstreamer_video::VideoFormat::Nv12, 320, 180)
                 .fps(gst::Fraction::new(25, 1))

@@ -62,8 +62,8 @@ pub use plan::{PlanFtb, PlanOverlay, PlanProgress, PlanReader, PlanTransition, R
 pub use project::{LoadProblem, ProjectInput, ProjectOutput, ProjectSnapshot, ProjectStinger};
 pub use render::{EngineConfig, EngineError, FrameReader, IoPort, Readers, RenderEngine};
 pub use replay::{
-    IsoPlan, IsoState, MAX_MARK_SECONDS, MAX_REPLAY_CAMERAS, Mark, RecordFailure, RecordPlan,
-    ReplayEvent, ReplayState,
+    IsoPlan, IsoState, MAX_MARK_SECONDS, MAX_REPLAY_CAMERAS, Mark, PlayerPlan, PlayerState,
+    RecordFailure, RecordPlan, ReplayChannel, ReplayEvent, ReplayState,
 };
 pub use sequence::{
     RING as STINGER_RING, Refused, SequenceStats, SequenceStatsSnapshot, StingerSink,

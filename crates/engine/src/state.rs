@@ -445,6 +445,12 @@ pub enum Rejection {
     NoMarkIn,
     #[error("unknown replay event {0}")]
     UnknownEvent(u32),
+    #[error("no replay event")]
+    NoEvent,
+    #[error("no replay input (channel {0})")]
+    NoReplayInput(crate::replay::ReplayChannel),
+    #[error("there is already a replay input for channel {0}")]
+    ReplayChannelTaken(crate::replay::ReplayChannel),
 }
 
 /// What [`State::load_project`] gathers while it applies its commands.
@@ -538,6 +544,16 @@ pub enum IoRequest {
     Record {
         input: InputId,
         plan: Option<crate::replay::RecordPlan>,
+    },
+    /// What the player of a replay input plays from now on.
+    ReplayPlayer {
+        input: InputId,
+        plan: crate::replay::PlayerPlan,
+    },
+    /// The player of a replay input, paused, moves `frames` pictures.
+    ReplayStep {
+        input: InputId,
+        frames: i32,
     },
 }
 
@@ -1520,6 +1536,17 @@ impl State {
                 comment,
             } => self.edit_event(*id, *angle, *speed, comment),
             Command::DeleteReplayEvent { id } => self.delete_event(*id),
+            Command::ReplayPlayEvent { id } => self.play_event(*id),
+            Command::ReplayPlay => self.player(|p| p.playing = true),
+            Command::ReplayPause => self.player(|p| p.playing = false),
+            Command::ReplaySpeed { percent } => {
+                if *percent > vma_replay::MAX_SPEED {
+                    return Err(Rejection::ReplaySettings);
+                }
+                self.player(|p| p.speed = *percent)
+            }
+            Command::ReplayReverse { on } => self.player(|p| p.reverse = *on),
+            Command::ReplayStep { frames } => self.step_player(*frames),
             Command::SetMultiview { settings } => {
                 if !settings.validate() {
                     return Err(Rejection::MultiviewSlots);
@@ -1748,6 +1775,11 @@ impl State {
             return Err(Rejection::TooManyInputs);
         }
         spec.validate().map_err(Rejection::InvalidInput)?;
+        if let InputSpec::Replay { channel } = spec
+            && self.replay_input(*channel).is_some()
+        {
+            return Err(Rejection::ReplayChannelTaken(*channel));
+        }
         let name = match name {
             Some(n) => valid_name(n)?,
             None => spec.default_name(),

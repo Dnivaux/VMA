@@ -5227,6 +5227,7 @@ dependencies = [
  "vma-clock",
  "vma-compositor",
  "vma-core",
+ "vma-replay",
  "wgpu",
 ]
 
@@ -5298,6 +5299,7 @@ version = "0.0.1"
 dependencies = [
  "thiserror 2.0.21",
  "tracing",
+ "vma-core",
 ]
 
 [[package]]

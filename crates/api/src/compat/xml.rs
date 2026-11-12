@@ -46,6 +46,7 @@ fn kind(spec: &InputSpec) -> &'static str {
         InputSpec::Srt(_) => "SRT",
         InputSpec::Ndi { .. } => "NDI",
         InputSpec::Html { .. } => "Browser",
+        InputSpec::Replay { .. } => "Replay",
     }
 }
 

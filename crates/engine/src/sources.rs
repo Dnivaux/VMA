@@ -60,7 +60,8 @@ fn generated_source(spec: &InputSpec) -> Option<SourceKey> {
         | InputSpec::AudioDevice { .. }
         | InputSpec::Srt(_)
         | InputSpec::Ndi { .. }
-        | InputSpec::Html { .. } => None,
+        | InputSpec::Html { .. }
+        | InputSpec::Replay { .. } => None,
     }
 }
 
