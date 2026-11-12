@@ -609,10 +609,6 @@ impl GstInput {
     }
 
     /// Records its pictures from now on (`None`: no more).
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "driven by the replay commands, Phase 6 step 4")
-    )]
     pub(crate) fn set_recorder(&self, tap: Option<crate::record::RecordTap>) {
         self.shared.record.store(tap.map(Arc::new));
     }

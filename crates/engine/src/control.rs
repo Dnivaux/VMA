@@ -266,6 +266,8 @@ pub enum IoEvent {
         run: u64,
         reason: String,
     },
+    /// The recorder of `input` stopped on an error (a full disk): the show goes on.
+    RecordFailed { input: InputId, reason: String },
 }
 
 /// Requests from `vma-control` to `vma-io`, in order.
@@ -368,6 +370,8 @@ pub(crate) struct Controller {
     device_lost_grace: Duration,
     device_lost_since: Option<Instant>,
     grace_over: bool,
+    /// The pipelines' time: a replay mark is stamped with it (Phase 6).
+    stream_clock: vma_clock::StreamClock,
 }
 
 impl Controller {
@@ -404,12 +408,20 @@ impl Controller {
                 device_lost_grace: crate::EngineConfig::DEFAULT_DEVICE_LOST_GRACE,
                 device_lost_since: None,
                 grace_over: false,
+                stream_clock: vma_clock::StreamClock::new(Instant::now(), 0),
             },
             reader,
         )
     }
 
-    pub(crate) fn handle(&mut self, envelope: Envelope) {
+    pub(crate) fn handle(&mut self, mut envelope: Envelope) {
+        // A mark is the instant it arrives, written in the command: the journal replays it.
+        if let Command::ReplayMark {
+            at_ns: at @ None, ..
+        } = &mut envelope.command
+        {
+            *at = Some(self.stream_clock.now());
+        }
         let before = self.state.version;
         let result = self.state.apply(&envelope.command);
         match &result {
@@ -463,6 +475,10 @@ impl Controller {
     pub(crate) fn set_multiview(&mut self, mut writer: MultiviewWriter) {
         writer.publish(&self.state);
         self.multiview = Some(writer);
+    }
+
+    pub(crate) fn set_stream_clock(&mut self, clock: vma_clock::StreamClock) {
+        self.stream_clock = clock;
     }
 
     pub(crate) fn set_device_lost_grace(&mut self, grace: Duration) {
@@ -553,6 +569,10 @@ impl Controller {
                     run,
                     reason,
                 });
+            }
+            IoEvent::RecordFailed { input, reason } => {
+                tracing::warn!(%input, %reason, "recording stopped");
+                self.event(Event::RecordFailed { input, reason });
             }
         }
     }
@@ -1108,6 +1128,34 @@ mod tests {
         });
         let replayed = replay(fresh, &text).unwrap();
         assert_eq!(replayed, *rig.reader.load());
+    }
+
+    /// F3: a mark is stamped with the instant it arrives, on the pipelines' clock; the
+    /// journal keeps that instant, so a replay gives the same events.
+    #[test]
+    fn replay_marks_are_stamped_and_replayed() {
+        let mut rig = Rig::new(FrameRate::FPS_50);
+        let epoch = Instant::now();
+        rig.controller
+            .set_stream_clock(vma_clock::StreamClock::new(epoch, 1_000_000_000_000));
+        rig.send(Command::ReplayMark {
+            mark: crate::replay::Mark::Last { seconds: 5 },
+            at_ns: None,
+        });
+        let after = Instant::now();
+        let events = rig.reader.load().replay.events.clone();
+        assert_eq!(events.len(), 1);
+        let out = events[0].out_ns;
+        let span = |i: Instant| 1_000_000_000_000 + i.duration_since(epoch).as_nanos() as u64;
+        assert!((1_000_000_000_000..=span(after)).contains(&out), "{out}");
+        assert_eq!(events[0].in_ns, out - 5_000_000_000);
+        let text = rig.journal_text();
+        assert!(text.contains(&format!(r#""at_ns":{out}"#)), "{text}");
+        let fresh = State::new(Format {
+            rate: FrameRate::FPS_50,
+            resolution: Resolution::HD_1080,
+        });
+        assert_eq!(replay(fresh, &text).unwrap(), *rig.reader.load());
     }
 
     /// Phase 5: a command sent with a reply learns its outcome once applied (the API answers

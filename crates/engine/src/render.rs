@@ -328,6 +328,7 @@ impl RenderEngine {
         controller.set_io(io_tx);
         controller.set_audio_plan(audio_plan_writer);
         controller.set_device_lost_grace(config.device_lost_grace);
+        controller.set_stream_clock(stream_clock);
         controller.set_multiview(MultiviewWriter::new(Arc::clone(&multiview))?);
         let input_stats = controller.input_stats();
         let timelines = Timelines::default();

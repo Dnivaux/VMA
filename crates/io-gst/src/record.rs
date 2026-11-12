@@ -398,7 +398,17 @@ fn start(
                     let Some(buffer) = sample.buffer() else {
                         return Ok(gst::FlowSuccess::Ok);
                     };
-                    let at_ns = buffer.pts().map_or(base_ns, |p| base_ns + p.nseconds());
+                    // In running time: an encoder may shift its timestamps (1000 h, for its
+                    // DTS) and its segment with them.
+                    let running = sample
+                        .segment()
+                        .and_then(|s| s.downcast_ref::<gst::ClockTime>())
+                        .zip(buffer.pts())
+                        .and_then(|(segment, pts)| segment.to_running_time(pts));
+                    let Some(running) = running else {
+                        return Ok(gst::FlowSuccess::Ok);
+                    };
+                    let at_ns = base_ns + running.nseconds();
                     let map = buffer.map_readable().map_err(|_| gst::FlowError::Error)?;
                     let result = writer
                         .lock()
@@ -687,6 +697,7 @@ mod tests {
         input.set_recorder(Some(recorder.tap()));
         std::thread::sleep(Duration::from_secs(2));
         input.set_recorder(None);
+        let stopped_ns = crate::stream_clock().now();
         let stats = recorder.stats();
         recorder.finish();
         eprintln!("encoder: {:?}", stats.encoder.lock().unwrap());
@@ -707,6 +718,12 @@ mod tests {
             entries.len()
         );
         assert_eq!(entries.len() as u64, offered);
+        // On the shared clock itself, whatever the encoder does with its timestamps.
+        let last = entries[entries.len() - 1].at_ns;
+        assert!(
+            last <= stopped_ns && stopped_ns - last < 300_000_000,
+            "last picture at {last}, stopped at {stopped_ns}"
+        );
         assert!(
             entries
                 .windows(2)

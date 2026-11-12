@@ -254,6 +254,50 @@ pub enum Command {
         input: InputId,
         key: InputKey,
     },
+    /// The replay's session (ADR 0015): folder (a dedicated SSD), time kept, bit rate.
+    /// Refused while the replay records.
+    SetReplaySession {
+        folder: Option<PathBuf>,
+        keep_minutes: u32,
+        kbps: u32,
+    },
+    /// The inputs recorded for the replay (8 at most; a camera, a file, a stream).
+    SetReplayCameras {
+        inputs: Vec<InputId>,
+    },
+    StartReplayRecording,
+    StopReplayRecording,
+    /// The ISO recordings (`phase-6.md` Q7): folder, inputs, a new file every *n* minutes.
+    /// Refused while they record.
+    SetIso {
+        folder: Option<PathBuf>,
+        inputs: Vec<InputId>,
+        #[serde(default)]
+        split_minutes: Option<u32>,
+    },
+    StartIso,
+    StopIso,
+    /// Marks an event (ADR 0016 § 4). `at_ns`: its instant on the shared clock, written by
+    /// `vma-control` when it receives the command (a sender leaves it out), so that the journal
+    /// replays the same events.
+    ReplayMark {
+        mark: crate::replay::Mark,
+        #[serde(default)]
+        at_ns: Option<u64>,
+    },
+    /// An event's angle (a replay camera), speed (percent) and comment.
+    EditReplayEvent {
+        id: u32,
+        #[serde(default)]
+        angle: Option<InputId>,
+        #[serde(default)]
+        speed: Option<u8>,
+        #[serde(default)]
+        comment: String,
+    },
+    DeleteReplayEvent {
+        id: u32,
+    },
     /// The MultiView's layout and titles (ADR 0014).
     SetMultiview {
         settings: MultiviewSettings,

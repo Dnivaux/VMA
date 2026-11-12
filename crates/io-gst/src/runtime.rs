@@ -61,6 +61,8 @@ pub(crate) struct PipelineSlot<F: Feeds> {
     /// Video file: what the operator asked for, applied again after a reconnection.
     playing: bool,
     looping: bool,
+    /// Its recorder, given again to the next pipeline after a reconnection (Phase 6).
+    record: Option<crate::record::RecordTap>,
 }
 
 impl<F: Feeds> PipelineSlot<F> {
@@ -74,7 +76,16 @@ impl<F: Feeds> PipelineSlot<F> {
             retry_at: now,
             playing: false,
             looping: false,
+            record: None,
         }
+    }
+
+    /// Records its pictures and sound from now on (`None`: no more).
+    pub(crate) fn set_recorder(&mut self, tap: Option<crate::record::RecordTap>) {
+        if let Some(running) = &self.running {
+            running.set_recorder(tap.clone());
+        }
+        self.record = tap;
     }
 
     /// Video file: play or pause (kept for the next pipeline if it is down).
@@ -129,6 +140,7 @@ impl<F: Feeds> PipelineSlot<F> {
                     Ok(mut running) => {
                         running.set_looping(self.looping);
                         running.set_playing(self.playing);
+                        running.set_recorder(self.record.clone());
                         self.running = Some(running);
                     }
                     Err(e) => self.lost(now, e.to_string(), emit),
@@ -276,6 +288,8 @@ impl IoRuntime {
             headphones,
             devices_at: Instant::now(),
             infos: Arc::clone(&infos),
+            recorders: Vec::new(),
+            finishing: Vec::new(),
         };
         let thread_stop = Arc::clone(&stop);
         let thread = std::thread::Builder::new()
@@ -387,6 +401,10 @@ struct Worker {
     headphones: Option<Headphones>,
     devices_at: Instant,
     infos: Infos,
+    /// One recorder per recorded input (Phase 6, ADR 0015).
+    recorders: Vec<(InputId, crate::record::Recorder)>,
+    /// Recorders finishing their files, waited for when `vma-io` stops.
+    finishing: Vec<std::thread::JoinHandle<()>>,
 }
 
 impl Worker {
@@ -428,6 +446,7 @@ impl Worker {
                 headphones.tick(now);
             }
             self.outputs.tick(now, &mut |e| send(events, e));
+            self.watch_recorders();
             if now >= self.timelines_at {
                 self.timelines_at = now + TIMELINE_PERIOD;
                 self.publish_timelines();
@@ -454,6 +473,15 @@ impl Worker {
         self.monitor = None;
         self.audio_monitor = None;
         self.ndi_monitor = None;
+        // Recordings running at exit are finished, as the outputs are.
+        for (_, recorder) in self.recorders.drain(..) {
+            recorder.finish();
+        }
+        for finishing in self.finishing.drain(..) {
+            if finishing.join().is_err() {
+                tracing::error!("a recorder panicked while finishing");
+            }
+        }
         tracing::info!("io thread stopped");
     }
 
@@ -461,6 +489,7 @@ impl Worker {
         match request {
             IoRequest::Open { input, spec } => self.open(input, &spec),
             IoRequest::Close { input } => {
+                self.record(input, None);
                 self.html.close(input);
                 self.pipelines.retain(|p| p.input != input);
                 self.audio_inputs.retain(|p| p.input != input);
@@ -497,10 +526,89 @@ impl Worker {
                 };
                 self.html.page(input, action);
             }
+            IoRequest::Record { input, plan } => self.record(input, plan),
             IoRequest::SetMonitor { device } => match &mut self.headphones {
                 Some(headphones) => headphones.set_device(device),
                 None => tracing::debug!("headphones off: device not played"),
             },
+        }
+    }
+
+    /// Replaces the recorder of `input` (`None`: stops it). A recorder finishes its files on
+    /// a thread of its own: `vma-io` never waits for an encoder.
+    fn record(&mut self, input: InputId, plan: Option<vma_engine::RecordPlan>) {
+        let slot = self.pipelines.iter_mut().find(|p| p.input == input);
+        if let Some(slot) = slot {
+            slot.set_recorder(None);
+        }
+        if let Some(pos) = self.recorders.iter().position(|(id, _)| *id == input) {
+            let (_, old) = self.recorders.swap_remove(pos);
+            self.finish_aside(old);
+        }
+        let Some(plan) = plan else {
+            return;
+        };
+        let Some(slot) = self.pipelines.iter_mut().find(|p| p.input == input) else {
+            tracing::debug!(%input, "recording an input without a pipeline");
+            return;
+        };
+        let minute = |m: u32| Duration::from_secs(u64::from(m) * 60);
+        let settings = crate::record::RecordSettings {
+            folder: plan.segments,
+            kbps: plan.kbps,
+            keep: Some(minute(plan.keep_minutes)),
+            iso: plan.iso.map(|iso| crate::record::IsoSettings {
+                location: iso.folder.join(format!(
+                    "{} {} %03d.mkv",
+                    iso.name,
+                    crate::outputs::local_stamp()
+                )),
+                split: iso.split_minutes.map(minute),
+            }),
+        };
+        match crate::record::Recorder::start(&input.to_string(), settings) {
+            Ok(recorder) => {
+                slot.set_recorder(Some(recorder.tap()));
+                self.recorders.push((input, recorder));
+            }
+            Err(e) => send(
+                &self.port.events,
+                IoEvent::RecordFailed {
+                    input,
+                    reason: e.to_string(),
+                },
+            ),
+        }
+    }
+
+    /// Lets a recorder finish its files away from `vma-io`.
+    fn finish_aside(&mut self, recorder: crate::record::Recorder) {
+        self.finishing.retain(|t| !t.is_finished());
+        let spawned = std::thread::Builder::new()
+            .name("vma-record-end".into())
+            .spawn(move || recorder.finish());
+        match spawned {
+            Ok(thread) => self.finishing.push(thread),
+            Err(e) => tracing::warn!(error = %e, "recorder finished on vma-io"),
+        }
+    }
+
+    /// A recorder stopped on an error (a full disk): reported once, then removed.
+    fn watch_recorders(&mut self) {
+        let failed: Vec<(InputId, String)> = self
+            .recorders
+            .iter()
+            .filter_map(|(input, r)| r.stats().failure().map(|reason| (*input, reason)))
+            .collect();
+        for (input, reason) in failed {
+            send(&self.port.events, IoEvent::RecordFailed { input, reason });
+            if let Some(slot) = self.pipelines.iter_mut().find(|p| p.input == input) {
+                slot.set_recorder(None);
+            }
+            if let Some(pos) = self.recorders.iter().position(|(id, _)| *id == input) {
+                let (_, recorder) = self.recorders.swap_remove(pos);
+                self.finish_aside(recorder);
+            }
         }
     }
 

@@ -76,7 +76,7 @@ pub(crate) fn record_path(folder: &Path, stamp: &str, extension: &str) -> Option
 }
 
 /// Local date and time as file names carry it.
-fn local_stamp() -> String {
+pub(crate) fn local_stamp() -> String {
     glib::DateTime::now_local()
         .and_then(|now| now.format("%Y-%m-%d %H-%M-%S"))
         .map(|s| s.to_string())
@@ -884,6 +884,172 @@ mod tests {
         // Matroska remains.
         assert!(sync.worst_ns().unwrap() <= 2 * MS as i64, "{sync:?}");
         assert_eq!(sync.video_gaps, 0, "{sync:?}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The input of `spec`, once its pictures flow.
+    fn wait_live(state: &StateReader, spec: &vma_engine::InputSpec) -> vma_core::InputId {
+        let end = Instant::now() + Duration::from_secs(10);
+        loop {
+            let live = state.load().inputs.iter().find_map(|i| {
+                (i.spec == *spec && matches!(i.status, vma_engine::InputStatus::Live { .. }))
+                    .then_some(i.id)
+            });
+            match live {
+                Some(id) => return id,
+                None if Instant::now() > end => panic!("not live: {:?}", state.load().inputs),
+                None => std::thread::sleep(Duration::from_millis(10)),
+            }
+        }
+    }
+
+    /// F1, F2, F3 through the commands: a live source with its sound recorded for the replay
+    /// and as an ISO by the same recorder; a « −1 s » mark falls on the recorded pictures (one
+    /// clock); stopped, the ISO is finished and readable with its sound.
+    #[test]
+    fn an_input_is_recorded_for_the_replay_and_as_iso_through_the_commands() {
+        let (mut engine, _device) = spawn_engine_with(EngineConfig {
+            rate: FrameRate::FPS_50,
+            stream_clock: Some(crate::stream_clock()),
+            ..EngineConfig::default()
+        });
+        let io = IoRuntime::start(engine.take_io_port().unwrap()).unwrap();
+        let state = engine.state();
+        let spec = sync_source(FrameRate::FPS_50, 0, 0);
+        send(
+            &engine,
+            Command::AddInput {
+                spec: spec.clone(),
+                name: Some("Caméra 1".into()),
+            },
+        );
+        let input = wait_live(&state, &spec);
+        let key = state.load().input(input).unwrap().key.to_string();
+        let dir = folder("replay-iso");
+        for command in [
+            Command::SetReplaySession {
+                folder: Some(dir.join("session")),
+                keep_minutes: 10,
+                kbps: 8_000,
+            },
+            Command::SetReplayCameras {
+                inputs: vec![input],
+            },
+            Command::StartReplayRecording,
+            Command::SetIso {
+                folder: Some(dir.join("iso")),
+                inputs: vec![input],
+                split_minutes: None,
+            },
+            Command::StartIso,
+        ] {
+            send(&engine, command);
+        }
+        std::thread::sleep(Duration::from_secs(3));
+        send(
+            &engine,
+            Command::ReplayMark {
+                mark: vma_engine::Mark::Last { seconds: 1 },
+                at_ns: None,
+            },
+        );
+        std::thread::sleep(Duration::from_millis(300));
+        send(&engine, Command::StopIso);
+        send(&engine, Command::StopReplayRecording);
+        std::thread::sleep(Duration::from_millis(300));
+        let replay = state.load().replay.clone();
+        drop(engine);
+        drop(io);
+        assert_eq!(replay.failures, [], "{replay:?}");
+        let event = &replay.events[0];
+
+        let reader = vma_replay::SegmentReader::open(&dir.join("session").join(&key));
+        let entries = reader.entries();
+        assert!(entries.len() >= 100, "{} pictures", entries.len());
+        let (first, last) = (entries[0].at_ns, entries[entries.len() - 1].at_ns);
+        assert!(
+            first < event.in_ns && event.out_ns < last,
+            "the mark falls on recorded pictures: {first}..{last}, event {event:?}"
+        );
+        let inside = entries
+            .iter()
+            .filter(|e| (event.in_ns..=event.out_ns).contains(&e.at_ns))
+            .count();
+        assert!(inside.abs_diff(50) <= 2, "one second: {inside} pictures");
+
+        let isos: Vec<PathBuf> = std::fs::read_dir(dir.join("iso"))
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .collect();
+        assert_eq!(isos.len(), 1, "{isos:?}");
+        let name = isos[0].file_name().unwrap().to_string_lossy().into_owned();
+        assert!(
+            name.starts_with("Caméra 1 20") && name.ends_with(" 000.mkv"),
+            "{name}"
+        );
+        let (back, error) = read_back(&isos[0]);
+        assert_eq!(error, None);
+        assert!(back.video.len() >= 150, "{} pictures", back.video.len());
+        assert!(
+            back.audio_samples >= 48_000 * 3,
+            "{} samples",
+            back.audio_samples
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// F2: a recorder that cannot write (here its folder is under a file, as a full disk would
+    /// stop it) is reported in the state; the input stays live, the show goes on.
+    #[test]
+    fn a_recorder_that_cannot_write_is_reported_and_the_input_stays_live() {
+        let (mut engine, _device) = spawn_engine_with(EngineConfig {
+            rate: FrameRate::FPS_50,
+            stream_clock: Some(crate::stream_clock()),
+            ..EngineConfig::default()
+        });
+        let io = IoRuntime::start(engine.take_io_port().unwrap()).unwrap();
+        let state = engine.state();
+        let spec = sync_source(FrameRate::FPS_50, 0, 0);
+        send(
+            &engine,
+            Command::AddInput {
+                spec: spec.clone(),
+                name: None,
+            },
+        );
+        let input = wait_live(&state, &spec);
+        let dir = folder("record-fails");
+        let blocker = dir.join("a file");
+        std::fs::write(&blocker, b"").unwrap();
+        for command in [
+            Command::SetReplaySession {
+                folder: Some(blocker.join("session")),
+                keep_minutes: 10,
+                kbps: 8_000,
+            },
+            Command::SetReplayCameras {
+                inputs: vec![input],
+            },
+            Command::StartReplayRecording,
+        ] {
+            send(&engine, command);
+        }
+        let end = Instant::now() + Duration::from_secs(10);
+        while state.load().replay.failures.is_empty() {
+            assert!(Instant::now() < end, "no failure reported");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let failure = state.load().replay.failures[0].clone();
+        assert_eq!(failure.input, input);
+        eprintln!("{}", failure.reason);
+        std::thread::sleep(Duration::from_millis(500));
+        let live = state.load().input(input).map(|i| i.status);
+        assert!(
+            matches!(live, Some(vma_engine::InputStatus::Live { .. })),
+            "{live:?}"
+        );
+        drop(engine);
+        drop(io);
         let _ = std::fs::remove_dir_all(dir);
     }
 

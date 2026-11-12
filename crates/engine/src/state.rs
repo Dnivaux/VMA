@@ -422,6 +422,29 @@ pub enum Rejection {
         crate::command::MULTIVIEW_INPUTS
     )]
     MultiviewSlots,
+    #[error("{0} cannot be recorded (a camera, a file, a stream)")]
+    NotRecordable(InputId),
+    #[error("the replay records: stop it first")]
+    ReplayRecording,
+    #[error("the ISO records: stop it first")]
+    IsoRecording,
+    #[error("the replay has no folder or no camera")]
+    ReplayNotSet,
+    #[error("the ISO has no folder or no input")]
+    IsoNotSet,
+    #[error(
+        "the replay records {} cameras at most",
+        crate::replay::MAX_REPLAY_CAMERAS
+    )]
+    TooManyCameras,
+    #[error("invalid replay or ISO setting")]
+    ReplaySettings,
+    #[error("a mark needs its instant")]
+    MarkWithoutTime,
+    #[error("no event opened (« Entrée »)")]
+    NoMarkIn,
+    #[error("unknown replay event {0}")]
+    UnknownEvent(u32),
 }
 
 /// What [`State::load_project`] gathers while it applies its commands.
@@ -511,6 +534,11 @@ pub enum IoRequest {
         input: InputId,
         action: HtmlAction,
     },
+    /// What the recorder of an input does from now on (`None`: it stops, its files closed).
+    Record {
+        input: InputId,
+        plan: Option<crate::replay::RecordPlan>,
+    },
 }
 
 /// What an HTML input's page is asked to do ([`IoRequest::Html`]).
@@ -570,6 +598,8 @@ pub enum Event {
         run: u64,
         reason: String,
     },
+    /// The recorder of `input` stopped on an error (Phase 6: a full disk).
+    RecordFailed { input: InputId, reason: String },
     /// The GPU was lost at master frame `frame`: the outputs get black (ADR 0006 § 7).
     DeviceLost { frame: u64 },
     /// The grace period after the loss is over: every output is finalised.
@@ -718,6 +748,9 @@ pub struct State {
     /// Seed of the keys of new inputs ([`Command::SeedInputKeys`]).
     #[serde(default)]
     key_seed: u64,
+    /// Replay and ISO recordings, events (Phase 6).
+    #[serde(default)]
+    pub replay: crate::replay::ReplayState,
     next_input: u32,
     next_transition: u64,
     next_output: u32,
@@ -726,13 +759,13 @@ pub struct State {
 
 /// Result of an accepted command.
 #[derive(Debug, Default)]
-struct Change {
-    changed: bool,
-    io: Vec<IoRequest>,
+pub(crate) struct Change {
+    pub(crate) changed: bool,
+    pub(crate) io: Vec<IoRequest>,
 }
 
 impl Change {
-    fn changed() -> Self {
+    pub(crate) fn changed() -> Self {
         Self {
             changed: true,
             io: Vec::new(),
@@ -788,6 +821,7 @@ impl State {
             load_problems: Vec::new(),
             project_loads: 0,
             key_seed: 0,
+            replay: crate::replay::ReplayState::default(),
             next_input: 1,
             next_transition: 1,
             next_output: Self::DEFAULT_RECORDING.0 + 1,
@@ -1123,6 +1157,14 @@ impl State {
                     reason: reason.clone(),
                 })
             }),
+            Event::RecordFailed { input, reason } => {
+                self.replay.failures.retain(|f| f.input != *input);
+                self.replay.failures.push(crate::replay::RecordFailure {
+                    input: *input,
+                    reason: reason.clone(),
+                });
+                true
+            }
             Event::DeviceLost { frame } => {
                 let first = self.device_lost.is_none();
                 if first {
@@ -1455,6 +1497,29 @@ impl State {
                 Ok(Change { changed: true, io })
             }
             Command::LoadProject { project } => self.load_project(project),
+            Command::SetReplaySession {
+                folder,
+                keep_minutes,
+                kbps,
+            } => self.set_replay_session(folder.as_ref(), *keep_minutes, *kbps),
+            Command::SetReplayCameras { inputs } => self.set_replay_cameras(inputs),
+            Command::StartReplayRecording => self.start_replay(true),
+            Command::StopReplayRecording => self.start_replay(false),
+            Command::SetIso {
+                folder,
+                inputs,
+                split_minutes,
+            } => self.set_iso(folder.as_ref(), inputs, *split_minutes),
+            Command::StartIso => self.start_iso(true),
+            Command::StopIso => self.start_iso(false),
+            Command::ReplayMark { mark, at_ns } => self.mark(*mark, *at_ns),
+            Command::EditReplayEvent {
+                id,
+                angle,
+                speed,
+                comment,
+            } => self.edit_event(*id, *angle, *speed, comment),
+            Command::DeleteReplayEvent { id } => self.delete_event(*id),
             Command::SetMultiview { settings } => {
                 if !settings.validate() {
                     return Err(Rejection::MultiviewSlots);
@@ -1741,6 +1806,8 @@ impl State {
                 o.on = false;
             }
         }
+        // Its recorder goes with its pipeline.
+        self.forget_recorded(input);
         let removed = self
             .inputs
             .iter()

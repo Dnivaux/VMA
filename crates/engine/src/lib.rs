@@ -21,6 +21,7 @@ mod plan;
 mod project;
 mod readback;
 mod render;
+mod replay;
 mod sequence;
 mod sequencer;
 mod sources;
@@ -60,6 +61,10 @@ pub use outputs::{
 pub use plan::{PlanFtb, PlanOverlay, PlanProgress, PlanReader, PlanTransition, RenderPlan};
 pub use project::{LoadProblem, ProjectInput, ProjectOutput, ProjectSnapshot, ProjectStinger};
 pub use render::{EngineConfig, EngineError, FrameReader, IoPort, Readers, RenderEngine};
+pub use replay::{
+    IsoPlan, IsoState, MAX_MARK_SECONDS, MAX_REPLAY_CAMERAS, Mark, RecordFailure, RecordPlan,
+    ReplayEvent, ReplayState,
+};
 pub use sequence::{
     RING as STINGER_RING, Refused, SequenceStats, SequenceStatsSnapshot, StingerSink,
 };
