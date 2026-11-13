@@ -23,7 +23,7 @@ use crate::output_stats::{duration, kind_label, status_label};
 use crate::{Screen, default_screen, screen_index};
 
 /// Fill of a button whose output is on.
-const ON_AIR: Color32 = Color32::from_rgb(200, 40, 40);
+pub(super) const ON_AIR: Color32 = Color32::from_rgb(200, 40, 40);
 /// Video bit rate offered when « Automatique » is unticked, kbit/s.
 const MANUAL_KBPS: u32 = 6_000;
 
@@ -123,6 +123,7 @@ impl Switcher {
             self.send(ui, view, command);
         }
         self.settings_button(ui, "Réglages de l'enregistrement");
+        self.iso_button(ui, view);
 
         let has_streams = state.outputs.iter().any(|o| o.spec.is_stream());
         let stream = match streaming {

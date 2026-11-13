@@ -28,16 +28,20 @@ mod multiview_settings;
 mod ndi_input;
 mod outputs;
 mod project_bar;
+mod replay;
 mod srt_input;
 mod stinger;
 
 pub use api_settings::ApiView;
 pub use project_bar::{ProjectNotice, ProjectRequest, ProjectView};
+pub use replay::ReplayFolder;
 
 /// Width of the transition column.
 const COLUMN_WIDTH: f32 = 150.0;
 /// Height of everything an input card adds to its thumbnail (title, two rows of buttons).
 const CARD_EXTRA: f32 = 84.0;
+/// Width a card's frame adds to its content (margins and tally border).
+const CARD_FRAME: f32 = 16.0;
 /// How long a message stays visible, in seconds.
 const MESSAGE_SECS: f64 = 4.0;
 /// Height of the video controls under Preview / Program.
@@ -258,6 +262,7 @@ pub struct Switcher {
     icons_ready: bool,
     project: project_bar::ProjectUi,
     api: api_settings::ApiUi,
+    replay: replay::ReplayUi,
 }
 
 /// Size of the input thumbnails, as the reference lets the operator choose it.
@@ -313,6 +318,7 @@ impl Default for Switcher {
             icons_ready: false,
             project: project_bar::ProjectUi::default(),
             api: api_settings::ApiUi::default(),
+            replay: replay::ReplayUi::default(),
         }
     }
 }
@@ -379,8 +385,21 @@ impl Switcher {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     icons::toggle(ui, &mut self.show_stats, Icon::ChartColumn, "Statistiques")
                         .on_hover_text("Panneau des statistiques");
-                    icons::toggle(ui, &mut self.mixer.open, Icon::SlidersVertical, "Mélangeur")
-                        .on_hover_text("Mélangeur audio");
+                    // The mixer and the replay share their zone, as tabs.
+                    if icons::toggle(ui, &mut self.mixer.open, Icon::SlidersVertical, "Mélangeur")
+                        .on_hover_text("Mélangeur audio")
+                        .changed()
+                        && self.mixer.open
+                    {
+                        self.replay.open = false;
+                    }
+                    if icons::toggle(ui, &mut self.replay.open, Icon::ListVideo, "Replay")
+                        .on_hover_text("Replay : marquer, rejouer, ralenti")
+                        .changed()
+                        && self.replay.open
+                    {
+                        self.mixer.open = false;
+                    }
                 });
             });
         });
@@ -389,6 +408,8 @@ impl Switcher {
         let row = self.thumbs.size().y + CARD_EXTRA;
         let least = if self.mixer.open {
             mixer::MIXER_HEIGHT.max(row)
+        } else if self.replay.open {
+            replay::REPLAY_HEIGHT.max(row)
         } else {
             row
         };
@@ -408,6 +429,12 @@ impl Switcher {
                         .resizable(true)
                         .default_size(width)
                         .show(ui, |ui| self.mixer_panel(ui, view));
+                } else if self.replay.open {
+                    let width = replay::panel_width(ui.available_width());
+                    egui::Panel::right("replay")
+                        .resizable(true)
+                        .default_size(width)
+                        .show(ui, |ui| self.replay_panel(ui, view));
                 }
                 self.input_bar(ui, view);
             });
@@ -438,6 +465,8 @@ impl Switcher {
         self.srt_input_window(ui, view);
         self.ndi_input_window(ui, view);
         self.html_input_window(ui, view);
+        self.replay_settings_window(ui, view);
+        self.iso_window(ui, view);
         self.about_window(ui);
     }
 
@@ -783,8 +812,16 @@ impl Switcher {
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 ui.horizontal_wrapped(|ui| {
+                    let size = self.thumbs.size();
+                    let right = ui.max_rect().right();
                     for (index, input) in view.state.inputs.iter().enumerate() {
+                        wrap_before(ui, right, size.x + CARD_FRAME);
                         self.input_card(ui, view, index + 1, input);
+                        // Its mini-panel beside the Replay A card, as the reference has it.
+                        if matches!(input.spec, InputSpec::Replay { .. }) {
+                            wrap_before(ui, right, replay::MINI_WIDTH + CARD_FRAME);
+                            self.replay_mini_panel(ui, view);
+                        }
                     }
                 });
             });
@@ -901,6 +938,20 @@ impl Switcher {
         }
         if ui.add(icons::button(Icon::Image, "Image…")).clicked() {
             self.file_request = Some(FileKind::Image);
+            ui.close();
+        }
+        ui.separator();
+        let taken = view
+            .state
+            .replay_input(vma_engine::ReplayChannel::A)
+            .is_some();
+        if ui
+            .add_enabled(!taken, icons::button(Icon::Rewind, "Replay A"))
+            .on_hover_text("Le canal de lecture du replay, comme un input")
+            .on_disabled_hover_text("Replay A est déjà là")
+            .clicked()
+        {
+            self.add_replay_input(ui, view);
             ui.close();
         }
     }
@@ -1291,6 +1342,17 @@ impl Output {
 }
 
 /// « 01:03 » (minutes : secondes), hours added past one hour.
+/// In a wrapped row ending at `right`, starts a new row unless `width` fits in what is left
+/// of this one: a frame does not know its size before it is drawn, so the row would not wrap
+/// before it (and would overlap the panel beside).
+fn wrap_before(ui: &mut egui::Ui, right: f32, width: f32) {
+    let x = ui.cursor().min.x;
+    let row_started = x > ui.max_rect().min.x + 1.0;
+    if row_started && right - x < width {
+        ui.end_row();
+    }
+}
+
 fn clock(ms: u64) -> String {
     let s = ms / 1000;
     match s / 3600 {

@@ -13,6 +13,7 @@ use crate::command::{
     TRANSITION_BUTTONS, TransitionSetting,
 };
 use crate::output_spec::OutputSpec;
+use crate::replay::ReplayState;
 use crate::state::{BusState, Format, InputAudio, Monitor, State};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -41,6 +42,44 @@ pub struct ProjectSnapshot {
     /// ADR 0014; its cells name inputs by their keys, kept by the project.
     #[serde(default)]
     pub multiview: MultiviewSettings,
+    /// Phase 6: the replay's and the ISO's settings.
+    #[serde(default)]
+    pub replay: ProjectReplay,
+}
+
+/// The settings of the replay and of the ISO recordings (Phase 6), inputs named by their
+/// position in [`ProjectSnapshot::inputs`]. Not the events: they belong to the recording of a
+/// session, not to the show.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ProjectReplay {
+    pub folder: Option<PathBuf>,
+    pub keep_minutes: u32,
+    pub kbps: u32,
+    pub cameras: Vec<usize>,
+    pub iso_folder: Option<PathBuf>,
+    pub iso_inputs: Vec<usize>,
+    pub iso_split_minutes: Option<u32>,
+    /// « Rejouer »: speed (percent) and transition button.
+    pub auto_speed: u8,
+    pub auto_button: u8,
+}
+
+impl Default for ProjectReplay {
+    fn default() -> Self {
+        let replay = ReplayState::default();
+        Self {
+            folder: None,
+            keep_minutes: replay.keep_minutes,
+            kbps: replay.kbps,
+            cameras: Vec::new(),
+            iso_folder: None,
+            iso_inputs: Vec::new(),
+            iso_split_minutes: None,
+            auto_speed: replay.auto_speed,
+            auto_button: replay.auto_button,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -131,6 +170,25 @@ impl State {
             monitor: self.audio.monitor.clone(),
             ftb_ms: self.ftb.duration_ms,
             multiview: self.multiview.clone(),
+            replay: {
+                let replay = &self.replay;
+                let positions = |ids: &[vma_core::InputId]| {
+                    ids.iter()
+                        .filter_map(|id| self.inputs.iter().position(|i| i.id == *id))
+                        .collect()
+                };
+                ProjectReplay {
+                    folder: replay.folder.clone(),
+                    keep_minutes: replay.keep_minutes,
+                    kbps: replay.kbps,
+                    cameras: positions(&replay.cameras),
+                    iso_folder: replay.iso.folder.clone(),
+                    iso_inputs: positions(&replay.iso.inputs),
+                    iso_split_minutes: replay.iso.split_minutes,
+                    auto_speed: replay.auto_speed,
+                    auto_button: replay.auto_button,
+                }
+            },
         }
     }
 }
@@ -309,6 +367,23 @@ mod tests {
                 output: State::DEFAULT_RECORDING,
                 bus: AudioBus::B,
             },
+            Command::SetReplaySession {
+                folder: Some("/ssd/replay".into()),
+                keep_minutes: 45,
+                kbps: 60_000,
+            },
+            Command::SetReplayCameras {
+                inputs: vec![cam, clip],
+            },
+            Command::SetReplayAuto {
+                speed: 25,
+                button: 2,
+            },
+            Command::SetIso {
+                folder: Some("/iso".into()),
+                inputs: vec![cam],
+                split_minutes: Some(20),
+            },
         ] {
             s.apply(&command).unwrap();
         }
@@ -396,7 +471,21 @@ mod tests {
 
         let mut s = show();
         s.apply(&Command::Transition { button: 1 }).unwrap();
-        assert_eq!(s.apply(&project.load()), Err(Rejection::TransitionRunning));
+        assert_eq!(
+            s.apply(&project.clone().load()),
+            Err(Rejection::TransitionRunning)
+        );
+
+        // Nor while the replay or the ISO records: its inputs would go.
+        let mut s = show();
+        s.apply(&Command::StartReplayRecording).unwrap();
+        assert_eq!(
+            s.apply(&project.clone().load()),
+            Err(Rejection::ReplayRecording)
+        );
+        let mut s = show();
+        s.apply(&Command::StartIso).unwrap();
+        assert_eq!(s.apply(&project.load()), Err(Rejection::IsoRecording));
         let _ = OutputStatus::Idle;
     }
 

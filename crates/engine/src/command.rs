@@ -767,6 +767,20 @@ impl InputSpec {
         )
     }
 
+    /// True for inputs whose pictures come through a GStreamer pipeline: the ones a recorder
+    /// takes, for the replay and the ISO (a camera, a file, a stream).
+    pub fn is_recordable(&self) -> bool {
+        matches!(
+            self,
+            Self::Capture { .. }
+                | Self::File { .. }
+                | Self::Synthetic { .. }
+                | Self::SyncSource { .. }
+                | Self::Srt(_)
+                | Self::Ndi { .. }
+        )
+    }
+
     /// Checks the settings of a new input (an SRT input: like an SRT output).
     pub(crate) fn validate(&self) -> Result<(), InvalidSpec> {
         match self {

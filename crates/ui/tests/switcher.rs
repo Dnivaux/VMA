@@ -18,7 +18,7 @@ use egui_kittest::kittest::{NodeT, Queryable};
 use vma_core::{FrameRate, InputId, Resolution, Rgb8};
 use vma_engine::{
     AutoPlay, Command, CommandProbe, CommandSender, DeviceId, Effect, Format, InputSpec, Level,
-    MeterReading, MixDomain, Source, State, Timeline,
+    Mark, MeterReading, MixDomain, ReplayChannel, Source, State, Timeline,
 };
 use vma_ui::{
     ApiView, AudioView, CaptureChoice, FileKind, HeadphonesActivity, Images, IoView,
@@ -40,6 +40,8 @@ struct Rig {
     activity: Option<OutputActivity>,
     /// Folder dialogs the switcher asked for (`take_folder_request`).
     folders: Vec<vma_core::OutputId>,
+    /// … and for the replay (`take_replay_folder_request`).
+    replay_folders: Vec<vma_ui::ReplayFolder>,
     fade_to_black: f32,
     /// Screens the application lists.
     screens: Vec<Screen>,
@@ -134,6 +136,7 @@ fn harness_on(state: State, render: bool) -> Harness<'static, Rig> {
         files: Vec::new(),
         activity: None,
         folders: Vec::new(),
+        replay_folders: Vec::new(),
         fade_to_black: 0.0,
         screens: Vec::new(),
         levels: |_| None,
@@ -240,6 +243,8 @@ fn harness_on(state: State, render: bool) -> Harness<'static, Rig> {
                 .extend(rig.switcher.take_project_request());
             rig.files.extend(rig.switcher.take_file_request());
             rig.folders.extend(rig.switcher.take_folder_request());
+            rig.replay_folders
+                .extend(rig.switcher.take_replay_folder_request());
         },
         rig,
     );
@@ -2169,4 +2174,458 @@ fn multiview_settings() {
         "{:?}",
         h.state().sent().last()
     );
+}
+
+/// Two cameras (5, 6) recorded for the replay, Replay A (7), two events (1: −5 s, 2: −10 s).
+fn with_replay() -> State {
+    let mut state = state();
+    for name in ["Caméra 1", "Caméra 2"] {
+        state
+            .apply(&Command::AddInput {
+                spec: InputSpec::Synthetic {
+                    rate: FrameRate::FPS_50,
+                    resolution: Resolution::HD_1080,
+                },
+                name: Some(name.into()),
+            })
+            .unwrap();
+    }
+    for command in [
+        Command::AddInput {
+            spec: InputSpec::Replay {
+                channel: ReplayChannel::A,
+            },
+            name: None,
+        },
+        Command::SetReplaySession {
+            folder: Some("/ssd/replay".into()),
+            keep_minutes: 120,
+            kbps: 100_000,
+        },
+        Command::SetReplayCameras {
+            inputs: vec![id(5), id(6)],
+        },
+        Command::StartReplayRecording,
+        Command::ReplayMark {
+            mark: Mark::Last { seconds: 5 },
+            at_ns: Some(20_000_000_000),
+        },
+        Command::ReplayMark {
+            mark: Mark::Last { seconds: 10 },
+            at_ns: Some(40_000_000_000),
+        },
+    ] {
+        state.apply(&command).unwrap();
+    }
+    state
+}
+
+/// The rightmost button labelled `label`: the Replay panel's, not the mini-panel's.
+fn click_in_panel(h: &Harness<'_, Rig>, label: &str) {
+    let button = h
+        .get_all_by_role_and_label(Role::Button, label)
+        .max_by(|a, b| a.rect().left().partial_cmp(&b.rect().left()).unwrap())
+        .unwrap_or_else(|| panic!("no « {label} » button"));
+    button.click();
+}
+
+fn open_replay(h: &mut Harness<'_, Rig>) {
+    h.get_by_label("Replay").click();
+    h.run();
+}
+
+/// F9: the panel beside the inputs, in the mixer's zone: marks, « Rejouer », the player, the
+/// angles, each event.
+#[test]
+fn the_replay_panel_marks_plays_and_edits_the_events() {
+    let mut h = harness(with_replay());
+    assert!(
+        h.query_by_label("Image suivante").is_none(),
+        "closed at first"
+    );
+    open_replay(&mut h);
+    assert_eq!(
+        h.query_all_by_label("Suit l'image").count(),
+        0,
+        "mixer away"
+    );
+    let expect = |h: &mut Harness<'_, Rig>, command: Command| {
+        h.run();
+        assert_eq!(h.state().sent(), [command]);
+    };
+    for (label, command) in [
+        (
+            "−5 s",
+            Command::ReplayMark {
+                mark: Mark::Last { seconds: 5 },
+                at_ns: None,
+            },
+        ),
+        (
+            "−10 s",
+            Command::ReplayMark {
+                mark: Mark::Last { seconds: 10 },
+                at_ns: None,
+            },
+        ),
+        (
+            "Entrée",
+            Command::ReplayMark {
+                mark: Mark::In,
+                at_ns: None,
+            },
+        ),
+        ("Rejouer", Command::ReplayAuto { id: None }),
+        ("Lecture", Command::ReplayPlay),
+        ("Image suivante", Command::ReplayStep { frames: 1 }),
+        ("Image précédente", Command::ReplayStep { frames: -1 }),
+        ("Arrière", Command::ReplayReverse { on: true }),
+        ("25 %", Command::ReplaySpeed { percent: 25 }),
+        ("6 Caméra 2", Command::ReplayAngle { input: id(6) }),
+        (
+            "Lire l'événement 1",
+            Command::ReplayPlayEvent { id: Some(1) },
+        ),
+        ("Rejouer l'événement 2", Command::ReplayAuto { id: Some(2) }),
+        (
+            "Supprimer l'événement 1",
+            Command::DeleteReplayEvent { id: 1 },
+        ),
+    ] {
+        click_in_panel(&h, label);
+        expect(&mut h, command);
+    }
+    // The angle shown and the speed set do not send again.
+    click_in_panel(&h, "5 Caméra 1");
+    click_in_panel(&h, "100 %");
+    h.run();
+    assert!(h.state().sent().is_empty());
+
+    // « Sortie » and « Annuler » with an event open.
+    h.state_mut()
+        .state
+        .apply(&Command::ReplayMark {
+            mark: Mark::In,
+            at_ns: Some(41_000_000_000),
+        })
+        .unwrap();
+    h.run();
+    click_in_panel(&h, "Sortie");
+    expect(
+        &mut h,
+        Command::ReplayMark {
+            mark: Mark::Out,
+            at_ns: None,
+        },
+    );
+    click_in_panel(&h, "Annuler");
+    expect(
+        &mut h,
+        Command::ReplayMark {
+            mark: Mark::Cancel,
+            at_ns: None,
+        },
+    );
+
+    // A comment, sent when the field is left (newest event first).
+    let field = h
+        .get_all_by_role(Role::TextInput)
+        .min_by(|a, b| a.rect().top().partial_cmp(&b.rect().top()).unwrap())
+        .unwrap();
+    field.focus();
+    h.run();
+    h.get_all_by_role(Role::TextInput)
+        .min_by(|a, b| a.rect().top().partial_cmp(&b.rect().top()).unwrap())
+        .unwrap()
+        .type_text("But de la tête");
+    h.run();
+    assert!(h.state().sent().is_empty(), "nothing while typing");
+    h.key_press(egui::Key::Enter);
+    expect(
+        &mut h,
+        Command::EditReplayEvent {
+            id: 2,
+            angle: None,
+            speed: None,
+            comment: "But de la tête".into(),
+        },
+    );
+}
+
+/// Without recording, no mark; without Replay A, it is offered.
+#[test]
+fn marks_wait_for_the_recording_and_replay_a_is_offered() {
+    let mut state = with_replay();
+    state.apply(&Command::StopReplayRecording).unwrap();
+    let mut h = harness(state);
+    open_replay(&mut h);
+    for label in ["−5 s", "−10 s", "Entrée"] {
+        assert!(
+            h.get_all_by_role_and_label(Role::Button, label)
+                .all(|b| b.accesskit_node().is_disabled()),
+            "{label}"
+        );
+    }
+    // Recording again from the panel.
+    click_in_panel(&h, "Enregistrer le replay");
+    h.run();
+    assert_eq!(h.state().sent(), [Command::StartReplayRecording]);
+
+    let mut h = harness(state_with_one_camera_and_no_replay_input());
+    open_replay(&mut h);
+    assert!(h.get_by_label("Rejouer").accesskit_node().is_disabled());
+    h.get_by_label("Ajouter Replay A").click();
+    h.run();
+    assert_eq!(
+        h.state().sent(),
+        [Command::AddInput {
+            spec: InputSpec::Replay {
+                channel: ReplayChannel::A
+            },
+            name: None
+        }]
+    );
+    // Not set: « Enregistrer le replay » opens its settings.
+    click_in_panel(&h, "Enregistrer le replay");
+    h.run();
+    assert!(h.state().sent().is_empty());
+    // The cog, and the window's title.
+    assert_eq!(h.query_all_by_label("Réglages du replay").count(), 2);
+}
+
+fn state_with_one_camera_and_no_replay_input() -> State {
+    let mut state = state();
+    state
+        .apply(&Command::AddInput {
+            spec: InputSpec::Synthetic {
+                rate: FrameRate::FPS_50,
+                resolution: Resolution::HD_1080,
+            },
+            name: Some("Caméra 1".into()),
+        })
+        .unwrap();
+    state
+}
+
+/// « Ajouter → Replay A », once.
+#[test]
+fn replay_a_is_added_from_the_menu_once() {
+    let mut h = harness(state());
+    h.get_by_label("Ajouter un input").click();
+    h.run();
+    h.get_by_label("Replay A").click();
+    h.run();
+    assert_eq!(
+        h.state().sent(),
+        [Command::AddInput {
+            spec: InputSpec::Replay {
+                channel: ReplayChannel::A
+            },
+            name: None
+        }]
+    );
+    let mut h = harness(with_replay());
+    h.get_by_label("Ajouter un input").click();
+    h.run();
+    assert!(h.get_by_label("Replay A").accesskit_node().is_disabled());
+}
+
+fn wheel(h: &mut Harness<'_, Rig>, at: egui::Pos2, lines: f32, modifiers: egui::Modifiers) {
+    h.event(egui::Event::PointerMoved(at));
+    h.event(egui::Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Line,
+        delta: Vec2::new(0.0, lines),
+        phase: egui::TouchPhase::Move,
+        source: egui::MouseWheelSource::Unknown,
+        modifiers,
+    });
+    // The pointer over a button: its tooltip repaints a few frames.
+    h.run_steps(8);
+}
+
+/// F9: the wheel over the panel or the mini-panel: Maj = speed, Ctrl = image par image, Alt =
+/// seconde par seconde; alone, it scrolls (nothing sent).
+#[test]
+fn the_wheel_sets_the_speed_and_steps() {
+    let mut h = harness(with_replay());
+    open_replay(&mut h);
+    let panel = h.get_by_label("Image suivante").rect().center();
+    wheel(&mut h, panel, -2.0, egui::Modifiers::SHIFT);
+    assert_eq!(h.state().sent(), [Command::ReplaySpeed { percent: 90 }]);
+    wheel(&mut h, panel, 1.0, egui::Modifiers::CTRL);
+    assert_eq!(h.state().sent(), [Command::ReplayStep { frames: 1 }]);
+    wheel(&mut h, panel, -1.0, egui::Modifiers::ALT);
+    // A second of a camera not live yet: the master's 50 pictures.
+    assert_eq!(h.state().sent(), [Command::ReplayStep { frames: -50 }]);
+    wheel(&mut h, panel, 1.0, egui::Modifiers::NONE);
+    assert!(h.state().sent().is_empty());
+    // The mini-panel beside Replay A too.
+    let mini = h.get_by_label("Vitesse 50 %").rect().center();
+    wheel(&mut h, mini, 1.0, egui::Modifiers::CTRL);
+    assert_eq!(h.state().sent(), [Command::ReplayStep { frames: 1 }]);
+}
+
+/// The mini-panel beside the Replay A card: record, −5 s, « Rejouer », its speed.
+#[test]
+fn the_mini_panel_beside_replay_a() {
+    let mut h = harness(with_replay());
+    // Panel closed: these are the mini-panel's.
+    h.get_by_label("−5 s").click();
+    h.run();
+    assert_eq!(
+        h.state().sent(),
+        [Command::ReplayMark {
+            mark: Mark::Last { seconds: 5 },
+            at_ns: None
+        }]
+    );
+    h.get_by_label("Rejouer").click();
+    h.run();
+    assert_eq!(h.state().sent(), [Command::ReplayAuto { id: None }]);
+    h.get_by_label("Vitesse 50 %").click();
+    h.run();
+    h.get_by_label("25 %").click();
+    h.run();
+    assert_eq!(
+        h.state().sent(),
+        [Command::SetReplayAuto {
+            speed: 25,
+            button: 1
+        }]
+    );
+    h.get_by_label("Enregistrer le replay").click();
+    h.run();
+    assert_eq!(h.state().sent(), [Command::StopReplayRecording]);
+}
+
+/// « Réglages du replay »: cameras and « Rejouer » while recording; the session once stopped.
+#[test]
+fn replay_settings_are_applied() {
+    let mut h = harness(with_replay());
+    open_replay(&mut h);
+    h.get_by_label("Réglages du replay").click();
+    h.run();
+    assert!(
+        h.get_by_label("Choisir…").accesskit_node().is_disabled(),
+        "recording"
+    );
+    h.get_by_role_and_label(Role::CheckBox, "6 Caméra 2")
+        .click();
+    h.run();
+    h.get_by_role_and_label(Role::RadioButton, "75 %").click();
+    h.run();
+    assert!(h.state().sent().is_empty(), "nothing before « Appliquer »");
+    h.get_by_label("Appliquer").click();
+    h.run();
+    assert_eq!(
+        h.state().sent(),
+        [
+            Command::SetReplayCameras {
+                inputs: vec![id(5)]
+            },
+            Command::SetReplayAuto {
+                speed: 75,
+                button: 1
+            },
+        ]
+    );
+
+    let mut state = with_replay();
+    state.apply(&Command::StopReplayRecording).unwrap();
+    let mut h = harness(state);
+    open_replay(&mut h);
+    h.get_by_label("Réglages du replay").click();
+    h.run();
+    h.get_by_label("Choisir…").click();
+    h.run();
+    assert_eq!(h.state().replay_folders, [vma_ui::ReplayFolder::Session]);
+    h.state_mut()
+        .switcher
+        .set_replay_folder(vma_ui::ReplayFolder::Session, "/mnt/ssd2".into());
+    h.run();
+    h.get_by_label("Appliquer").click();
+    h.run();
+    assert_eq!(
+        h.state().sent(),
+        [Command::SetReplaySession {
+            folder: Some("/mnt/ssd2".into()),
+            keep_minutes: 120,
+            kbps: 100_000
+        }]
+    );
+}
+
+/// The MultiCorder of the reference: the inputs checked, each in its own file.
+#[test]
+fn iso_recording_from_its_window_and_the_bottom_bar() {
+    let mut h = harness(with_replay());
+    // Nothing chosen: the button opens the window.
+    h.get_by_label("ISO").click();
+    h.run();
+    assert!(h.state().sent().is_empty());
+    assert!(h.query_by_label("Enregistrement ISO").is_some());
+    assert!(
+        h.get_by_label("Démarrer l'ISO")
+            .accesskit_node()
+            .is_disabled()
+    );
+    h.get_by_role_and_label(Role::CheckBox, "5 Caméra 1")
+        .click();
+    h.run();
+    h.get_by_role_and_label(Role::CheckBox, "Nouveau fichier toutes les")
+        .click();
+    h.run();
+    h.get_by_label("Démarrer l'ISO").click();
+    h.run();
+    // Without a folder of its own: the recordings'.
+    assert_eq!(
+        h.state().sent(),
+        [
+            Command::SetIso {
+                folder: Some("/home/op/Vidéos".into()),
+                inputs: vec![id(5)],
+                split_minutes: Some(20),
+            },
+            Command::StartIso,
+        ]
+    );
+    h.get_by_label("Choisir…").click();
+    h.run();
+    assert_eq!(h.state().replay_folders, [vma_ui::ReplayFolder::Iso]);
+
+    // Set and recording: the bottom bar stops it.
+    let mut state = with_replay();
+    for command in [
+        Command::SetIso {
+            folder: Some("/iso".into()),
+            inputs: vec![id(5), id(6)],
+            split_minutes: None,
+        },
+        Command::StartIso,
+    ] {
+        state.apply(&command).unwrap();
+    }
+    let mut h = harness(state);
+    h.get_by_label("ISO").click();
+    h.run();
+    assert_eq!(h.state().sent(), [Command::StopIso]);
+}
+
+/// Pictures of the Replay panel, its mini-panel and its windows, for reviewing the layout
+/// (`target/ui-screenshots/replay*.png`). Needs a GPU, as the main window's.
+#[test]
+#[ignore = "picture for review, needs a GPU"]
+fn screenshot_of_the_replay() {
+    let mut h = harness_on(with_replay(), true);
+    open_replay(&mut h);
+    let picture = h.render().unwrap();
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/ui-screenshots");
+    std::fs::create_dir_all(&dir).unwrap();
+    picture.save(dir.join("replay.png")).unwrap();
+    h.get_by_label("Réglages du replay").click();
+    h.run();
+    h.get_by_label("Réglages ISO").click();
+    h.run();
+    let picture = h.render().unwrap();
+    picture.save(dir.join("replay-windows.png")).unwrap();
 }

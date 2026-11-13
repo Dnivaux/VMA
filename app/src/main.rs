@@ -705,6 +705,16 @@ impl vma_ui::IoStatus for Io {
         self.0.iter().flat_map(|io| io.ndi_sources()).collect()
     }
 
+    fn replay_activity(&self, input: vma_core::InputId) -> Option<vma_ui::ReplayActivity> {
+        let a = self.0.as_ref()?.replay_activity(input)?;
+        Some(vma_ui::ReplayActivity {
+            shown: a.shown,
+            late: a.late,
+            missed: a.missed,
+            failed: a.failed,
+        })
+    }
+
     fn audio_devices(&self) -> (Vec<vma_ui::CaptureChoice>, Vec<vma_ui::CaptureChoice>) {
         let Some(io) = &self.0 else {
             return (Vec::new(), Vec::new());

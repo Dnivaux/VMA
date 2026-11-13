@@ -2077,6 +2077,13 @@ impl State {
         if let Some(o) = self.outputs.iter().find(|o| o.status.is_active()) {
             return Err(Rejection::OutputActive(o.id));
         }
+        // Its inputs would go with their recordings.
+        if self.replay.recording {
+            return Err(Rejection::ReplayRecording);
+        }
+        if self.replay.iso.recording {
+            return Err(Rejection::IsoRecording);
+        }
         let mut load = Load::default();
         if project.format != self.format {
             load.problems.push(LoadProblem {
@@ -2251,6 +2258,41 @@ impl State {
                 settings: project.multiview.clone(),
             },
             "MultiView".into(),
+        ));
+        let replay = &project.replay;
+        let inputs = |at: &[usize]| {
+            at.iter()
+                .filter_map(|n| ids.get(*n).copied().flatten())
+                .collect::<Vec<_>>()
+        };
+        settings.push((
+            Command::SetReplaySession {
+                folder: replay.folder.clone(),
+                keep_minutes: replay.keep_minutes,
+                kbps: replay.kbps,
+            },
+            "Replay".into(),
+        ));
+        settings.push((
+            Command::SetReplayCameras {
+                inputs: inputs(&replay.cameras),
+            },
+            "Caméras du replay".into(),
+        ));
+        settings.push((
+            Command::SetReplayAuto {
+                speed: replay.auto_speed,
+                button: replay.auto_button,
+            },
+            "Rejouer".into(),
+        ));
+        settings.push((
+            Command::SetIso {
+                folder: replay.iso_folder.clone(),
+                inputs: inputs(&replay.iso_inputs),
+                split_minutes: replay.iso_split_minutes,
+            },
+            "ISO".into(),
         ));
         settings.push((
             Command::SetMonitor {

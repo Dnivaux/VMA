@@ -24,7 +24,7 @@ use gstreamer_video as gst_video;
 use gstreamer_video::prelude::*;
 use vma_clock::{StreamClock, TickGrid};
 use vma_compositor::Plane;
-use vma_core::InputId;
+use vma_core::{AlphaMode, ColorInfo, InputId, PixelFormat, Resolution};
 use vma_engine::PlayerPlan;
 use vma_replay::{Entry, Playhead, SegmentReader};
 
@@ -36,6 +36,8 @@ const AHEAD: u64 = 3;
 const CACHE: usize = 12;
 /// The index is read again every this many ticks (new pictures, deleted segments).
 const REFRESH_TICKS: u64 = 5;
+/// Side of the black picture shown before the first event (scaled to the master size).
+const BLACK_SIDE: u32 = 16;
 /// Longest wait for one decoded picture.
 const DECODE_TIMEOUT: gst::ClockTime = gst::ClockTime::from_mseconds(500);
 
@@ -58,6 +60,32 @@ pub(crate) struct PlayerStats {
     pub(crate) missed: AtomicU64,
     /// Pictures that could not be read or decoded.
     pub(crate) failed: AtomicU64,
+}
+
+impl PlayerStats {
+    pub(crate) fn snapshot(&self) -> ReplayActivity {
+        ReplayActivity {
+            shown: self.shown.load(Ordering::Relaxed),
+            decoded: self.decoded.load(Ordering::Relaxed),
+            late: self.late.load(Ordering::Relaxed),
+            missed: self.missed.load(Ordering::Relaxed),
+            failed: self.failed.load(Ordering::Relaxed),
+        }
+    }
+}
+
+/// What a replay player did since its input was opened ([`crate::IoRuntime::replay_activity`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ReplayActivity {
+    /// Pictures handed to the feed.
+    pub shown: u64,
+    pub decoded: u64,
+    /// Not decoded ahead: decoded when due.
+    pub late: u64,
+    /// Ticks passed before the player woke: their picture was not shown.
+    pub missed: u64,
+    /// Pictures that could not be read or decoded.
+    pub failed: u64,
 }
 
 /// One replay channel's player.
@@ -118,10 +146,6 @@ impl ReplayPlayer {
         let _ = self.tx.send(Control::Step(frames));
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "statistics panel, Phase 6 step 7")
-    )]
     pub(crate) fn stats(&self) -> Arc<PlayerStats> {
         Arc::clone(&self.stats)
     }
@@ -169,6 +193,13 @@ struct Worker<F: Feeds> {
 
 impl<F: Feeds> Worker<F> {
     fn run(mut self) {
+        self.black();
+        // Ready before the first event: started when it comes, it would make that event's
+        // first picture late.
+        match Decoder::new() {
+            Ok(d) => self.decoder = Some(d),
+            Err(e) => tracing::warn!(input = %self.input, error = %e, "no replay decoder"),
+        }
         let period = self.ticks.period_ns();
         let mut tick = self.ticks.tick_at_or_after(self.clock.now()) + 1;
         while !self.stop.load(Ordering::Acquire) {
@@ -214,6 +245,41 @@ impl<F: Feeds> Worker<F> {
                 self.prepare(tick + ahead);
             }
             tick += 1;
+        }
+    }
+
+    /// Black until an event is played (as an empty channel): the input is live from the
+    /// start, never « starting ».
+    fn black(&mut self) {
+        let Ok(resolution) = Resolution::new(BLACK_SIDE, BLACK_SIDE) else {
+            return;
+        };
+        let format = VideoFormat {
+            pixel: PixelFormat::Rgba,
+            resolution,
+            color: ColorInfo::RGB_FULL,
+            alpha: AlphaMode::Opaque,
+            rate: None,
+        };
+        let mut out = match self.feeds.create(self.input, format) {
+            Ok(out) => out,
+            Err(e) => {
+                tracing::warn!(input = %self.input, error = %e, "no feed for the replay");
+                return;
+            }
+        };
+        let texels = (BLACK_SIDE * BLACK_SIDE) as usize;
+        let bytes = [0, 0, 0, 255].repeat(texels);
+        let plane = Plane {
+            data: &bytes,
+            stride: BLACK_SIDE * 4,
+        };
+        match out.push(&[plane], self.next_frame, None) {
+            Ok(()) => {
+                self.next_frame += 1;
+                self.out = Some((format, out));
+            }
+            Err(e) => tracing::warn!(input = %self.input, error = %e, "replay black refused"),
         }
     }
 
@@ -576,6 +642,16 @@ mod tests {
             let _ = ended_tx.send(cue);
         })
         .unwrap();
+
+        // Black before any event.
+        std::thread::sleep(Duration::from_millis(100));
+        {
+            let feeds = feeds.feeds.lock().unwrap();
+            assert_eq!(feeds.len(), 1, "one feed, black");
+            let black = feeds[0].lock().unwrap();
+            assert_eq!(black.frames, [0]);
+            assert_eq!(black.first_texel, [0, 0, 0, 255]);
+        }
 
         player.plan(plan(&dir, &entries, 50, false, 1));
         // 61 pictures × 2 ticks × 20 ms, and some.

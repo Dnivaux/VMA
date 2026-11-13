@@ -338,3 +338,39 @@ suivi de « • » s'il a des changements non sauvegardés. « Sauvegarder », p
   ni vumètres), titres sous les images, nom de l'input sur la Preview et le Program, ordre des
   cases (« Automatique » : les inputs dans l'ordre ; « Vide » ; ou un input choisi, gardé par sa
   clé). Gardé dans le projet.
+
+## Replay et ISO (Phase 6, étape 7, `phase-6.md` F9)
+- **Replay** (barre du bas, à côté de « Mélangeur ») : le panneau Replay prend la zone du
+  mélangeur, comme un onglet (l'un ou l'autre). De haut en bas :
+  - « Enregistrer le replay » / « REC replay » (rouge), le résumé (caméras, minutes gardées ;
+    en orange s'il manque le dossier ou les caméras : le bouton ouvre alors les réglages), la
+    roue « Réglages du replay » ; un enregistreur arrêté sur erreur (disque plein) en orange ;
+  - « −5 s », « −10 s », « Entrée » (bleu tant que l'événement est ouvert), « Sortie »,
+    « Annuler », puis **« Rejouer »** (rouge pendant un « Rejouer » en cours). Les marques
+    attendent que le replay enregistre ;
+  - image précédente, lecture / pause, image suivante, arrière, vitesses 25 / 50 / 75 / 100 %
+    et curseur 0–100 % ;
+  - « Angle : » un bouton par caméra du replay (l'angle montré, changé au même moment) ;
+  - la liste des événements, le plus récent en haut : n°, durée, angle (« Par défaut » ou une
+    caméra), vitesse (« Lecteur » ou un préréglage), commentaire (envoyé quand on quitte le
+    champ), lire (vitesse du lecteur), rejouer (à l'antenne et retour), supprimer.
+- **Molette** sur le panneau ou le mini-panneau : Maj = vitesse (5 % par cran), Ctrl = image
+  par image, Alt = seconde par seconde (une seconde de la caméra montrée, la cadence maître
+  tant qu'elle n'est pas connue) ; seule, elle fait défiler.
+- **Mini-panneau** à côté de la carte de Replay A : enregistrer, « −5 s » / « −10 s »,
+  « Rejouer », « Vitesse 50 % » (celle du « Rejouer »).
+- **Ajouter → Replay A** (une fois) ; sans Replay A, le panneau le propose. Replay A est noir
+  tant qu'aucun événement n'est joué.
+- **Réglages du replay** : dossier de session (SSD dédié conseillé), minutes gardées, débit par
+  caméra (figés pendant l'enregistrement), caméras (8 au plus, parmi les caméras, vidéos et
+  flux), vitesse et bouton de transition du « Rejouer ». « Appliquer » / « Annuler ».
+- **ISO** (barre du bas, après « Enregistrer », façon MultiCorder) : un clic démarre ou arrête
+  (« ISO (n) » en rouge) ; sans input choisi, ou par sa roue, la fenêtre « Enregistrement
+  ISO » : les inputs cochés, le dossier (celui des enregistrements par défaut), « Nouveau
+  fichier toutes les *n* min », « Démarrer l'ISO » / « Arrêter l'ISO ».
+- Tout est gardé dans le projet (`ProjectSnapshot::replay`), sauf les événements (ils
+  appartiennent à l'enregistrement d'une session). Pas de chargement de projet pendant que le
+  replay ou l'ISO enregistrent.
+- **Statistiques** : pour Replay A, les images montrées, décodées en retard, ticks manqués,
+  illisibles.
+- Les cartes d'input passent à la ligne avant de déborder sous le panneau de droite.

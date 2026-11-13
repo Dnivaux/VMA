@@ -171,6 +171,12 @@ fn inputs(ui: &mut egui::Ui, engine: &RenderEngine, io: &dyn IoStatus) {
                     Some(false) => row(ui, "  conversion", "aucune".into()),
                     None => {}
                 }
+                if let Some(replay) = io.replay_activity(*id) {
+                    row(ui, "  replay : images montrées", replay.shown.to_string());
+                    counter(ui, "  replay : décodées en retard", replay.late);
+                    counter(ui, "  replay : ticks manqués", replay.missed);
+                    counter(ui, "  replay : illisibles", replay.failed);
+                }
                 // Received per second, from the previous sample kept in egui's memory.
                 let key = egui::Id::unique(("vma.input_rate", id.0));
                 let previous: Option<(u64, f64, f64)> = ui.data(|d| d.get_temp(key));

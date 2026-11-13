@@ -21,7 +21,7 @@ pub use output_stats::{OutputStatsRow, output_stats};
 pub use project::ProjectFiles;
 pub use switcher::{
     ApiView, AudioView, CaptureChoice, FileKind, Images, IoView, ProjectNotice, ProjectRequest,
-    ProjectView, Switcher, View,
+    ProjectView, ReplayFolder, Switcher, View,
 };
 pub use tally::{TALLY_PREVIEW, TALLY_PROGRAM, Tally};
 
@@ -85,6 +85,23 @@ pub trait IoStatus: std::fmt::Debug {
     fn html_unavailable(&self) -> Option<String> {
         Some("input HTML non pris en charge".into())
     }
+    /// What the player of a replay input did (`None`: not a replay input, or not open).
+    fn replay_activity(&self, _input: InputId) -> Option<ReplayActivity> {
+        None
+    }
+}
+
+/// What `vma-io` reports about a replay player (no GStreamer type in the UI).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ReplayActivity {
+    /// Pictures shown.
+    pub shown: u64,
+    /// Not decoded ahead: decoded when due.
+    pub late: u64,
+    /// Ticks passed before the player woke: their picture was not shown.
+    pub missed: u64,
+    /// Pictures that could not be read or decoded.
+    pub failed: u64,
 }
 
 /// What `vma-io` reports about a running output (no GStreamer type in the UI).
@@ -116,6 +133,8 @@ enum Pick {
     Input(FileKind),
     /// The folder of a recording output.
     RecordFolder(OutputId),
+    /// The replay's session folder, or the ISO's.
+    ReplayFolder(ReplayFolder),
 }
 
 /// File dialog running on its own thread: the UI keeps drawing while it is open.
@@ -312,7 +331,12 @@ impl MainUi {
             .switcher
             .take_file_request()
             .map(Pick::Input)
-            .or_else(|| self.switcher.take_folder_request().map(Pick::RecordFolder));
+            .or_else(|| self.switcher.take_folder_request().map(Pick::RecordFolder))
+            .or_else(|| {
+                self.switcher
+                    .take_replay_folder_request()
+                    .map(Pick::ReplayFolder)
+            });
         if let Some(pick) = wanted
             && self.picker.is_none()
         {
@@ -347,6 +371,11 @@ impl MainUi {
                         self.picker = None;
                         return;
                     }
+                    Pick::ReplayFolder(which) => {
+                        self.switcher.set_replay_folder(which, path);
+                        self.picker = None;
+                        return;
+                    }
                 };
                 let command = Command::AddInput { spec, name: None };
                 if let Err(e) = self.engine.commands().send(Source::Ui, command) {
@@ -364,16 +393,22 @@ fn open_dialog(pick: Pick, ctx: egui::Context) -> Option<Picker> {
     let spawned = std::thread::Builder::new()
         .name("vma-file-dialog".into())
         .spawn(move || {
-            let kind = match pick {
-                Pick::Input(kind) => kind,
-                Pick::RecordFolder(_) => {
-                    let folder = rfd::FileDialog::new()
-                        .set_title("Dossier des enregistrements")
-                        .pick_folder();
-                    let _ = tx.send(folder);
-                    ctx.request_repaint();
-                    return;
+            let folder_title = match pick {
+                Pick::Input(_) => None,
+                Pick::RecordFolder(_) => Some("Dossier des enregistrements"),
+                Pick::ReplayFolder(ReplayFolder::Session) => {
+                    Some("Dossier du replay (un SSD dédié de préférence)")
                 }
+                Pick::ReplayFolder(ReplayFolder::Iso) => Some("Dossier des fichiers ISO"),
+            };
+            if let Some(title) = folder_title {
+                let folder = rfd::FileDialog::new().set_title(title).pick_folder();
+                let _ = tx.send(folder);
+                ctx.request_repaint();
+                return;
+            }
+            let Pick::Input(kind) = pick else {
+                return;
             };
             let dialog = match kind {
                 FileKind::Video => rfd::FileDialog::new()

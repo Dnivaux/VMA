@@ -59,11 +59,13 @@ pub use outputs::{
     SyncTest, audio_sample_at, video_pts_ns,
 };
 pub use plan::{PlanFtb, PlanOverlay, PlanProgress, PlanReader, PlanTransition, RenderPlan};
-pub use project::{LoadProblem, ProjectInput, ProjectOutput, ProjectSnapshot, ProjectStinger};
+pub use project::{
+    LoadProblem, ProjectInput, ProjectOutput, ProjectReplay, ProjectSnapshot, ProjectStinger,
+};
 pub use render::{EngineConfig, EngineError, FrameReader, IoPort, Readers, RenderEngine};
 pub use replay::{
-    AutoReplay, IsoPlan, IsoState, MAX_MARK_SECONDS, MAX_REPLAY_CAMERAS, Mark, PlayerPlan,
-    PlayerState, RecordFailure, RecordPlan, ReplayChannel, ReplayEvent, ReplayState,
+    AutoReplay, IsoPlan, IsoState, MAX_MARK_SECONDS, MAX_REPLAY_CAMERAS, MAX_REPLAY_SPEED, Mark,
+    PlayerPlan, PlayerState, RecordFailure, RecordPlan, ReplayChannel, ReplayEvent, ReplayState,
 };
 pub use sequence::{
     RING as STINGER_RING, Refused, SequenceStats, SequenceStatsSnapshot, StingerSink,

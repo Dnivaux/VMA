@@ -13,6 +13,8 @@ use crate::state::{Change, Ending, IoRequest, Rejection, State};
 
 /// Cameras recorded for the replay at most (the reference's 8; 4 measured, `phase-6.md` Q3).
 pub const MAX_REPLAY_CAMERAS: usize = 8;
+/// Fastest replay speed, percent.
+pub const MAX_REPLAY_SPEED: u8 = vma_replay::MAX_SPEED;
 /// Longest « −n s » event.
 pub const MAX_MARK_SECONDS: u32 = 120;
 
@@ -274,16 +276,7 @@ impl State {
     fn video_inputs(&self, inputs: &[InputId]) -> Result<(), Rejection> {
         for id in inputs {
             let input = self.input(*id).ok_or(Rejection::UnknownInput(*id))?;
-            let recordable = matches!(
-                input.spec,
-                InputSpec::Capture { .. }
-                    | InputSpec::File { .. }
-                    | InputSpec::Synthetic { .. }
-                    | InputSpec::SyncSource { .. }
-                    | InputSpec::Srt(_)
-                    | InputSpec::Ndi { .. }
-            );
-            if !recordable {
+            if !input.spec.is_recordable() {
                 return Err(Rejection::NotRecordable(*id));
             }
         }

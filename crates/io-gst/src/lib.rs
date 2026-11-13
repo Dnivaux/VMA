@@ -45,6 +45,7 @@ pub use output::{
     EncoderChoice, GstOutput, OutputFeed, OutputFormat, RecordSettings, Skipped, StreamSettings,
 };
 pub use outputs::{OutputActivity, config_folder, default_record_folder};
+pub use replay_player::ReplayActivity;
 pub use runtime::{IoOptions, IoRuntime, PipelineInfo};
 pub use sync::{AUDIO_GAP_NS, SyncAnalyser, SyncSnapshot};
 pub use sync_source::next_sync_flash_ns;

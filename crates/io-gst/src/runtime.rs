@@ -24,6 +24,7 @@ use crate::ndi::{NdiMonitor, NdiSourceList};
 use crate::output::OutputFormat;
 use crate::outputs::{Activities, OutputActivity, Outputs};
 use crate::pipeline::{Capture, GstInput, Recipe};
+use crate::replay_player::ReplayActivity;
 use crate::still::{self, StillImage};
 use crate::supervisor::retry_delay;
 use vma_io_html::{HtmlEvent, HtmlHost, HtmlStatus, PageAction, data_event_script};
@@ -47,6 +48,8 @@ pub struct PipelineInfo {
 
 /// Info of every running pipeline.
 type Infos = Arc<ArcSwap<Vec<(InputId, PipelineInfo)>>>;
+/// The counters of every replay player.
+type PlayerCounters = Arc<ArcSwap<Vec<(InputId, Arc<crate::replay_player::PlayerStats>)>>>;
 
 /// One input backed by a pipeline: running, or waiting to be retried.
 #[derive(Debug)]
@@ -183,6 +186,7 @@ pub struct IoRuntime {
     headphones: Arc<ArcSwap<HeadphonesStatus>>,
     infos: Infos,
     activities: Activities,
+    players: PlayerCounters,
 }
 
 impl IoRuntime {
@@ -249,6 +253,7 @@ impl IoRuntime {
         let devices = DeviceList::default();
         let infos = Infos::default();
         let activities = Activities::default();
+        let players = PlayerCounters::default();
         let outputs = Outputs::new(
             port.outputs.clone(),
             OutputFormat {
@@ -291,6 +296,7 @@ impl IoRuntime {
             recorders: Vec::new(),
             finishing: Vec::new(),
             players: Vec::new(),
+            player_counters: Arc::clone(&players),
         };
         let thread_stop = Arc::clone(&stop);
         let thread = std::thread::Builder::new()
@@ -308,6 +314,7 @@ impl IoRuntime {
             headphones: headphones_status,
             infos,
             activities,
+            players,
         })
     }
 
@@ -356,6 +363,15 @@ impl IoRuntime {
             .iter()
             .find(|(id, _)| *id == output)
             .map(|(_, a)| *a)
+    }
+
+    /// What the player of a replay input did (`None`: not a replay input, or not open).
+    pub fn replay_activity(&self, input: InputId) -> Option<ReplayActivity> {
+        self.players
+            .load()
+            .iter()
+            .find(|(id, _)| *id == input)
+            .map(|(_, stats)| stats.snapshot())
     }
 
     /// What the pipeline of `input` reports: capture mode, conversion (`None` while it is
@@ -408,6 +424,8 @@ struct Worker {
     finishing: Vec<std::thread::JoinHandle<()>>,
     /// One player per replay input (ADR 0016).
     players: Vec<(InputId, crate::replay_player::ReplayPlayer)>,
+    /// Their counters, for the statistics.
+    player_counters: PlayerCounters,
 }
 
 impl Worker {
@@ -494,6 +512,7 @@ impl Worker {
             IoRequest::Close { input } => {
                 self.record(input, None);
                 self.players.retain(|(id, _)| *id != input);
+                self.publish_players();
                 self.html.close(input);
                 self.pipelines.retain(|p| p.input != input);
                 self.audio_inputs.retain(|p| p.input != input);
@@ -636,6 +655,15 @@ impl Worker {
             Some(slot) => f(slot),
             None => tracing::debug!(%input, "playback request for an input without a pipeline"),
         }
+    }
+
+    fn publish_players(&self) {
+        let all = self
+            .players
+            .iter()
+            .map(|(id, player)| (*id, player.stats()))
+            .collect();
+        self.player_counters.store(Arc::new(all));
     }
 
     fn publish_timelines(&self) {
@@ -784,7 +812,10 @@ impl Worker {
                     crate::stream_clock(),
                     move |cue| send(&events, IoEvent::ReplayEnded { input, cue }),
                 ) {
-                    Ok(player) => self.players.push((input, player)),
+                    Ok(player) => {
+                        self.players.push((input, player));
+                        self.publish_players();
+                    }
                     Err(e) => lost(e.to_string()),
                 }
             }
