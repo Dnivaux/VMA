@@ -38,6 +38,8 @@ const CACHE: usize = 12;
 const REFRESH_TICKS: u64 = 5;
 /// Side of the black picture shown before the first event (scaled to the master size).
 const BLACK_SIDE: u32 = 16;
+/// Longest sleep between two looks at the controls and the stop flag.
+const MAX_SLEEP: Duration = Duration::from_millis(5);
 /// Longest wait for one decoded picture.
 const DECODE_TIMEOUT: gst::ClockTime = gst::ClockTime::from_mseconds(500);
 
@@ -205,20 +207,26 @@ impl<F: Feeds> Worker<F> {
         while !self.stop.load(Ordering::Acquire) {
             // Half a period before the tick: its picture reaches the feed in time.
             let release = self.ticks.tick_ns(tick).saturating_sub(period / 2);
+            // A sleep, not the channel's timeout: under Windows that follows the system timer
+            // (15.6 ms by default), more than the half period of margin, and pictures missed
+            // their tick (CI Windows, Phase 6); a sleep has a high-resolution timer there. What
+            // comes meanwhile is taken before the release, for this tick, as on reception.
             loop {
+                loop {
+                    match self.rx.try_recv() {
+                        Ok(control) => self.control(tick, control),
+                        Err(crossbeam_channel::TryRecvError::Empty) => break,
+                        Err(crossbeam_channel::TryRecvError::Disconnected) => return,
+                    }
+                }
                 let now = self.clock.now();
                 let wait = Duration::from_nanos(release.saturating_sub(now));
                 if wait.is_zero() {
                     break;
                 }
-                match self.rx.recv_timeout(wait.min(Duration::from_millis(50))) {
-                    Ok(control) => self.control(tick, control),
-                    Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
-                        if self.stop.load(Ordering::Acquire) {
-                            return;
-                        }
-                    }
-                    Err(crossbeam_channel::RecvTimeoutError::Disconnected) => return,
+                std::thread::sleep(wait.min(MAX_SLEEP));
+                if self.stop.load(Ordering::Acquire) {
+                    return;
                 }
             }
             // Late (a slow decode, a suspended machine): on to the next tick still ahead.
