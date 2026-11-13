@@ -186,6 +186,31 @@ premier) et la Phase 4 (le second), chacun confirmé par un test qui échouait.
   Condition : les ticks du moteur sont sur l'horloge des pipelines
   (`EngineConfig::stream_clock`, ce que fait l'application).
 
+## Amendement (2026-11-13) : le son d'une caméra — **décidé par le mainteneur**
+Le § 7 traitait le son d'une carte de capture comme un périphérique audio à part, donc un
+input « Son » à part : la caméra elle-même avait une tranche muette, et ni son ISO ni son
+replay n'avaient de son (Phase 6, F1). Décision du mainteneur le 2026-11-13 (question posée
+à la revue de la Phase 6) : **le périphérique audio se choisit par caméra**, dans les réglages
+de l'input (« Son de la caméra », aucun par défaut).
+- `InputSpec::Capture { device, audio: Option<DeviceId> }` (absent d'un projet ou d'un
+  journal antérieur : aucun) ; `SetCaptureAudio { input, device }` le change sans relancer la
+  caméra (`IoRequest::CaptureAudio`) ; refusé pour un autre input (`NotCapture`).
+- `vma-io` ouvre le périphérique à côté du pipeline de la caméra (`AudioInputSlot::of_camera`,
+  la branche des inputs « Son ») : son son va dans l'anneau **de la caméra** et à **son**
+  enregistreur (ISO, session du replay). Images et son sont datés sur l'horloge maître ; le
+  son est lu à l'heure de l'image montrée (§ 3), le décalage de l'input règle le reste.
+- **La caméra reste la caméra** : en direct ou perdue d'après ses images seules. Son
+  périphérique audio absent, en erreur ou muet est retenté (1, 2, 5, 10 s) sans rien changer
+  à l'état de l'input ; la caméra est alors silencieuse. Les réglages montrent le
+  périphérique choisi, « (absent) » s'il n'est plus branché.
+- Un anneau que sa source a lâché (périphérique retiré, input fermé) n'est plus lu par
+  `vma-audio` : rien n'est compté manquant, la tranche est oubliée 500 ticks plus tard.
+- L'input « Son » à part reste, pour un micro qui n'est à aucune caméra.
+- Vérifié avec de faux périphériques (caméra, micro) par le moteur réel : son sur la
+  tranche de la caméra, dans la session du replay et dans l'ISO ; périphérique retiré puis
+  rendu. **Pas encore sur du vrai matériel** (pas de caméra sur la machine de dev) : checklist
+  `phase6-replay.md`.
+
 ## Conséquences
 - `vma-output` ne génère plus l'audio (sauf `--sync-test`) : il assemble l'image *n* et le bloc
   *n* du bus de chaque sortie. PTS inchangés (ADR 0006 § 3), compensation de l'amorçage AAC

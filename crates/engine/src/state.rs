@@ -402,6 +402,8 @@ pub enum Rejection {
     DelayOutOfRange(u32),
     #[error("{0} is not an HTML input")]
     NotHtml(InputId),
+    #[error("{0} is not a capture input")]
+    NotCapture(InputId),
     #[error("{0} has no file")]
     StingerEmpty(StingerSlot),
     #[error("{0} is still loading")]
@@ -526,6 +528,11 @@ pub enum IoRequest {
     },
     /// Play the headphones on `device` (`None`: the system's default).
     SetMonitor {
+        device: Option<DeviceId>,
+    },
+    /// The sound of capture input `input` comes from `device` from now on (`None`: none).
+    CaptureAudio {
+        input: InputId,
         device: Option<DeviceId>,
     },
     /// Preload `file` in stinger `slot` (replacing what it held), and keep it ready for
@@ -1339,6 +1346,28 @@ impl State {
                         input: id,
                         action: HtmlAction::Navigate(url.expose().to_owned()),
                     }],
+                })
+            }
+            Command::SetCaptureAudio { input, device } => {
+                let id = *input;
+                let changed = match &mut self.input_mut(id)?.spec {
+                    InputSpec::Capture { audio, .. } => {
+                        let changed = *audio != *device;
+                        audio.clone_from(device);
+                        changed
+                    }
+                    _ => return Err(Rejection::NotCapture(id)),
+                };
+                Ok(Change {
+                    changed,
+                    io: if changed {
+                        vec![IoRequest::CaptureAudio {
+                            input: id,
+                            device: device.clone(),
+                        }]
+                    } else {
+                        Vec::new()
+                    },
                 })
             }
             Command::Play { input } => self.set_playing(*input, true),
@@ -3227,6 +3256,71 @@ mod tests {
         state.apply_event(&Event::TransitionDone { id });
     }
 
+    /// A capture input takes the sound of an audio device, kept in its spec (and so in the
+    /// project); `vma-io` is told once per change; refused for any other input.
+    #[test]
+    fn a_capture_input_takes_the_sound_of_an_audio_device() {
+        let mut s = state();
+        let io = s
+            .apply(&Command::AddInput {
+                spec: InputSpec::Capture {
+                    device: DeviceId("cam".into()),
+                    audio: Some(DeviceId("alsa:mic".into())),
+                },
+                name: None,
+            })
+            .unwrap();
+        let cam = s.inputs.last().unwrap().id;
+        assert!(
+            matches!(&io[..], [IoRequest::Open { input, spec: InputSpec::Capture { audio: Some(_), .. } }] if *input == cam),
+            "opened with its sound: {io:?}"
+        );
+        let set = |s: &mut State, device: Option<&str>| {
+            s.apply(&Command::SetCaptureAudio {
+                input: cam,
+                device: device.map(|d| DeviceId(d.into())),
+            })
+        };
+        let v = s.version;
+        let io = set(&mut s, Some("alsa:line")).unwrap();
+        assert_eq!(
+            io,
+            [IoRequest::CaptureAudio {
+                input: cam,
+                device: Some(DeviceId("alsa:line".into())),
+            }]
+        );
+        assert_eq!(s.version, v + 1);
+        // The same again: nothing to do.
+        let io = set(&mut s, Some("alsa:line")).unwrap();
+        assert!(io.is_empty());
+        assert_eq!(s.version, v + 1);
+        let io = set(&mut s, None).unwrap();
+        assert_eq!(
+            io,
+            [IoRequest::CaptureAudio {
+                input: cam,
+                device: None,
+            }]
+        );
+        assert!(matches!(
+            s.input(cam).unwrap().spec,
+            InputSpec::Capture { audio: None, .. }
+        ));
+        // In a project written before, a camera has no sound.
+        let old: InputSpec = serde_json::from_str(r#"{"Capture":{"device":"cam"}}"#).unwrap();
+        assert!(matches!(old, InputSpec::Capture { audio: None, .. }));
+        let file = video(&mut s);
+        assert_eq!(
+            s.apply(&Command::SetCaptureAudio {
+                input: file,
+                device: None,
+            })
+            .unwrap_err(),
+            Rejection::NotCapture(file)
+        );
+    }
+
     /// `phase-3.md` § 6: an input with pictures and sound follows the video and is heard; a
     /// sound-only one starts muted; colours, images and test patterns have no strip.
     #[test]
@@ -3247,6 +3341,7 @@ mod tests {
         assert!(sync.has_audio());
         let capture = InputSpec::Capture {
             device: DeviceId("cam".into()),
+            audio: None,
         };
         assert!(InputAudio::for_spec(&capture).follow_video);
         let c = color(&mut s, 1);

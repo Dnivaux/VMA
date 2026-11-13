@@ -376,6 +376,7 @@ fn capture_of_a_missing_device_is_a_lost_signal() {
         &rig,
         InputSpec::Capture {
             device: vma_engine::DeviceId("v4l2:/dev/vma-missing".into()),
+            audio: None,
         },
     );
     assert!(wait_for(Duration::from_secs(5), || matches!(

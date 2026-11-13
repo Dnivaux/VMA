@@ -121,6 +121,11 @@ impl<F: Feeds> PipelineSlot<F> {
         self.record = tap;
     }
 
+    /// Its recorder, if it is recorded.
+    pub(crate) fn recorder(&self) -> Option<crate::record::RecordTap> {
+        self.record.clone()
+    }
+
     /// Video file: play or pause (kept for the next pipeline if it is down).
     pub(crate) fn set_playing(&mut self, playing: bool) {
         self.playing = playing;
@@ -233,6 +238,7 @@ impl IoRuntime {
             options,
             || gstreamer::init().map_err(|e| e.to_string()),
             None,
+            None,
         )
     }
 
@@ -242,8 +248,11 @@ impl IoRuntime {
         init: impl FnOnce() -> Result<(), String>,
         // Tests: these audio devices, without a monitor.
         audio_devices: Option<AudioDeviceList>,
+        // Tests: these cameras, without a monitor.
+        cameras: Option<DeviceList>,
     ) -> Result<Self, IoError> {
         let monitor_audio = audio_devices.is_none();
+        let monitor_cameras = cameras.is_none();
         let gstreamer = init();
         if let Err(e) = &gstreamer {
             tracing::error!(error = %e, "GStreamer unavailable: capture and file inputs disabled");
@@ -280,7 +289,7 @@ impl IoRuntime {
                 .map(|e| IoError::GstreamerUnavailable(e).to_string()),
         );
         let stop = Arc::new(AtomicBool::new(false));
-        let devices = DeviceList::default();
+        let devices = cameras.unwrap_or_default();
         let infos = Infos::default();
         let activities = Activities::default();
         let probe = IoProbe::default();
@@ -315,6 +324,7 @@ impl IoRuntime {
             audio_devices: audio_devices.clone(),
             audio_monitor: None,
             monitor_audio,
+            monitor_cameras,
             ndi: ndi.clone(),
             ndi_sources: ndi_sources.clone(),
             ndi_monitor: None,
@@ -446,6 +456,8 @@ struct Worker {
     audio_monitor: Option<AudioMonitor>,
     /// `false` in tests that set the audio devices themselves.
     monitor_audio: bool,
+    /// `false` in tests that set the cameras themselves.
+    monitor_cameras: bool,
     ndi: NdiStatus,
     ndi_sources: NdiSourceList,
     ndi_monitor: Option<NdiMonitor>,
@@ -467,9 +479,11 @@ struct Worker {
 impl Worker {
     fn run(mut self, stop: &AtomicBool) {
         if self.gstreamer.is_ok() {
-            match Monitor::start(self.devices.clone()) {
-                Ok(monitor) => self.monitor = Some(monitor),
-                Err(e) => tracing::error!(error = %e, "no device monitor: no capture device"),
+            if self.monitor_cameras {
+                match Monitor::start(self.devices.clone()) {
+                    Ok(monitor) => self.monitor = Some(monitor),
+                    Err(e) => tracing::error!(error = %e, "no device monitor: no capture device"),
+                }
             }
             if self.monitor_audio {
                 match AudioMonitor::start(self.audio_devices.clone()) {
@@ -597,6 +611,7 @@ impl Worker {
                     player.step(frames);
                 }
             }
+            IoRequest::CaptureAudio { input, device } => self.capture_audio(input, device),
             IoRequest::SetMonitor { device } => match &mut self.headphones {
                 Some(headphones) => headphones.set_device(device),
                 None => tracing::debug!("headphones off: device not played"),
@@ -607,10 +622,7 @@ impl Worker {
     /// Replaces the recorder of `input` (`None`: stops it). A recorder finishes its files on
     /// a thread of its own: `vma-io` never waits for an encoder.
     fn record(&mut self, input: InputId, plan: Option<vma_engine::RecordPlan>) {
-        let slot = self.pipelines.iter_mut().find(|p| p.input == input);
-        if let Some(slot) = slot {
-            slot.set_recorder(None);
-        }
+        self.set_recorder(input, None);
         if let Some(pos) = self.recorders.iter().position(|(id, _)| *id == input) {
             let (_, old) = self.recorders.swap_remove(pos);
             self.finish_aside(old);
@@ -619,10 +631,10 @@ impl Worker {
         let Some(plan) = plan else {
             return;
         };
-        let Some(slot) = self.pipelines.iter_mut().find(|p| p.input == input) else {
+        if !self.pipelines.iter().any(|p| p.input == input) {
             tracing::debug!(%input, "recording an input without a pipeline");
             return;
-        };
+        }
         let minute = |m: u32| Duration::from_secs(u64::from(m) * 60);
         let settings = crate::record::RecordSettings {
             folder: plan.segments,
@@ -639,7 +651,7 @@ impl Worker {
         };
         match crate::record::Recorder::start(&input.to_string(), settings) {
             Ok(recorder) => {
-                slot.set_recorder(Some(recorder.tap()));
+                self.set_recorder(input, Some(recorder.tap()));
                 self.recorders.push((input, recorder));
                 self.publish_recorders();
             }
@@ -651,6 +663,43 @@ impl Worker {
                 },
             ),
         }
+    }
+
+    /// The recorder the pictures of `input` are offered to, and the sound of its audio
+    /// device if it is a camera with one (`None`: no more).
+    fn set_recorder(&mut self, input: InputId, tap: Option<crate::record::RecordTap>) {
+        for sound in self.audio_inputs.iter().filter(|a| a.input == input) {
+            sound.set_recorder(tap.clone());
+        }
+        if let Some(slot) = self.pipelines.iter_mut().find(|p| p.input == input) {
+            slot.set_recorder(tap);
+        }
+    }
+
+    /// The sound of capture input `input` comes from `device` from now on (`None`: it has
+    /// none), in place of the device it had. The camera itself is not touched.
+    fn capture_audio(&mut self, input: InputId, device: Option<vma_engine::DeviceId>) {
+        self.audio_inputs
+            .retain(|a| !(a.input == input && a.is_of_camera()));
+        let Some(device) = device else {
+            return;
+        };
+        if self.gstreamer.is_err() {
+            return;
+        }
+        tracing::info!(%input, device = %device.0, "camera sound from audio device");
+        let sound = AudioInputSlot::of_camera(
+            input,
+            device,
+            self.audio_devices.clone(),
+            self.port.feeds.clone(),
+            Instant::now(),
+        );
+        // Recorded already: its sound joins the recording.
+        if let Some(slot) = self.pipelines.iter().find(|p| p.input == input) {
+            sound.set_recorder(slot.recorder());
+        }
+        self.audio_inputs.push(sound);
     }
 
     /// Lets a recorder finish its files away from `vma-io`.
@@ -674,9 +723,7 @@ impl Worker {
             .collect();
         for (input, reason) in failed {
             send(&self.port.events, IoEvent::RecordFailed { input, reason });
-            if let Some(slot) = self.pipelines.iter_mut().find(|p| p.input == input) {
-                slot.set_recorder(None);
-            }
+            self.set_recorder(input, None);
             if let Some(pos) = self.recorders.iter().position(|(id, _)| *id == input) {
                 let (_, recorder) = self.recorders.swap_remove(pos);
                 self.finish_aside(recorder);
@@ -803,8 +850,9 @@ impl Worker {
                     Instant::now(),
                 ));
             }
-            InputSpec::Capture { device } => {
+            InputSpec::Capture { device, audio } => {
                 tracing::info!(%input, device = %device.0, "opening capture device");
+                self.capture_audio(input, audio.clone());
                 let capture = Capture {
                     device: device.clone(),
                     devices: self.devices.clone(),
@@ -1062,6 +1110,7 @@ mod tests {
             IoOptions::default(),
             || Err("simulated".into()),
             None,
+            None,
         )
         .unwrap();
         assert_eq!(io.gstreamer_error(), Some("simulated"));
@@ -1192,6 +1241,7 @@ mod tests {
             IoOptions { headphones: true },
             || gstreamer::init().map_err(|e| e.to_string()),
             Some(list),
+            None,
         )
         .unwrap();
         assert_eq!(io.audio_devices().sources, std::slice::from_ref(&mic.info));
@@ -1249,5 +1299,166 @@ mod tests {
                 && (peak(Level::Headphones) - 0.5).abs() < 0.01
         });
         drop(io);
+    }
+    /// A camera with an audio device (ADR 0007, 2026-11-13; fake devices): its sound is the
+    /// camera's — heard on its strip, kept in its replay session and in its ISO —; without
+    /// the device the camera stays live, silent; given back, it is heard again.
+    #[test]
+    fn a_camera_takes_the_sound_of_its_audio_device() {
+        use crate::audio_devices::AudioDeviceList;
+        use crate::devices::DeviceList;
+        use crate::pipeline::tests::{fake_audio_device, fake_camera};
+        use vma_engine::{
+            Command, EngineConfig, InputStatus, Journal, Level, RenderEngine, Source,
+        };
+
+        // One raw mode: whatever the master format, this is the one opened.
+        let camera = fake_camera(
+            "/dev/video7",
+            "videotestsrc is-live=true",
+            "video/x-raw, format=YUY2, width=640, height=360, framerate=30/1",
+        );
+        let mic = fake_audio_device(
+            "Audio/Source",
+            "alsa_input.test-camera-mic",
+            "audiotestsrc is-live=true samplesperbuffer=480 freq=1000 volume=0.5",
+        );
+        let cameras = DeviceList::default();
+        cameras.set(vec![camera.clone()]);
+        let sounds = AudioDeviceList::default();
+        sounds.set(vec![mic.clone()], Vec::new());
+
+        // Before the GPU: see `init`.
+        crate::pipeline::tests::init();
+        let gpu = pollster::block_on(vma_compositor::headless::request_gpu())
+            .expect("GPU adapter required");
+        let config = EngineConfig {
+            resolution: vma_core::Resolution::new(320, 180).unwrap(),
+            stream_clock: Some(crate::stream_clock()),
+            ..EngineConfig::default()
+        };
+        let (mut engine, _readers) =
+            RenderEngine::spawn(gpu.device, gpu.queue, config, Journal::Disabled).unwrap();
+        let io = IoRuntime::start_with(
+            engine.take_io_port().unwrap(),
+            IoOptions::default(),
+            || gstreamer::init().map_err(|e| e.to_string()),
+            Some(sounds),
+            Some(cameras),
+        )
+        .unwrap();
+        let commands = engine.commands();
+        let send = |command| commands.send(Source::Script, command).unwrap();
+        send(Command::AddInput {
+            spec: InputSpec::Capture {
+                device: camera.info.id.clone(),
+                audio: Some(mic.info.id.clone()),
+            },
+            name: Some("Plateau".into()),
+        });
+        let state = engine.state();
+        let wait = |what: &str, done: &dyn Fn() -> bool| {
+            let end = Instant::now() + Duration::from_secs(10);
+            while !done() {
+                assert!(Instant::now() < end, "{what}: {:?}", state.load().inputs);
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        };
+        wait("camera live", &|| {
+            state
+                .load()
+                .inputs
+                .first()
+                .is_some_and(|i| matches!(i.status, InputStatus::Live { .. }))
+        });
+        let input = state.load().inputs[0].id;
+        let key = state.load().inputs[0].key.to_string();
+        let meters = engine.audio_meters();
+        // Before its fader: a sine at 0.5 is 0.35 RMS.
+        let rms = || {
+            meters
+                .read(Level::Input(input))
+                .map_or(0.0, |[pre, _]: [vma_engine::MeterReading; 2]| pre.rms[0])
+        };
+        wait("the camera's sound on its strip", &|| rms() > 0.3);
+
+        // Recorded for the replay and as an ISO: with its sound.
+        let dir = std::env::temp_dir().join(format!("vma-io-camera-sound-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        for command in [
+            Command::SetReplaySession {
+                folder: Some(dir.join("session")),
+                keep_minutes: 10,
+                kbps: 4_000,
+            },
+            Command::SetReplayCameras {
+                inputs: vec![input],
+            },
+            Command::StartReplayRecording,
+            Command::SetIso {
+                folder: Some(dir.join("iso")),
+                inputs: vec![input],
+                split_minutes: None,
+            },
+            Command::StartIso,
+        ] {
+            send(command);
+        }
+        std::thread::sleep(Duration::from_secs(3));
+        send(Command::StopIso);
+        send(Command::StopReplayRecording);
+        std::thread::sleep(Duration::from_millis(500));
+        assert_eq!(state.load().replay.failures, []);
+
+        // Its audio device taken away: the camera stays live, its strip silent.
+        send(Command::SetCaptureAudio {
+            input,
+            device: None,
+        });
+        wait("silent without its device", &|| rms() < 0.001);
+        assert!(matches!(
+            state.load().inputs[0].status,
+            InputStatus::Live { .. }
+        ));
+        send(Command::SetCaptureAudio {
+            input,
+            device: Some(mic.info.id.clone()),
+        });
+        wait("heard again", &|| rms() > 0.3);
+        drop(engine);
+        drop(io);
+
+        let sound = vma_replay::SegmentReader::open_sound(&dir.join("session").join(&key));
+        let runs = sound.entries();
+        let frames: u64 = runs.iter().map(|r| u64::from(r.len) / 8).sum();
+        assert!(
+            frames > 2 * 48_000,
+            "{frames} frames of sound in the session"
+        );
+        let run = sound.read(&runs[runs.len() / 2]).unwrap();
+        let peak = run
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|b| f32::from_le_bytes(*b).abs())
+            .fold(0.0f32, f32::max);
+        assert!(
+            (0.4..0.6).contains(&peak),
+            "the microphone's tone: peak {peak}"
+        );
+        let isos: Vec<std::path::PathBuf> = std::fs::read_dir(dir.join("iso"))
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .collect();
+        assert_eq!(isos.len(), 1, "{isos:?}");
+        let (back, error) = crate::output::tests::read_back(&isos[0]);
+        assert_eq!(error, None);
+        assert!(back.video.len() >= 60, "{} pictures", back.video.len());
+        assert!(
+            back.audio_samples >= 2 * 48_000,
+            "{} samples of sound in the ISO",
+            back.audio_samples
+        );
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

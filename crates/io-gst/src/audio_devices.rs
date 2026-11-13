@@ -11,6 +11,11 @@
 //! F32LE 48 kHz stereo ! appsink` into the ring of the input (`audio::link`), on the master
 //! clock. Like a camera, it is lost on an error or after [`SILENCE`] without a buffer, and
 //! retried (1, 2, 5, then every 10 s), looked up by its identifier at every start.
+//!
+//! The same slot gives a **camera** its sound ([`AudioInputSlot::of_camera`], ADR 0007,
+//! 2026-11-13): the device chosen for a capture input writes to that input's ring, and is
+//! offered to its recorder (ISO, replay). The input stays the camera's: live or lost by its
+//! pictures alone; its sound comes, goes and is retried without a word to the engine.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -186,6 +191,7 @@ impl AudioInput {
         device: &DeviceId,
         list: &AudioDeviceList,
         feeds: &F,
+        record: &crate::pipeline::RecordSlot,
     ) -> Result<Self, String> {
         let found = list
             .source(device)
@@ -213,7 +219,7 @@ impl AudioInput {
             Some(ring) => {
                 let out = crate::pipeline::SoundOut {
                     ring,
-                    record: crate::pipeline::RecordSlot::default(),
+                    record: Arc::clone(record),
                 };
                 crate::audio::link(&pipeline, &pad, out, false)?
             }
@@ -275,7 +281,7 @@ impl Drop for AudioInput {
     }
 }
 
-/// One sound-only input: running, or waiting to be retried.
+/// One sound-only input, or the sound of a camera: running, or waiting to be retried.
 #[derive(Debug)]
 pub(crate) struct AudioInputSlot<F: Feeds> {
     pub(crate) input: InputId,
@@ -287,6 +293,10 @@ pub(crate) struct AudioInputSlot<F: Feeds> {
     reported: bool,
     attempts: u32,
     retry_at: Instant,
+    /// The sound of a camera: the engine is not told when it comes or goes.
+    of_camera: bool,
+    /// Where its sound is offered while the input is recorded (a camera's recorder).
+    record: crate::pipeline::RecordSlot,
 }
 
 impl<F: Feeds> AudioInputSlot<F> {
@@ -306,7 +316,32 @@ impl<F: Feeds> AudioInputSlot<F> {
             reported: false,
             attempts: 0,
             retry_at: now,
+            of_camera: false,
+            record: crate::pipeline::RecordSlot::default(),
         }
+    }
+
+    /// The sound of capture input `input`, taken from `device`.
+    pub(crate) fn of_camera(
+        input: InputId,
+        device: DeviceId,
+        list: AudioDeviceList,
+        feeds: F,
+        now: Instant,
+    ) -> Self {
+        Self {
+            of_camera: true,
+            ..Self::new(input, device, list, feeds, now)
+        }
+    }
+
+    pub(crate) fn is_of_camera(&self) -> bool {
+        self.of_camera
+    }
+
+    /// Offers its sound to this recorder from now on (`None`: no more).
+    pub(crate) fn set_recorder(&self, tap: Option<crate::record::RecordTap>) {
+        self.record.store(tap.map(Arc::new));
     }
 
     /// Starts, watches and restarts the pipeline; reports through `emit`.
@@ -319,11 +354,21 @@ impl<F: Feeds> AudioInputSlot<F> {
                 } else if running.flowing() && !self.reported {
                     self.reported = true;
                     self.attempts = 0;
-                    emit(IoEvent::AudioLive { input: self.input });
+                    if self.of_camera {
+                        tracing::info!(input = %self.input, device = %self.device.0, "camera sound flowing");
+                    } else {
+                        emit(IoEvent::AudioLive { input: self.input });
+                    }
                 }
             }
             None if now >= self.retry_at => {
-                match AudioInput::start(self.input, &self.device, &self.list, &self.feeds) {
+                match AudioInput::start(
+                    self.input,
+                    &self.device,
+                    &self.list,
+                    &self.feeds,
+                    &self.record,
+                ) {
                     Ok(running) => {
                         tracing::info!(input = %self.input, device = %self.device.0, "sound input started");
                         self.reported = false;
@@ -339,6 +384,13 @@ impl<F: Feeds> AudioInputSlot<F> {
     fn lost(&mut self, now: Instant, reason: String, emit: &mut impl FnMut(IoEvent)) {
         self.attempts = self.attempts.saturating_add(1);
         self.retry_at = now + retry_delay(self.attempts);
+        if self.of_camera {
+            // The camera itself is not lost: said once per loss, retried like the others.
+            if self.attempts == 1 {
+                tracing::warn!(input = %self.input, device = %self.device.0, %reason, "camera sound lost");
+            }
+            return;
+        }
         emit(IoEvent::SignalLost {
             input: self.input,
             attempts: self.attempts,
@@ -451,5 +503,58 @@ mod tests {
         let anchor = first.anchor().unwrap();
         let now = crate::clock::stream_clock().now();
         assert!(anchor.time_ns < now && now - anchor.time_ns < 20_000_000_000);
+    }
+
+    /// The sound of a camera: into the ring of the camera's input and to its recorder; the
+    /// device fails, is retried and comes back through a new ring, and the engine is told
+    /// nothing (the camera is live or lost by its pictures alone).
+    #[test]
+    fn the_sound_of_a_camera_comes_and_goes_without_a_word() {
+        let mic = fake_audio_device(
+            "Audio/Source",
+            "alsa_input.test-camera-sound",
+            "audiotestsrc is-live=true samplesperbuffer=441 freq=440 volume=0.5 \
+             ! audio/x-raw,rate=44100,channels=1 ! identity error-after=150",
+        );
+        let list = AudioDeviceList::default();
+        list.set(vec![mic.clone()], Vec::new());
+        let feeds = FakeFeeds::with_audio();
+        let mut slot = AudioInputSlot::of_camera(
+            InputId(4),
+            mic.info.id.clone(),
+            list,
+            feeds.clone(),
+            Instant::now(),
+        );
+        let dir = std::env::temp_dir().join(format!("vma-camera-sound-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let recorder = crate::record::Recorder::start(
+            "camera",
+            crate::record::RecordSettings {
+                folder: Some(dir.clone()),
+                kbps: 4_000,
+                keep: None,
+                iso: None,
+            },
+        )
+        .unwrap();
+        slot.set_recorder(Some(recorder.tap()));
+        let start = Instant::now();
+        let mut events = Vec::new();
+        let rings = || feeds.rings.as_ref().unwrap().lock().unwrap().len();
+        while rings() < 2 && start.elapsed() < Duration::from_secs(10) {
+            slot.tick(Instant::now(), &mut |e| events.push(e));
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(rings(), 2, "retried after its failure");
+        assert!(events.is_empty(), "{events:?}");
+        let first = feeds.rings.as_ref().unwrap().lock().unwrap()[0].written();
+        assert!(first >= 60_000, "{first} frames in the camera's ring");
+        drop(slot);
+        recorder.finish();
+        let sound = vma_replay::SegmentReader::open_sound(&dir);
+        let frames: u64 = sound.entries().iter().map(|r| u64::from(r.len) / 8).sum();
+        assert!(frames >= 60_000, "{frames} frames offered to the recorder");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -374,3 +374,9 @@ suivi de « • » s'il a des changements non sauvegardés. « Sauvegarder », p
 - **Statistiques** : pour Replay A, les images montrées, décodées en retard, ticks manqués,
   illisibles.
 - Les cartes d'input passent à la ligne avant de déborder sous le panneau de droite.
+
+## Son d'une caméra (2026-11-13)
+Réglages d'un input de capture : « Son de la caméra », liste déroulante « Aucun » + les
+périphériques audio vus par `vma-io` ; un périphérique choisi qui n'est plus branché est
+montré par son identifiant suivi de « (absent) ». Un choix envoie `SetCaptureAudio`. Test :
+`switcher::a_camera_takes_the_sound_of_an_audio_device`.

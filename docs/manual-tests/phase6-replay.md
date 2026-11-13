@@ -54,6 +54,14 @@ case ce qui a été vu, surtout quand ça ne va pas.
 - [ ] Panneau Statistiques, « replay » : images montrées, décodées en retard, ticks manqués,
   illisibles (ces trois-là à 0 de préférence) : `…`
 
+## Son d'une caméra (réglage du 2026-11-13)
+- [ ] Double-clic sur une caméra → « Son de la caméra » : choisir son micro (ou l'entrée audio
+  de la carte de capture). Sa tranche dans le mélangeur bouge quand on parle ; au Program, on
+  l'entend, calé sur l'image (sinon : le décalage de l'input, dans le mélangeur).
+- [ ] Débrancher le micro : la caméra reste en direct, muette ; les réglages montrent
+  « (absent) » ; rebranché, le son revient seul en quelques secondes.
+- [ ] Son ISO et son replay à 100 % ont ce son.
+
 ## ISO (F1)
 - [ ] Un fichier MKV par caméra cochée, nommé d'après l'input (deux inputs du même nom :
   « (2) » après le second), découpé toutes les 5 min, chaque morceau lisible (VLC, mpv), **avec

@@ -626,7 +626,8 @@ fn add_menu_capture_devices_and_files() {
         h.state().sent(),
         [Command::AddInput {
             spec: InputSpec::Capture {
-                device: DeviceId("v4l2:pci-0000:00:14.0-usb-0:2:1.0".into())
+                device: DeviceId("v4l2:pci-0000:00:14.0-usb-0:2:1.0".into()),
+                audio: None,
             },
             name: Some("Webcam HD".into())
         }]
@@ -639,6 +640,71 @@ fn add_menu_capture_devices_and_files() {
         assert_eq!(std::mem::take(&mut h.state_mut().files), [kind], "{label}");
         assert!(h.state().sent().is_empty(), "the input comes with the file");
     }
+}
+
+/// A camera's settings: « Son de la caméra » lists the audio devices; choosing one, then
+/// « Aucun », sends the command; a device that is gone is still named.
+#[test]
+fn a_camera_takes_the_sound_of_an_audio_device() {
+    let mut state = state();
+    state
+        .apply(&Command::AddInput {
+            spec: InputSpec::Capture {
+                device: DeviceId("v4l2:cam".into()),
+                audio: None,
+            },
+            name: Some("Plateau".into()),
+        })
+        .unwrap();
+    let camera = state.inputs.last().unwrap().id;
+    let mut h = harness(state);
+    h.state_mut().audio_sources = vec![CaptureChoice {
+        id: DeviceId("alsa:alsa_input.usb-Mic".into()),
+        name: "Micro USB".into(),
+    }];
+    h.run();
+    // The thumbnail: the name is also on its strip in the mixer, drawn first.
+    h.get_all_by_label("5 Plateau").last().unwrap().click();
+    h.step();
+    h.get_all_by_label("5 Plateau").last().unwrap().click();
+    h.run();
+    assert!(h.query_by_label("Réglages de l'input 5").is_some());
+    h.get_by_label("Son de la caméra").click();
+    h.run();
+    h.get_by_label("Micro USB").click();
+    h.run();
+    assert_eq!(
+        h.state().sent(),
+        [Command::SetCaptureAudio {
+            input: camera,
+            device: Some(DeviceId("alsa:alsa_input.usb-Mic".into())),
+        }]
+    );
+    // The engine took it; the device is then unplugged: still named, and « Aucun » drops it.
+    h.state_mut()
+        .state
+        .apply(&Command::SetCaptureAudio {
+            input: camera,
+            device: Some(DeviceId("alsa:alsa_input.usb-Mic".into())),
+        })
+        .unwrap();
+    h.state_mut().audio_sources.clear();
+    h.run();
+    assert_eq!(
+        h.get_by_label("Son de la caméra").value().as_deref(),
+        Some("alsa:alsa_input.usb-Mic (absent)")
+    );
+    h.get_by_label("Son de la caméra").click();
+    h.run();
+    h.get_by_label("Aucun").click();
+    h.run();
+    assert_eq!(
+        h.state().sent(),
+        [Command::SetCaptureAudio {
+            input: camera,
+            device: None,
+        }]
+    );
 }
 
 /// GStreamer missing: a warning stays in the toolbar; capture and video cannot be added,

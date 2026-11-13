@@ -253,6 +253,7 @@ mod tests {
             &mut s,
             InputSpec::Capture {
                 device: DeviceId("cam-1".into()),
+                audio: None,
             },
             "Caméra 1",
         );

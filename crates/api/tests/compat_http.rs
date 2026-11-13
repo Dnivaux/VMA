@@ -45,6 +45,7 @@ fn show() -> State {
         (
             InputSpec::Capture {
                 device: vma_engine::DeviceId("cam".into()),
+                audio: None,
             },
             "Caméra & co",
         ),

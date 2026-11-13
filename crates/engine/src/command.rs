@@ -189,6 +189,11 @@ pub enum Command {
         input: InputId,
         url: HtmlUrl,
     },
+    /// The audio device of a capture input (`None`: no sound). Refused for any other input.
+    SetCaptureAudio {
+        input: InputId,
+        device: Option<DeviceId>,
+    },
     /// Previous page of the input's history.
     HtmlBack {
         input: InputId,
@@ -570,6 +575,10 @@ pub struct DeviceId(pub String);
 pub enum InputSpec {
     Capture {
         device: DeviceId,
+        /// The audio device whose sound is this camera's (`None`: it has none). It follows
+        /// the camera everywhere: its strip, its ISO, its replay (ADR 0007, 2026-11-13).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        audio: Option<DeviceId>,
     },
     File {
         path: PathBuf,
@@ -811,7 +820,7 @@ impl InputSpec {
                 .filter(|s| !s.is_empty())
         };
         match self {
-            Self::Capture { device } => device.0.clone(),
+            Self::Capture { device, .. } => device.0.clone(),
             Self::File { path } => file_stem(path).unwrap_or_else(|| "Vidéo".into()),
             Self::Image { path } => file_stem(path).unwrap_or_else(|| "Image".into()),
             Self::Color { .. } => "Couleur".into(),

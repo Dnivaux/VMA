@@ -878,6 +878,7 @@ impl Switcher {
                             let name: String = device.name.chars().take(MAX_NAME_CHARS).collect();
                             let spec = InputSpec::Capture {
                                 device: device.id.clone(),
+                                audio: None,
                             };
                             let name = (!name.trim().is_empty()).then_some(name);
                             self.send(ui, view, Command::AddInput { spec, name });
@@ -1180,6 +1181,9 @@ impl Switcher {
                 });
             }
             self.html_settings(ui, view, id);
+            if let InputSpec::Capture { audio, .. } = &input.spec {
+                self.capture_audio_setting(ui, view, id, audio.as_ref());
+            }
             if let Some(playback) = input.playback {
                 let mut looping = playback.looping;
                 if ui
@@ -1199,6 +1203,50 @@ impl Switcher {
         });
         if open {
             self.input_settings = Some((id, name));
+        }
+    }
+
+    /// The audio device of a camera: its sound follows it (its strip, its ISO, its replay).
+    fn capture_audio_setting(
+        &mut self,
+        ui: &mut egui::Ui,
+        view: &View<'_>,
+        input: InputId,
+        current: Option<&DeviceId>,
+    ) {
+        let shown = |id: &DeviceId| {
+            view.io
+                .audio_sources
+                .iter()
+                .find(|d| d.id == *id)
+                .map_or_else(|| format!("{} (absent)", id.0), |d| d.name.clone())
+        };
+        let selected = current.map_or_else(|| "Aucun".to_owned(), shown);
+        let mut chosen = None;
+        ui.horizontal(|ui| {
+            let label = ui.label("Son de la caméra");
+            egui::ComboBox::from_id_salt("vma.capture_audio")
+                .selected_text(selected)
+                .show_ui(ui, |ui| {
+                    if ui.selectable_label(current.is_none(), "Aucun").clicked() {
+                        chosen = Some(None);
+                    }
+                    for source in view.io.audio_sources {
+                        let on = current == Some(&source.id);
+                        if ui
+                            .selectable_label(on, &source.name)
+                            .on_hover_text(&source.id.0)
+                            .clicked()
+                        {
+                            chosen = Some(Some(source.id.clone()));
+                        }
+                    }
+                })
+                .response
+                .labelled_by(label.id);
+        });
+        if let Some(device) = chosen.filter(|d| d.as_ref() != current) {
+            self.send(ui, view, Command::SetCaptureAudio { input, device });
         }
     }
 

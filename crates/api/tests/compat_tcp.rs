@@ -32,6 +32,7 @@ fn show() -> State {
     s.apply(&Command::AddInput {
         spec: InputSpec::Capture {
             device: vma_engine::DeviceId("mic-cam".into()),
+            audio: None,
         },
         name: Some("Plateau".into()),
     })

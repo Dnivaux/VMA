@@ -732,3 +732,18 @@ NDI® est une marque déposée de Vizrt NDI AB. ADR 0008.
   Program, 4 s à 100 % : chaque bip à moins d'une image de son flash ; à 50 % : aucun bip.
 - `outputs::an_input_is_recorded_for_the_replay_and_as_iso_through_the_commands` : le son de
   la session couvre la durée des images, blocs bout à bout.
+
+## Son d'une caméra (ADR 0007, amendement du 2026-11-13)
+- Une capture avec un périphérique audio : en plus de son pipeline, un `AudioInputSlot`
+  « de caméra » (`of_camera`) sur le même input : `<périphérique> ! audioconvert !
+  audioresample ! appsink` vers l'anneau de l'input, et vers l'enregistreur de l'input
+  quand il est enregistré (`set_recorder`, donné aussi au son arrivé en cours
+  d'enregistrement). Il ne dit rien au moteur : ni `AudioLive`, ni `SignalLost` ; perdu, il
+  est retenté (journal : « camera sound lost », une fois par perte).
+- `IoRequest::CaptureAudio { input, device }` remplace ce son sans toucher au pipeline de la
+  caméra ; `Close` l'arrête avec elle.
+- Tests : `audio_devices::the_sound_of_a_camera_comes_and_goes_without_a_word` (anneau,
+  enregistreur, panne et reprise, aucun événement) ;
+  `runtime::a_camera_takes_the_sound_of_its_audio_device` (fausse caméra et faux micro par le
+  moteur réel : tranche, session du replay, ISO, périphérique retiré puis rendu). Pour ce
+  dernier, `IoRuntime::start_with` prend aussi une liste de caméras donnée (sans moniteur).

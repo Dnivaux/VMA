@@ -302,6 +302,15 @@ apportées en codant (à relire) :
   `round(point de bascule × cadence maître)` (au plus le dernier).
 - **Sur la T-Bar**, l'effet stinger agit comme un Cut (bascule à mi-course, pas d'images).
 
+## Son d'une caméra (ADR 0007, amendement du 2026-11-13)
+- `InputSpec::Capture { device, audio }` : `audio` est le périphérique audio dont le son est
+  celui de la caméra (`None` : aucun ; champ absent du JSON quand il vaut `None`, et lu
+  `None` d'un journal ou d'un projet antérieur).
+- `SetCaptureAudio { input, device: Option<DeviceId> }` : le change (gardé dans le spec, donc
+  dans le projet) ; une seule requête `IoRequest::CaptureAudio { input, device }` par
+  changement, rien si c'est déjà le périphérique ; `NotCapture` pour un autre input.
+- Test : `state::a_capture_input_takes_the_sound_of_an_audio_device`.
+
 ## Critères d'acceptation
 | Critère | Test |
 |---|---|

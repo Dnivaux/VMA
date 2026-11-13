@@ -24,6 +24,10 @@ celui où `vma-control` la reçoit), `{"ReplayPlayEvent":{"id":null}}` (le derni
 `{"ReplaySpeed":{"percent":50}}`, `{"ReplayAngle":{"input":4}}`, `{"ReplayAuto":{"id":null}}`
 (« Rejouer »), `"StartIso"`… ; l'état du replay est dans `replay` de `GET /state`.
 
+Son d'une caméra : `{"SetCaptureAudio":{"input":2,"device":"alsa:alsa_input.usb-Mic"}}`
+(`"device":null` : aucun) ; les périphériques audio ne sont pas listés par l'API (réglages de
+l'input dans l'interface).
+
 | Code | Corps | Quand |
 |---|---|---|
 | 200 | `{"id": 17, "result": "ok"}` | appliquée |

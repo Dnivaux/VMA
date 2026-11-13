@@ -623,7 +623,11 @@ impl AudioMix {
             };
             strip.block.fill(0.0);
             let planned = self.params.input(strip.input);
+            // A source that let go of its ring (a camera whose audio device was taken away,
+            // an input being removed) is not read any more: nothing else will come.
+            let gone = strip.reader.source_gone();
             let reading = match tick.shown(strip.input) {
+                _ if gone => None,
                 // Sound only: read at the latency of its ring, one tick of margin (its
                 // blocks arrive within the mixing delay).
                 _ if planned.is_some_and(|p| !p.video) => {
@@ -649,9 +653,7 @@ impl AudioMix {
                 }
                 None => {
                     strip.unseen = strip.unseen.saturating_add(1);
-                    if strip.unseen > FORGET_TICKS
-                        && (planned.is_none() || strip.reader.source_gone())
-                    {
+                    if strip.unseen > FORGET_TICKS && (planned.is_none() || gone) {
                         *slot = None;
                         if let Some(cell) = self.slots.get(index) {
                             cell.store(0, Ordering::Release);
