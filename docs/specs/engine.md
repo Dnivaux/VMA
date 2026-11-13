@@ -159,7 +159,10 @@ Voir l'ADR 0006 (§§ 1–3, 5 et « Mise en œuvre côté moteur »).
   un anneau (`FeedRegistry::audio`, demandé par `io-gst` au démarrage de chaque pipeline ;
   le nouvel anneau remplace l'ancien) ; temps de lecture = temps du tick − latence lissée
   sur les images nouvelles (ADR 0007, précisions) ; image figée plus vieille de 100 ms que sa
-  latence (fichier en pause, source perdue) : silence. Audio-follow-video : part à l'antenne
+  latence (fichier en pause, source perdue) : silence, et la tranche reste tant que la source
+  tient son anneau (oubliée 500 ticks après que la source l'a lâché ou que l'input a quitté
+  le plan). Un input sans vidéo, **et un input HTML**, sont lus à la latence de leur anneau
+  (tick moins une période), image ou non. Audio-follow-video : part à l'antenne
   = parts en puissance constante de `from` et `to` selon `mix` (Cut : un bloc de rampe).
   Mixage du bloc *n* à l'arrivée du tick *n* + 3 ; ticks manquants (≤ 50) reconstruits avec
   la latence figée ; au-delà, silence écrit (`skipped_samples`). Les blocs des bus vont dans

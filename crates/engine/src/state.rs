@@ -8,7 +8,8 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use vma_audio::{MAX_GAIN_DB, SoloMode};
 use vma_core::{
-    AlphaMode, AudioBus, FrameRate, InputId, OutputId, OverlayChannel, PixelFormat, Resolution,
+    AlphaMode, AudioBus, FrameRate, InputId, InputKind, OutputId, OverlayChannel, PixelFormat,
+    Resolution,
 };
 
 use crate::audio_plan::{AudioPlan, PlanInput};
@@ -1023,7 +1024,7 @@ impl State {
             Some(PlanInput {
                 id: i.id,
                 audio: i.audio?,
-                video: i.spec.kind().has_video(),
+                video: sound_follows_pictures(i.spec.kind()),
             })
         });
         for (entry, input) in plan.inputs.iter_mut().zip(with_sound) {
@@ -2489,6 +2490,14 @@ impl State {
     }
 }
 
+/// Whether the sound of an input of `kind` is read at the time of the picture it shows. Not a
+/// sound-only input, which shows none; nor an HTML page: its pictures and its sound are both
+/// dated when they arrive, and a page repaints only when its picture changes — read at its
+/// picture, the sound of a still page (a jingle, a web radio) stopped after 100 ms.
+fn sound_follows_pictures(kind: InputKind) -> bool {
+    kind.has_video() && kind != InputKind::Html
+}
+
 fn valid_setting(effect: Effect, duration_ms: u32) -> Result<TransitionSetting, Rejection> {
     if duration_ms > MAX_TRANSITION_MS {
         return Err(Rejection::DurationOutOfRange(duration_ms));
@@ -3304,6 +3313,18 @@ mod tests {
         assert_eq!(s.input(file).unwrap().status, InputStatus::Starting);
         let plan = s.audio_plan();
         assert!(!plan.input(mic).unwrap().video && plan.input(file).unwrap().video);
+        // The sound of a page is read by its ring too: its picture may never change.
+        s.apply(&Command::AddInput {
+            spec: InputSpec::Html {
+                url: crate::command::HtmlUrl::new("https://example.org/"),
+                size: None,
+                css: None,
+            },
+            name: None,
+        })
+        .unwrap();
+        let page = s.inputs.last().unwrap().id;
+        assert!(!s.audio_plan().input(page).unwrap().video);
     }
 
     /// An SRT input is checked like an SRT output; it has pictures and sound.

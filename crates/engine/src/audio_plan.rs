@@ -15,8 +15,9 @@ use crate::state::{BusState, InputAudio, MAX_INPUTS};
 pub struct PlanInput {
     pub id: InputId,
     pub audio: InputAudio,
-    /// It has pictures: its sound is read at the time of the picture shown; a sound-only
-    /// input is read at the latency of its ring (ADR 0007 § 3).
+    /// Its sound is read at the time of the picture shown (its pictures carry the time of
+    /// their sound); otherwise at the latency of its ring (ADR 0007 § 3): a sound-only input,
+    /// and an HTML page, whose sound goes on while its picture does not change.
     pub video: bool,
 }
 

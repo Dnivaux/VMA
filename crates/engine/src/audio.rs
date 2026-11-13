@@ -53,7 +53,9 @@ const SMOOTHING: f64 = 1.0 / 50.0;
 const STALE_NS: f64 = 100_000_000.0;
 /// Ticks rebuilt at most after a gap (longer: the samples jump).
 const MAX_GAP_TICKS: u64 = 50;
-/// An input not shown for this many ticks loses its strip (ring and reader).
+/// An input not heard for this many ticks loses its strip (ring and reader), once its source
+/// dropped the ring or the input is gone from the plan. Not before: a file paused for a
+/// minute keeps its ring, and writes to it again when it plays.
 const FORGET_TICKS: u32 = 500;
 
 /// Inputs on air at a tick: the Program composition.
@@ -646,8 +648,10 @@ impl AudioMix {
                     );
                 }
                 None => {
-                    strip.unseen += 1;
-                    if strip.unseen > FORGET_TICKS {
+                    strip.unseen = strip.unseen.saturating_add(1);
+                    if strip.unseen > FORGET_TICKS
+                        && (planned.is_none() || strip.reader.source_gone())
+                    {
                         *slot = None;
                         if let Some(cell) = self.slots.get(index) {
                             cell.store(0, Ordering::Release);
@@ -1343,6 +1347,50 @@ mod tests {
         let mut h = vec![0.0f32; 2 * (written - read) as usize];
         headphones.read(read as i64, &mut h);
         assert!((peak(&h) - 0.5).abs() < 1e-4, "PFL hears the muted input");
+    }
+
+    /// A file paused for longer than [`FORGET_TICKS`], then played again: its picture did
+    /// not change meanwhile and its input was silent, but its sound comes back with it.
+    #[test]
+    fn an_input_paused_for_long_is_heard_again() {
+        let rate = FrameRate::FPS_50;
+        let (writer, plan) = audio_plan_channel();
+        writer.publish(&plan_of(&[(InputId(3), default_audio())]));
+        let (mut mix, buses, _) = AudioMix::new(rate, Arc::default(), plan);
+        let (mut source, reader) = ring(RING_FRAMES);
+        mix.attach(InputId(3), reader);
+        let on_air = OnAir {
+            from: Some(InputId(3)),
+            to: None,
+            mix: 0.0,
+        };
+        let sound = [0.5f32; 960 * CHANNELS];
+        let pause = 100..100 + u64::from(FORGET_TICKS) + 100;
+        let mut picture = 0;
+        let mut heard = [0.0f32; 2];
+        for n in 0..pause.end + 100 {
+            let tick_ns = START + 200 * MS + n * 20 * MS;
+            if !pause.contains(&n) {
+                // The picture of the period before, and the sound captured over it.
+                picture = tick_ns - 20 * MS;
+                source.push(picture, &sound);
+            }
+            let mut tick = AudioTick::new(n, tick_ns, on_air);
+            tick.shown[0] = Some((InputId(3), picture));
+            mix.tick(&tick);
+            let written = buses.master.written();
+            let mut out = [0.0f32; 960 * CHANNELS];
+            buses.master.read(written as i64 - 960, &mut out);
+            if (50..100).contains(&n) {
+                heard[0] = heard[0].max(peak(&out));
+            } else if n >= pause.end + 50 {
+                heard[1] = heard[1].max(peak(&out));
+            } else if n == pause.end - 1 {
+                assert!(peak(&out) < 1e-4, "silent while paused");
+            }
+        }
+        assert!((heard[0] - 0.5).abs() < 1e-3, "before the pause: {heard:?}");
+        assert!((heard[1] - 0.5).abs() < 1e-3, "after the pause: {heard:?}");
     }
 
     #[test]

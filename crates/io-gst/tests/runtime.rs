@@ -282,6 +282,90 @@ fn video_file_follows_the_playback_commands() {
     let _ = std::fs::remove_file(path);
 }
 
+/// A 25 fps clip of `frames` pictures with a tone (Vorbis), as [`temp_clip`].
+fn temp_clip_with_sound(name: &str, frames: u32) -> PathBuf {
+    use gstreamer::prelude::*;
+    gstreamer::init().unwrap();
+    let path = std::env::temp_dir().join(format!("vma-io-{}-{name}.mkv", std::process::id()));
+    let pipeline = gstreamer::parse::launch(&format!(
+        "videotestsrc num-buffers={frames} \
+         ! video/x-raw,format=I420,width=64,height=36,framerate=25/1 \
+         ! jpegenc ! matroskamux name=mux ! filesink name=out \
+         audiotestsrc num-buffers={frames} samplesperbuffer=1764 \
+         ! audio/x-raw,rate=44100 ! audioconvert ! vorbisenc ! mux."
+    ))
+    .unwrap();
+    let pipeline = pipeline.downcast::<gstreamer::Pipeline>().unwrap();
+    pipeline
+        .by_name("out")
+        .unwrap()
+        .set_property("location", path.to_str().unwrap());
+    pipeline.set_state(gstreamer::State::Playing).unwrap();
+    let message = pipeline
+        .bus()
+        .unwrap()
+        .timed_pop_filtered(
+            gstreamer::ClockTime::from_seconds(30),
+            &[gstreamer::MessageType::Eos, gstreamer::MessageType::Error],
+        )
+        .expect("clip not written in time");
+    assert!(
+        matches!(message.view(), gstreamer::MessageView::Eos(_)),
+        "{message:?}"
+    );
+    pipeline.set_state(gstreamer::State::Null).unwrap();
+    path
+}
+
+/// A file with sound, paused for longer than `vma-audio` keeps the strip of an input whose
+/// source is gone (10 s at 50p), then played again: heard again. Its strip used to be dropped
+/// while it was paused, and the file played on without its sound (found on 2026-11-13).
+#[test]
+fn a_file_paused_for_long_is_heard_again() {
+    use vma_core::AudioBus;
+    use vma_engine::Level;
+    let rig = rig();
+    let path = temp_clip_with_sound("long-pause", 100);
+    let id = add(&rig, InputSpec::File { path: path.clone() });
+    let send = |command| rig.engine.commands().send(Source::Script, command).unwrap();
+    assert!(wait_for(Duration::from_secs(5), || matches!(
+        status(&rig, id),
+        Some(InputStatus::Live { .. })
+    )));
+    assert_eq!(rig.engine.state().load().program, Some(id), "on Program");
+    let meters = rig.engine.audio_meters();
+    // Over the meter's 300 ms; the tone of the clip is a sine at 0.8.
+    let rms = || {
+        meters
+            .read(Level::Bus(AudioBus::Master))
+            .map_or(0.0, |[_, post]: [vma_engine::MeterReading; 2]| post.rms[0])
+    };
+    send(Command::SetLoop {
+        input: id,
+        enabled: true,
+    });
+    send(Command::Play { input: id });
+    assert!(
+        wait_for(Duration::from_secs(5), || rms() > 0.3),
+        "playing: RMS {}",
+        rms()
+    );
+    send(Command::Pause { input: id });
+    assert!(
+        wait_for(Duration::from_secs(2), || rms() < 0.001),
+        "paused: RMS {}",
+        rms()
+    );
+    std::thread::sleep(Duration::from_secs(11));
+    send(Command::Play { input: id });
+    assert!(
+        wait_for(Duration::from_secs(5), || rms() > 0.3),
+        "played again: RMS {}",
+        rms()
+    );
+    let _ = std::fs::remove_file(path);
+}
+
 /// A capture input whose device is not connected is a lost signal (retried in the
 /// background); the device list is readable at any time (empty on a machine without camera).
 #[test]

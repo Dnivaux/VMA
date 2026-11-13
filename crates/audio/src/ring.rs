@@ -169,6 +169,11 @@ impl RingReader {
         self.shared.blocks.load(Ordering::Relaxed)
     }
 
+    /// The producer side was dropped: nothing more will be written.
+    pub fn writer_gone(&self) -> bool {
+        Arc::strong_count(&self.shared) == 1
+    }
+
     /// The anchor of the latest block; `None` before the first block, or if the producer kept
     /// rewriting it during the read.
     pub fn anchor(&self) -> Option<Anchor> {

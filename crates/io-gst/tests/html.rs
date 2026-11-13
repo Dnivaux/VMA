@@ -420,6 +420,8 @@ fn the_sound_of_an_html_page_on_program_reaches_the_master() {
         gpu.queue.clone(),
         EngineConfig {
             resolution: Resolution::new(320, 180).unwrap(),
+            // As in the application: the ticks on the clock that dates the page's sound.
+            stream_clock: Some(vma_io_gst::stream_clock()),
             ..EngineConfig::default()
         },
         Journal::Disabled,
@@ -469,5 +471,34 @@ fn the_sound_of_an_html_page_on_program_reaches_the_master() {
     );
     let master = peak(Level::Bus(AudioBus::Master));
     assert!(master < 0.6, "the page's level (0.5): {master}");
+    // The picture of this page never changes: its sound goes on all the same (a sine at 0.5:
+    // 0.35 RMS over the meter's 300 ms).
+    std::thread::sleep(Duration::from_secs(1));
+    let stats = engine.audio_stats();
+    let read =
+        |stats: &vma_engine::AudioStats| stats.inputs().into_iter().find(|i| i.input == page);
+    let before = read(&stats).expect("the page's sound is read");
+    for _ in 0..10 {
+        std::thread::sleep(Duration::from_millis(200));
+        let rms = meters
+            .read(Level::Bus(AudioBus::Master))
+            .map_or(0.0, |[_, post]: [vma_engine::MeterReading; 2]| post.rms[0]);
+        assert!(
+            (0.3..0.4).contains(&rms),
+            "the sound of a still page: RMS {rms}"
+        );
+    }
+    // Read whole: every sample was in its ring when its block was mixed.
+    let after = read(&stats).unwrap();
+    eprintln!("the page's sound over 2 s: {before:?} → {after:?}");
+    assert!(after.frames - before.frames > 48_000, "{after:?}");
+    assert_eq!(
+        (
+            after.missing - before.missing,
+            after.resyncs - before.resyncs
+        ),
+        (0, 0),
+        "{before:?} → {after:?}"
+    );
     drop(io);
 }

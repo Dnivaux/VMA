@@ -85,6 +85,11 @@ impl InputReader {
         self.stats
     }
 
+    /// The source dropped its side of the ring: no more sound will come.
+    pub fn source_gone(&self) -> bool {
+        self.ring.writer_gone()
+    }
+
     /// Fills `out` (interleaved stereo, at most [`MAX_BLOCK`] frames: the rest is silence)
     /// with the source from stream time `start_ns` on.
     pub fn read(&mut self, start_ns: u64, out: &mut [f32]) -> BlockKind {

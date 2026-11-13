@@ -113,9 +113,12 @@ référence, mise à l'échelle chez VMA (placement d'un input : « position / z
   connexion (`Audio { browser, rate, samples }`, échantillons F32 en base64). Vu au test : y
   toucher depuis ce thread était une course de données.
 - **Daté à l'arrivée** : images et son de l'input HTML portent l'heure de l'horloge maître à
-  leur réception (un paquet : celle de sa fin moins sa durée) ; `vma-audio` lit le son à l'heure
-  de l'image montrée, comme pour tout input. Un son à une autre cadence que 48 kHz est ignoré
-  (signalé une fois).
+  leur réception (un paquet : celle de sa fin moins sa durée). `vma-audio` lit ce son **à la
+  latence de son anneau** (temps du tick moins une période), comme celui d'un input sans
+  vidéo, et non à l'heure de l'image montrée : une page ne redessine que quand son image
+  change, et le son d'une page à l'image fixe se coupait après 100 ms (défaut corrigé le
+  2026-11-13, ADR 0007 ; test : 2 s de son d'une page immobile, aucun échantillon manquant).
+  Un son à une autre cadence que 48 kHz est ignoré (signalé une fois).
 - L'input HTML a une tranche dans le mélangeur ; comme toute source avec image, il suit la
   vidéo par défaut (au Master quand il est au Program ; en overlay, seulement si on désactive
   le suivi, q. 26 de l'observation).

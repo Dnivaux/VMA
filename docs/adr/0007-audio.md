@@ -168,6 +168,24 @@ Constatées en mesurant la synchro de bout en bout ; elles ne changent pas la d�
   - Reste : une source plus lente que le maître qui ne montre pas une image nouvelle à chaque
     tick (25p dans 50p) répète une image de plus ; ce tick-là, le son a une période d'avance.
 
+## Précision de mise en œuvre (2026-11-13) : deux défauts du § 3 corrigés
+Trouvés en relisant le mélangeur pour le son du replay ; présents depuis la Phase 3 (le
+premier) et la Phase 4 (le second), chacun confirmé par un test qui échouait.
+- **Un input muet plus de 10 s perdait sa tranche pour de bon.** `vma-audio` oubliait
+  (anneau et lecteur) un input sans image datée ou à l'image figée depuis 500 ticks ; or son
+  pipeline garde le même anneau : un **fichier mis en pause plus de 10 s reprenait sans son**
+  (mesuré : RMS 0 au Master après une pause de 11 s). La tranche n'est plus oubliée que si sa
+  source a lâché l'anneau (`RingReader::writer_gone`) ou si l'input n'est plus dans le plan.
+- **Le son d'une page HTML dont l'image ne change pas était coupé.** Une page ne redessine
+  que quand son image change, et son son était lu « à l'heure de l'image montrée » : passé
+  100 ms sans repeint, l'image était « figée », l'input silencieux (un jingle, une radio web,
+  un score qui sonne : 100 ms de son par repeint). Les images et le son d'une page sont datés
+  à leur arrivée, sans lien entre eux : le son d'un input HTML est désormais lu comme celui
+  d'un input sans vidéo, à la latence de son anneau (temps du tick moins une période). Écart
+  son − image inchangé à l'ordre d'une image près (les deux arrivent « maintenant »).
+  Condition : les ticks du moteur sont sur l'horloge des pipelines
+  (`EngineConfig::stream_clock`, ce que fait l'application).
+
 ## Conséquences
 - `vma-output` ne génère plus l'audio (sauf `--sync-test`) : il assemble l'image *n* et le bloc
   *n* du bus de chaque sortie. PTS inchangés (ADR 0006 § 3), compensation de l'amorçage AAC
