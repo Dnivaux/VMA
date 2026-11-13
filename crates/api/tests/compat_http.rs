@@ -70,7 +70,11 @@ struct Rig {
 }
 
 fn rig() -> Rig {
-    let (commands, state) = headless(show()).unwrap();
+    rig_with(show())
+}
+
+fn rig_with(show: State) -> Rig {
+    let (commands, state) = headless(show).unwrap();
     let config = ApiConfig {
         native: None,
         compat_http: Some(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))),
@@ -336,4 +340,160 @@ fn the_state_as_xml() {
     let key = r.state.load().inputs[0].key.to_string();
     assert!(xml.contains(&format!("key=\"{key}\"")));
     assert!(xml.starts_with('<') && xml.ends_with('>'));
+}
+
+/// The show with the replay: inputs 3 (the video) and 4 (the camera) recorded for it, both
+/// set for the ISO, Replay A as input 5.
+fn replay_show() -> State {
+    let mut s = show();
+    let (clip, camera) = (s.inputs[2].id, s.inputs[3].id);
+    for command in [
+        Command::SetReplaySession {
+            folder: Some("/ssd/replay".into()),
+            keep_minutes: 30,
+            kbps: 50_000,
+        },
+        Command::SetReplayCameras {
+            inputs: vec![clip, camera],
+        },
+        Command::SetIso {
+            folder: Some("/iso".into()),
+            inputs: vec![clip, camera],
+            split_minutes: None,
+        },
+        Command::AddInput {
+            spec: InputSpec::Replay {
+                channel: vma_engine::ReplayChannel::A,
+            },
+            name: None,
+        },
+    ] {
+        s.apply(&command).unwrap();
+    }
+    s
+}
+
+/// F8: the replay functions VMA has, as the Companion module sends them, and the ISO ones
+/// (`StartMultiCorder`…).
+#[test]
+fn replay_functions() {
+    let r = rig_with(replay_show());
+    let (clip, camera) = (r.id(3), r.id(4));
+    assert!(r.call("ReplayStartRecording").replay.recording);
+    assert!(!r.call("ReplayStartStopRecording").replay.recording);
+    assert!(r.call("ReplayStartStopRecording").replay.recording);
+
+    // Marks: the last seconds, in and out, cancelled.
+    assert!(r.refused("ReplayMarkInOut").contains("Value"));
+    assert!(r.refused("ReplayMarkInOut&Value=0").contains("Value"));
+    let s = r.call("ReplayMarkInOut&Value=5");
+    assert_eq!(s.replay.events.len(), 1);
+    let first = s.replay.events[0].clone();
+    // The last 5 s, ending when it arrived (the headless clock starts at 0).
+    assert_eq!(first.in_ns, first.out_ns.saturating_sub(5_000_000_000));
+    assert!(r.call("ReplayMarkIn").replay.marking.is_some());
+    assert!(r.call("ReplayMarkCancel").replay.marking.is_none());
+    r.call("ReplayMarkInLive");
+    std::thread::sleep(Duration::from_millis(20));
+    let s = r.call("ReplayMarkOut");
+    assert_eq!(s.replay.events.len(), 2);
+    let second = s.replay.events[1].id;
+
+    // The last event: text, angle (camera 2 of the replay: input 4).
+    let s = r.call("ReplaySetLastEventText&Value=But%20!");
+    assert_eq!(s.replay.events[1].comment, "But !");
+    let s = r.call("ReplayLastEventSingleCameraOn&Value=2");
+    assert_eq!(s.replay.events[1].angle, Some(camera));
+    assert_eq!(s.replay.events[1].comment, "But !", "the text kept");
+    assert!(
+        r.refused("ReplayLastEventSingleCameraOn&Value=3")
+            .contains("camera 3")
+    );
+
+    // Playing: 0 is the latest event.
+    assert_eq!(
+        r.call("ReplayPlayEvent&Value=1&Channel=Current")
+            .replay
+            .player
+            .event,
+        Some(first.id)
+    );
+    assert_eq!(
+        r.call("ReplayPlayLastEvent").replay.player.event,
+        Some(second)
+    );
+    assert!(r.refused("ReplayPlayEvent&Value=2").contains("event 2"));
+    assert!(
+        r.refused("ReplayPlay&Channel=B")
+            .contains("one replay channel")
+    );
+
+    // Speeds from 0 to 1, direction, steps.
+    assert_eq!(r.call("ReplaySetSpeed&Value=0.5").replay.player.speed, 50);
+    assert_eq!(
+        r.call("ReplayChangeSpeed&Value=-0.25&Channel=A")
+            .replay
+            .player
+            .speed,
+        25
+    );
+    assert_eq!(
+        r.call("SetRateSlowMotion&Value=1&Input=5")
+            .replay
+            .player
+            .speed,
+        100
+    );
+    assert!(
+        r.refused("SetRateSlowMotion&Value=1&Input=1")
+            .contains("replay A")
+    );
+    assert!(r.refused("ReplaySetSpeed&Value=2").contains("Value"));
+    let player = r.call("ReplayPlayBackward").replay.player;
+    assert!(player.playing && player.reverse);
+    assert!(!r.call("ReplayPause").replay.player.playing);
+    assert!(r.call("ReplayPlayPause").replay.player.playing);
+    assert!(!r.call("ReplayChangeDirection").replay.player.reverse);
+    assert!(r.call("ReplaySetDirectionBackward").replay.player.reverse);
+    assert!(!r.call("ReplaySetDirectionForward").replay.player.reverse);
+    assert!(
+        !r.call("ReplayJumpFrames&Value=-3").replay.player.playing,
+        "a step pauses"
+    );
+
+    // Angles: the replay cameras by number.
+    assert_eq!(r.call("ReplayACamera1").replay.player.angle, Some(clip));
+    assert_eq!(r.call("ReplayCamera2").replay.player.angle, Some(camera));
+    let (_, xml) = r.get("/api");
+    assert!(xml.contains("cameraA=\"2\" speed=\"1\""), "{xml}");
+    assert!(r.refused("ReplayACamera3").contains("camera 3"));
+    assert!(r.refused("ReplayBCamera1").contains("not supported"));
+    r.call("ReplaySelectChannelA");
+    assert!(r.refused("ReplaySelectChannelB").contains("not supported"));
+
+    // « Rejouer », then the last event deleted.
+    assert!(r.call("ReplayPlayLastEventToOutput").replay.auto.is_some());
+    let s = r.call("ReplayDeleteLastEvent");
+    assert_eq!(
+        s.replay.events.iter().map(|e| e.id).collect::<Vec<_>>(),
+        [first.id]
+    );
+
+    // The ISO.
+    assert!(r.call("StartMultiCorder").replay.iso.recording);
+    let (_, xml) = r.get("/api");
+    assert!(xml.contains("<multiCorder>True</multiCorder>"), "{xml}");
+    assert!(xml.contains("type=\"Replay\""), "the Replay input: {xml}");
+    for attr in [
+        "<replay live=\"False\" recording=\"True\" channelMode=\"A\"",
+        // « Rejouer » at 50 %; its event deleted, the first camera.
+        "cameraA=\"1\" speed=\"0.5\" speedA=\"0.5\"",
+        "<timecode/>",
+    ] {
+        assert!(xml.contains(attr), "{attr} missing in {xml}");
+    }
+    assert!(!r.call("StartStopMultiCorder").replay.iso.recording);
+    assert!(r.call("StartStopMultiCorder").replay.iso.recording);
+    assert!(!r.call("StopMultiCorder").replay.iso.recording);
+    assert!(!r.call("ReplayStopRecording").replay.recording);
 }

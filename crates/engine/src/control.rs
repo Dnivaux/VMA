@@ -156,7 +156,9 @@ pub fn headless(state: State) -> std::io::Result<(CommandSender, StateReader)> {
         .name("vma-headless".into())
         .spawn(move || {
             let mut state = state;
-            for envelope in rx {
+            let clock = vma_clock::StreamClock::new(Instant::now(), 0);
+            for mut envelope in rx {
+                stamp_mark(&mut envelope.command, &clock);
                 let before = state.version;
                 let result = state.apply(&envelope.command).map(|_| ());
                 if state.version != before {
@@ -168,6 +170,16 @@ pub fn headless(state: State) -> std::io::Result<(CommandSender, StateReader)> {
             }
         })?;
     Ok((sender, reader))
+}
+
+/// A mark is the instant it arrives, written in the command: the journal replays it.
+fn stamp_mark(command: &mut Command, clock: &vma_clock::StreamClock) {
+    if let Command::ReplayMark {
+        at_ns: at @ None, ..
+    } = command
+    {
+        *at = Some(clock.now());
+    }
 }
 
 /// Feeds a [`StateReader::standalone`].
@@ -417,13 +429,7 @@ impl Controller {
     }
 
     pub(crate) fn handle(&mut self, mut envelope: Envelope) {
-        // A mark is the instant it arrives, written in the command: the journal replays it.
-        if let Command::ReplayMark {
-            at_ns: at @ None, ..
-        } = &mut envelope.command
-        {
-            *at = Some(self.stream_clock.now());
-        }
+        stamp_mark(&mut envelope.command, &self.stream_clock);
         let before = self.state.version;
         let result = self.state.apply(&envelope.command);
         match &result {

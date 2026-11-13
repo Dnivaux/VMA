@@ -40,7 +40,11 @@ fn show() -> State {
 }
 
 fn rig() -> (Api, SocketAddr, StateReader) {
-    let (commands, state) = headless(show()).unwrap();
+    rig_with(show())
+}
+
+fn rig_with(show: State) -> (Api, SocketAddr, StateReader) {
+    let (commands, state) = headless(show).unwrap();
     let config = ApiConfig {
         native: None,
         compat_http: None,
@@ -303,4 +307,87 @@ fn the_companion_module_traffic() {
     }
     // Polled every 250 ms by the module: the same document while nothing changes.
     assert_eq!(xml.xml(), document);
+}
+
+/// F8: the replay activators the Companion module follows, and its replay `FUNCTION` lines
+/// (the action's name in its case, parameters in lower case, `channel=Current`).
+#[test]
+fn replay_activators_and_the_companion_module_actions() {
+    let mut show = show();
+    let camera = show.inputs[3].id;
+    for command in [
+        Command::SetReplaySession {
+            folder: Some("/ssd/replay".into()),
+            keep_minutes: 30,
+            kbps: 50_000,
+        },
+        Command::SetReplayCameras {
+            inputs: vec![camera],
+        },
+        Command::AddInput {
+            spec: InputSpec::Replay {
+                channel: vma_engine::ReplayChannel::A,
+            },
+            name: None,
+        },
+    ] {
+        show.apply(&command).unwrap();
+    }
+    let (_api, address, state) = rig_with(show);
+    let mut acts = Client::new(address);
+    assert_eq!(
+        acts.ask("ACTS ReplayRecording"),
+        "ACTS OK ReplayRecording 0"
+    );
+    assert_eq!(acts.ask("ACTS ReplayChannelA"), "ACTS OK ReplayChannelA 1");
+    assert_eq!(acts.ask("ACTS ReplayACamera1"), "ACTS OK ReplayACamera1 1");
+    assert_eq!(
+        acts.ask("ACTS ReplayBCamera1"),
+        "ACTS ER Unknown activator ReplayBCamera1"
+    );
+    assert_eq!(acts.ask("SUBSCRIBE ACTS"), "SUBSCRIBE OK ACTS");
+
+    let mut control = Client::new(address);
+    for (line, answer) in [
+        (
+            "FUNCTION ReplayStartRecording ",
+            "FUNCTION OK ReplayStartRecording",
+        ),
+        (
+            "FUNCTION ReplayMarkInOut value=10",
+            "FUNCTION OK ReplayMarkInOut",
+        ),
+        (
+            "FUNCTION replayPlayLastEvent channel=Current",
+            "FUNCTION OK replayPlayLastEvent",
+        ),
+        (
+            "FUNCTION ReplaySetSpeed Channel=Current&Value=0.25",
+            "FUNCTION OK ReplaySetSpeed",
+        ),
+    ] {
+        assert_eq!(control.ask(line), answer);
+    }
+    // In any order: changes close together come in one batch, sorted by name.
+    let mut wanted = vec!["ACTS OK ReplayPlaying 1", "ACTS OK ReplayRecording 1"];
+    for _ in 0..20 {
+        let line = acts.line();
+        wanted.retain(|w| *w != line);
+        if wanted.is_empty() {
+            break;
+        }
+    }
+    assert!(wanted.is_empty(), "never came: {wanted:?}");
+    let player = state.load().replay.player.clone();
+    assert_eq!((player.speed, player.playing), (25, true));
+    assert_eq!(state.load().replay.events.len(), 1);
+    assert_eq!(
+        control.ask("FUNCTION replayPause channel=B"),
+        "FUNCTION ER VMA has one replay channel (A), not B"
+    );
+    let xml = control.xml();
+    assert!(
+        xml.contains("<replay live=\"False\" recording=\"True\""),
+        "{xml}"
+    );
 }

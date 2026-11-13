@@ -88,7 +88,32 @@ pub fn activators(state: &State) -> BTreeMap<ActKey, f32> {
     );
     put("Fullscreen", None, flag(on(OutputSpec::is_fullscreen)));
     put("External", None, 0.0);
-    put("MultiCorder", None, 0.0);
+    put("MultiCorder", None, flag(state.replay.iso.recording));
+    // The replay, as the Companion module follows it: channel A only, no « live » mode.
+    let replay = &state.replay;
+    let player = &replay.player;
+    put("ReplayRecording", None, flag(replay.recording));
+    put("ReplayPlaying", None, flag(player.playing));
+    put(
+        "ReplayPlayForward",
+        None,
+        flag(player.playing && !player.reverse),
+    );
+    put(
+        "ReplayPlayBackward",
+        None,
+        flag(player.playing && player.reverse),
+    );
+    put("ReplayLive", None, 0.0);
+    put("ReplayChannelA", None, 1.0);
+    put("ReplayChannelB", None, 0.0);
+    put("ReplayChannelAB", None, 0.0);
+    let shown = state.replay_camera();
+    for (n, camera) in replay.cameras.iter().enumerate() {
+        let on = flag(shown == Some(*camera));
+        put(&format!("ReplayACamera{}", n + 1), None, on);
+        put(&format!("ReplayCamera{}", n + 1), None, on);
+    }
     acts
 }
 

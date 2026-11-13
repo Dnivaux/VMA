@@ -5,8 +5,10 @@
   supportées et non supportées »)
 - **Sources** (lues le 2026-11-11) : documentation publique officielle de la référence :
   pages « TCP API » (édition 26), « HTTP Web API » (éditions 26 et 28) et « Shortcut
-  Function Reference » (édition 28) ; code du **module Companion** de la référence (dépôt
-  public de Bitfocus, MIT, v5.0.6), lu pour savoir ce qu'un serveur doit fournir. Aucun code
+  Function Reference » (édition 28 ; catégorie « Replay » relue en entier le 2026-11-13,
+  152 fonctions) ; code du **module Companion** de la référence (dépôt public de Bitfocus,
+  MIT, v5.0.6 ; actions, activateurs et lecture du XML du replay relus le 2026-11-13), lu
+  pour savoir ce qu'un serveur doit fournir. Aucun code
   repris ; aucun binaire de la référence inspecté (BRIEF §2.1).
 - **Colonne « Vu »** : **D** = texte de la documentation lu mot à mot ; **d** = la page a
   été lue en partie seulement, l'entrée est **à revérifier** avant l'implémentation (règle
@@ -78,6 +80,14 @@ L'exemple de la doc (D) a : `version`, `inputs/input` (`key`, `number`, `type`, 
 `transitions/transition` (`number`, `effect`, `duration`), `recording`, `external`,
 `streaming`, `playList`, `multiCorder` ; booléens `True` / `False`.
 
+**Replay** (M ; la doc n'en dit rien) : le module cherche le premier `input` de `type`
+`Replay` et son enfant `replay`. VMA écrit, dans l'input Replay A :
+`<replay live="False" recording="…" channelMode="A" events="1" eventsA="1" cameraA="n"
+speed="0.5" speedA="0.5"><timecode/><timecodeA/><timecodeB/></replay>` : `cameraA` est le
+numéro de la caméra montrée parmi celles du replay, `speed` de 0 à 1 ; pas de mode « live »
+(`False`) ; timecodes vides (la position est celle du lecteur, dans `vma-io`, pas dans
+l'état). `multiCorder` : l'ISO enregistre.
+
 Le module (M) ignore **tout le document** s'il manque l'un de : `version`, `edition`,
 `preview`, `active`, `audio`, `fadeToBlack`, `external`, `recording`, `streaming`, `playList`,
 `multiCorder`, `fullscreen` ; il lit aussi, s'ils sont là : `inputs` (au moins un `input`
@@ -132,7 +142,8 @@ Toutes les autres fonctions de la référence (plusieurs centaines) répondent `
 | `StartRecording` / `StopRecording` / `StartStopRecording` | — | enregistrement | oui | D, M |
 | `StartStreaming` / `StopStreaming` / `StartStopStreaming` | Value = numéro de stream à partir de 0, vide = tous | destinations RTMP / SRT, dans l'ordre de la fenêtre Sorties | oui | D, M |
 | `Fullscreen` / `FullscreenOn` / `FullscreenOff` | — | sortie plein écran (si elle est configurée) | oui | D, M |
-| `StartExternal`, `StartMultiCorder`, `SetOutput2`… | | — | non (sortie externe, ISO : Phase 6) | D |
+| `StartMultiCorder` / `StopMultiCorder` / `StartStopMultiCorder` | — | l'enregistrement ISO (Phase 6), avec les réglages de sa fenêtre | oui | D |
+| `StartExternal`, `SetOutput2`… | | — | non (sortie externe) | D |
 
 ### Son
 | Fonction | Paramètres | Effet dans VMA | État | Vu |
@@ -158,6 +169,42 @@ Toutes les autres fonctions de la référence (plusieurs centaines) répondent `
 | `AddInput` | Value = `Type\|Fichier` (`Video`, `Image`, `Colour`) | ajoute | partiel : ces trois types | D |
 | `SetText`, `SelectIndex`, `NextItem`… | | — | non (titres natifs, listes : absents) | D |
 
+### Replay (Phase 6, étape 8)
+VMA a **un** canal (A), **une** liste d'événements, **un** angle par événement, et pas de mode
+« enregistré » (on marque dans l'enregistrement en direct). `Channel` : la doc ne donne pas
+ses valeurs ; le module envoie `Current`, `A` ou `B` (M) : absent, `Current` et `A` désignent
+le canal A, `B` est refusé. Les vitesses vont de 0 à 1 (0,5 = 50 %, D). Caméra *n* : la
+*n*-ième caméra des réglages du replay.
+
+| Fonction | Paramètres (doc) | Effet dans VMA | État | Vu |
+|---|---|---|---|---|
+| `ReplayStartRecording` / `ReplayStopRecording` / `ReplayStartStopRecording` | — | enregistrement du replay | oui | D, M |
+| `ReplayMarkIn`, `ReplayMarkInLive` | — | « Entrée » | oui | D, M |
+| `ReplayMarkOut` / `ReplayMarkCancel` | — | « Sortie » / « Annuler » | oui | D, M |
+| `ReplayMarkInOut`, `ReplayMarkInOutLive` | Value = secondes | un événement des *n* dernières secondes (Value obligatoire, de 1 à la limite du moteur) | oui | D, M |
+| `ReplayPlay` / `ReplayPause` / `ReplayPlayPause` | Channel | lecture, pause, bascule | oui | D, M |
+| `ReplayPlayForward` / `ReplayPlayBackward` | Channel | lecture en avant / en arrière | oui | D, M |
+| `ReplaySetDirectionForward` / `Backward`, `ReplayChangeDirection` | Channel | sens, sans changer la lecture | oui | D, M |
+| `ReplayPlayLastEvent` | Channel | joue le dernier événement | oui | D, M |
+| `ReplayPlayEvent` | Value = numéro, 0 en bas de la liste (le plus récent) ; Channel | joue cet événement | oui | D, M |
+| `ReplayPlayLastEventToOutput`, `ReplayPlayEventToOutput` | Channel (Value) | « Rejouer » : transition du bouton du replay vers Replay A, lecture, retour | partiel : effet exact de la référence à observer | D, M |
+| `ReplaySetSpeed` | Value = 0–1 ; Channel | vitesse | oui | D, M |
+| `SetRateSlowMotion` | Value = 0–1 ; Input | vitesse de Replay A (un autre input est refusé) | oui | D, M |
+| `ReplayChangeSpeed` | Value ; Channel | ajoute Value × 100 % (de −1 à 1, plage du module), bornée à 0–100 % | partiel : sens de Value déduit du module | D, M |
+| `ReplayJumpFrames` | Value = images ; Channel | pause et avance de *n* images (en arrière si négatif) | partiel : la référence ne met peut-être pas en pause | D, M |
+| `ReplayACamera1`–`8`, `ReplayCamera1`–`8` | — | angle *n* pendant la lecture | oui | D, M |
+| `ReplayLastEventSingleCameraOn` | Value = caméra 1–8 | angle du dernier événement | oui | D, M |
+| `ReplaySetLastEventText` | Value = texte | commentaire du dernier événement | oui | D, M |
+| `ReplayDeleteLastEvent` | Channel | supprime le dernier événement | oui | D, M |
+| `ReplaySelectChannelA` | — | rien à faire (un seul canal) | oui | D, M |
+| `ReplayBCamera…`, `ReplaySelectChannelB` / `AB`, `ReplaySwapChannels`, `ReplaySetChannel…Timecode…` | | — | non : pas de canal B | D, M |
+| `ReplayMarkInRecorded…`, `ReplayMarkInOutRecorded`, `ReplayLive`, `ReplayRecorded`, `ReplayLiveToggle`, `ReplayJumpToNow`, `ReplaySetTimecode` | | — | non : pas de mode « enregistré » ni de timecode | D, M |
+| `ReplayMarkInOutLiveFuture` | Value = secondes à venir | — | non | D, M |
+| `Replay…Selected…`, `ReplaySelect…Event…`, `ReplayScrollSelectedEvent`, `ReplayMove…`, `ReplayUpdateSelected…`, `ReplayJumpToSelected…` | | — | non : pas d'événement sélectionné | D, M |
+| `ReplaySelectEvents1`–`20`, `ReplayCopy…`, `ReplayMove…Event` | | — | non : une seule liste | D, M |
+| `ReplayLastEventCameraOn` / `Off`, `ReplayToggle…Camera…`, `Replay…TextCamera` | | — | non : un angle par événement | D, M |
+| `ReplayPlayAllEvents…`, `ReplayPlayEventsByID…`, `ReplayPlayNext` / `Previous`, `ReplayStopEvents`, `ReplayDuplicate…`, `ReplayExportLastEvent`, `ReplayFastForward` / `Backward`, `ReplayJumpFramesFast…`, `ReplaySetAudioSource`, `ReplayShowHide`, `ReplayQuadMode…` | | — | non (plus tard pour certaines : export, Q11 ; son, Q12) | D, M |
+
 ### Général
 | Fonction | Paramètres | Effet dans VMA | État | Vu |
 |---|---|---|---|---|
@@ -171,5 +218,9 @@ input ; valeurs de 0 à 1 (booléens → 1 / 0, volumes en flottants) (D).
 `InputAudio`, `InputSolo`, `InputAudioAuto`, `InputMasterAudio`, `InputBusAAudio`,
 `InputBusBAudio`, `MasterVolume`, `MasterAudio`, `MasterHeadphones`, `BusAVolume`,
 `BusAAudio`, `BusASolo`, `BusBVolume`, `BusBAudio`, `BusBSolo`, `FadeToBlack`, `Recording`,
-`Streaming`, `Fullscreen`. Demandés par le module et absents de VMA (`BusC`–`G…`,
-`Replay…`, `InputMix2…`, `InputVolumeChannelMixer…`) → `ER`.
+`Streaming`, `Fullscreen`, `MultiCorder` (l'ISO), et pour le replay (M) : `ReplayRecording`,
+`ReplayPlaying`, `ReplayPlayForward` / `ReplayPlayBackward` (en lecture, dans ce sens),
+`ReplayLive` (toujours 0), `ReplayChannelA` (1), `ReplayChannelB` / `ReplayChannelAB` (0),
+`ReplayACamera1`–`n` et `ReplayCamera1`–`n` (1 pour la caméra montrée, *n* caméras du
+replay). Demandés par le module et absents de VMA (`BusC`–`G…`, `ReplayBCamera…`,
+`ReplayQuadMode`, `InputMix2…`, `InputVolumeChannelMixer…`) → `ER`.

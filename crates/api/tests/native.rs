@@ -205,3 +205,41 @@ fn many_clients_at_once() {
     );
     assert_eq!(accepted, state.load().inputs.len());
 }
+
+/// F8: the replay commands, as the UI sends them, written in JSON by hand as a tool would;
+/// the replay in `GET /state`.
+#[test]
+fn replay_commands() {
+    let (_api, address, state) = api();
+    let post = |body: &str| {
+        let (status, answer) = http(address, "POST", "/commands", body);
+        assert_eq!(status, 200, "{body}: {answer}");
+    };
+    post(r#"{"AddInput":{"spec":{"Capture":{"device":"cam"}},"name":"Caméra"}}"#);
+    let camera = state.load().inputs[0].id.0;
+    post(r#"{"SetReplaySession":{"folder":"/ssd/replay","keep_minutes":30,"kbps":50000}}"#);
+    post(&format!(
+        r#"{{"SetReplayCameras":{{"inputs":[{camera}]}}}}"#
+    ));
+    post(r#"{"AddInput":{"spec":{"Replay":{"channel":"A"}},"name":null}}"#);
+    post(r#""StartReplayRecording""#);
+    post(r#"{"ReplayMark":{"mark":{"Last":{"seconds":5}}}}"#);
+    post(r#"{"ReplaySpeed":{"percent":50}}"#);
+    post(r#"{"ReplayPlayEvent":{"id":null}}"#);
+    let (status, body) = http(
+        address,
+        "POST",
+        "/commands",
+        r#"{"ReplayMark":{"mark":"Out"}}"#,
+    );
+    assert_eq!(status, 422, "no mark in: {body}");
+
+    let (status, body) = http(address, "GET", "/state", "");
+    assert_eq!(status, 200);
+    let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let replay = &json["replay"];
+    assert_eq!(replay["recording"], true, "{replay}");
+    assert_eq!(replay["events"].as_array().unwrap().len(), 1, "{replay}");
+    assert_eq!(replay["player"]["speed"], 50);
+    assert_eq!(replay["player"]["playing"], true);
+}

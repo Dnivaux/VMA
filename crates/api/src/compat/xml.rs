@@ -5,7 +5,9 @@
 use std::fmt::Write as _;
 
 use vma_core::AudioBus;
-use vma_engine::{Effect, InputSpec, InputStatus, OutputSpec, State, TransitionSetting};
+use vma_engine::{
+    Effect, InputSpec, InputStatus, MAX_REPLAY_SPEED, OutputSpec, State, TransitionSetting,
+};
 
 use super::functions::db_to_volume;
 use super::{EDITION, ROOT, VERSION};
@@ -216,6 +218,9 @@ pub fn state_tree(state: &State) -> Element {
             .attr("gainDb", 0)
             .attr("selectedIndex", 1);
         element.text = Some(input.name.clone());
+        if matches!(input.spec, InputSpec::Replay { .. }) {
+            element = element.child(replay(state));
+        }
         inputs = inputs.child(element);
     }
     let mut overlays = Element::new("overlays");
@@ -279,12 +284,43 @@ pub fn state_tree(state: &State) -> Element {
             })),
         ))
         .child(Element::text("playList", "False"))
-        .child(Element::text("multiCorder", "False"))
+        .child(Element::text(
+            "multiCorder",
+            yes(state.replay.iso.recording),
+        ))
         .child(Element::text(
             "fullscreen",
             yes(on(OutputSpec::is_fullscreen)),
         ))
         .child(audio)
+}
+
+/// The `replay` element of the Replay input, as the Companion module reads it: channel A
+/// only (`channelMode` `A`), one event list, speeds from 0 to 1, the camera as its number among
+/// the replay cameras. No « live » mode, and no timecode yet (the position is the player's,
+/// in `vma-io`): empty.
+fn replay(state: &State) -> Element {
+    let replay = &state.replay;
+    let camera = state
+        .replay_camera()
+        .and_then(|c| replay.cameras.iter().position(|x| *x == c))
+        .map_or(1, |n| n + 1);
+    let speed = format!(
+        "{}",
+        f32::from(replay.player.speed) / f32::from(MAX_REPLAY_SPEED)
+    );
+    Element::new("replay")
+        .attr("live", "False")
+        .attr("recording", yes(replay.recording))
+        .attr("channelMode", "A")
+        .attr("events", 1)
+        .attr("eventsA", 1)
+        .attr("cameraA", camera)
+        .attr("speed", &speed)
+        .attr("speedA", &speed)
+        .child(Element::new("timecode"))
+        .child(Element::new("timecodeA"))
+        .child(Element::new("timecodeB"))
 }
 
 /// The XML document of `state`.

@@ -18,6 +18,12 @@ Corps : **une** `Command` en JSON, sous la forme du journal (`docs/specs/command
 `{"AddInput":{"spec":{"Color":{"color":{"r":200,"g":0,"b":0}}},"name":"Rouge"}}`…
 Les inputs sont désignés par leur `id` (champ `id` de `GET /state`).
 
+Replay (Phase 6, les commandes de l'UI) : `"StartReplayRecording"`,
+`{"ReplayMark":{"mark":{"Last":{"seconds":5}}}}` (`"In"`, `"Out"`, `"Cancel"` ; l'instant est
+celui où `vma-control` la reçoit), `{"ReplayPlayEvent":{"id":null}}` (le dernier),
+`{"ReplaySpeed":{"percent":50}}`, `{"ReplayAngle":{"input":4}}`, `{"ReplayAuto":{"id":null}}`
+(« Rejouer »), `"StartIso"`… ; l'état du replay est dans `replay` de `GET /state`.
+
 | Code | Corps | Quand |
 |---|---|---|
 | 200 | `{"id": 17, "result": "ok"}` | appliquée |

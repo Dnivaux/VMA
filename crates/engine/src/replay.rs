@@ -458,17 +458,28 @@ impl State {
         Some(folder.join(self.input(camera)?.key.to_string()))
     }
 
+    /// The camera replay channel A plays from: the one chosen while playing, else the event's
+    /// angle, else the first camera.
+    pub fn replay_camera(&self) -> Option<InputId> {
+        let player = &self.replay.player;
+        let event = player
+            .event
+            .and_then(|id| self.replay.events.iter().find(|e| e.id == id));
+        player
+            .angle
+            .or_else(|| event.and_then(|e| e.angle))
+            .filter(|a| self.replay.cameras.contains(a))
+            .or_else(|| self.replay.cameras.first().copied())
+    }
+
     /// What the player of channel A plays now.
     fn player_plan(&self) -> PlayerPlan {
         let player = &self.replay.player;
         let event = player
             .event
             .and_then(|id| self.replay.events.iter().find(|e| e.id == id));
-        let angle = player
-            .angle
-            .or_else(|| event.and_then(|e| e.angle))
-            .filter(|a| self.replay.cameras.contains(a))
-            .or_else(|| self.replay.cameras.first().copied())
+        let angle = self
+            .replay_camera()
             .and_then(|camera| self.camera_folder(camera));
         PlayerPlan {
             angle,
