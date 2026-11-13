@@ -182,8 +182,10 @@ impl Rig {
         while !done(self) {
             assert!(
                 Instant::now() < deadline,
-                "timed out waiting for: {what}; lost: {:?}",
-                self.lost
+                "timed out waiting for: {what}; lost: {:?}; {} pictures, the last: {:?}",
+                self.lost,
+                self.feeds.count(),
+                self.feeds.pictures.lock().unwrap().last()
             );
             let lost = &mut self.lost;
             self.host.tick(Instant::now(), &mut |e| lost.push(e));
@@ -343,19 +345,21 @@ fn kill(pid: u32) {
     assert!(status.success(), "kill {pid}");
 }
 
-/// D6's page: blocks along the top edge show the times the page was loaded (red of block 0,
-/// counted in `sessionStorage`), the last `vma-data` value (green of block 1), what a script
-/// writes (blue of block 2); block 3 is left to the input's CSS.
+/// D6's page: blocks along the top edge show how the document came (red of block 0: 1 navigated
+/// to, 2 reloaded, 3 back or forward), the last `vma-data` value (green of block 1), what a
+/// script writes (blue of block 2); block 3 is left to the input's CSS.
 const DATA_PAGE: &str = r#"<!doctype html><html><head><style>
 html, body { margin: 0; background: transparent; }
 div { position: absolute; top: 0; width: 64px; height: 64px; }
-#loads { left: 0; } #data { left: 64px; } #script { left: 128px; } #css { left: 192px; }
+#how { left: 0; } #data { left: 64px; } #script { left: 128px; } #css { left: 192px; }
 </style></head><body>
-<div id="loads"></div><div id="data"></div><div id="script"></div><div id="css"></div>
+<div id="how"></div><div id="data"></div><div id="script"></div><div id="css"></div>
 <script>
-const loads = Number(sessionStorage.getItem("loads") || 0) + 1;
-sessionStorage.setItem("loads", loads);
-document.getElementById("loads").style.background = `rgb(${loads}, 0, 0)`;
+// Not a count of loads kept in `sessionStorage`: under a starved processor Chromium hands a
+// new document an empty one (seen in CI and under load: reloaded, yet counted 1).
+const how = performance.getEntriesByType("navigation")[0].type;
+const code = { navigate: 1, reload: 2, back_forward: 3 }[how] || 9;
+document.getElementById("how").style.background = `rgb(${code}, 0, 0)`;
 window.addEventListener("vma-data", (e) => {
   document.getElementById("data").style.background = `rgb(0, ${e.detail.v}, 0)`;
 });
@@ -438,7 +442,7 @@ fn a_page_takes_data_and_scripts_without_reloading() {
         last(r).is_some_and(|b| b[2] == [77, 0, 0, 255] && b[0] == [0, 0, 1, 255])
     });
 
-    // Reload: loaded a second time, the CSS again, the data gone.
+    // Reload: a new document that says it was reloaded, the CSS again, the data gone.
     rig.host.page(input, PageAction::Reload);
     rig.until("reloaded", Duration::from_secs(10), |r| {
         last(r).is_some_and(|b| b[0] == [0, 0, 2, 255] && b[3] == [99, 0, 0, 255])
@@ -455,8 +459,9 @@ fn a_page_takes_data_and_scripts_without_reloading() {
         last(r).is_some_and(|b| b[0] == [250, 0, 0, 255])
     });
     rig.host.page(input, PageAction::Back);
+    // The reloaded document kept as it was (2), or a new one that says it came by going back (3).
     rig.until("back on the first", Duration::from_secs(10), |r| {
-        last(r).is_some_and(|b| b[0][2] >= 2 && b[0][0] == 0)
+        last(r).is_some_and(|b| b[0] == [0, 0, 2, 255] || b[0] == [0, 0, 3, 255])
     });
     assert!(rig.lost.is_empty(), "{:?}", rig.lost);
 }
