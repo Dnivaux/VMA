@@ -1,0 +1,215 @@
+2026-11-13T09:35:21.356498Z  INFO vma::screens: screens screens=["\\\\.\\DISPLAY1 · 1920 × 1080 · 60 Hz"]
+2026-11-13T09:35:23.120473Z  INFO vma: GPU adapter adapter=NVIDIA GeForce RTX 3060 Laptop GPU · Dx12 · DiscreteGpu
+2026-11-13T09:35:23.635126Z  INFO vma_engine::render: engine started rate=50p resolution=1920x1080
+2026-11-13T09:35:23.635817Z  WARN vma_clock: frame clock missed slots index=4 missed=4 total_missed=4
+2026-11-13T09:35:23.638477Z  INFO vma_io_ndi: NDI® status=Unavailable { reason: "NDI® runtime not found: install the NDI runtime (NDI Tools), or set NDI_RUNTIME_DIR_V6, then restart VMA" }
+2026-11-13T09:35:23.638696Z  INFO vma_io_gst::runtime: HTML inputs unavailable reason=vma-html.exe introuvable (C:\Users\<utilisateur>\Downloads\VMA-windows (1)\VMA\bin\vma-html.exe) : VMA a été compilé sans l'input HTML
+2026-11-13T09:35:23.652658Z  WARN vma_engine::render: slow tick encode frame=4 total_ms=16.7663 uploads_ms=0.0562 mixers_ms=0.3043 output_ms=0.0 thumbnails_ms=0.051 finish_ms=16.3548 overlays=0
+2026-11-13T09:35:23.687226Z  INFO vma_api: API listening bound=127.0.0.1:8090
+2026-11-13T09:35:23.687675Z  INFO vma_api: API listening bound=127.0.0.1:8088
+2026-11-13T09:35:23.687996Z  INFO vma_api: compat TCP API listening bound=127.0.0.1:8099
+2026-11-13T09:35:23.688982Z  INFO vma::soak: soak started duration_s=1800 hostile=false
+2026-11-13T09:35:25.306124Z  INFO vma_io_gst::devices: capture device id=mediafoundation:@device:sw:{860BB310-5D01-11D0-BD3B-00A0C911CE86}\{8E14549A-DB61-4309-AFA1-3578E927E938} name=vMix Video
+2026-11-13T09:35:25.306136Z  INFO vma_io_gst::devices: capture device id=mediafoundation:@device:sw:{860BB310-5D01-11D0-BD3B-00A0C911CE86}\{8E14549A-DB61-4309-AFA1-3578E927F974} name=vMix Video External 2
+2026-11-13T09:35:25.306137Z  INFO vma_io_gst::devices: capture device id=mediafoundation:@device:sw:{860BB310-5D01-11D0-BD3B-00A0C911CE86}\{8E14549A-DB61-4309-AFA1-3578E927FAA4} name=vMix Video External 3
+2026-11-13T09:35:25.306137Z  INFO vma_io_gst::devices: capture device id=mediafoundation:@device:sw:{860BB310-5D01-11D0-BD3B-00A0C911CE86}\{8E14549A-DB61-4309-AFA1-3578E927FBB4} name=vMix Video External 3 YV12
+2026-11-13T09:35:25.306138Z  INFO vma_io_gst::devices: capture device id=mediafoundation:@device:sw:{860BB310-5D01-11D0-BD3B-00A0C911CE86}\{8E14549A-DB61-4309-AFA1-3578E927FCC4} name=vMix Video External 4
+2026-11-13T09:35:25.306139Z  INFO vma_io_gst::devices: capture device id=mediafoundation:@device:sw:{860BB310-5D01-11D0-BD3B-00A0C911CE86}\{8E14549A-DB61-4309-AFA1-3578E927FDD4} name=vMix Video External 4 YV12
+2026-11-13T09:35:25.306139Z  INFO vma_io_gst::devices: capture device id=mediafoundation:@device:sw:{860BB310-5D01-11D0-BD3B-00A0C911CE86}\{8E14549A-DB61-4309-AFA1-3578E927FF92} name=vMix Video YV12
+2026-11-13T09:35:25.306140Z  INFO vma_io_gst::devices: capture device id=mediafoundation:@device:sw:{860BB310-5D01-11D0-BD3B-00A0C911CE86}\{8E14549A-DB61-4309-AFA1-3578E927FF94} name=vMix Video External 2 YV12
+2026-11-13T09:35:25.306140Z  INFO vma_io_gst::devices: capture device id=mediafoundation:@device:sw:{860BB310-5D01-11D0-BD3B-00A0C911CE86}\{A3FCE0F5-3493-419F-958A-ABA1250EC20B} name=OBS Virtual Camera
+2026-11-13T09:35:28.674195Z  INFO vma_io_gst::audio_devices: audio device kind="source" id=wasapi2:{0.0.0.00000000}.{1951f040-3673-4bd1-9cdf-7ad8da900d6f} name=Haut-parleurs (Realtek(R) Audio)
+2026-11-13T09:35:28.674207Z  INFO vma_io_gst::audio_devices: audio device kind="source" id=wasapi2:{0.0.0.00000000}.{8e1688d6-5a24-4518-9660-0c64381c43f9} name=AI Noise-cancelling Output (ASUS Utility)
+2026-11-13T09:35:28.674209Z  INFO vma_io_gst::audio_devices: audio device kind="source" id=wasapi2:{0.0.1.00000000}.{7fe044a9-20f7-4b5c-a6d6-167497875e66} name=AI Noise-cancelling Input (ASUS Utility)
+2026-11-13T09:35:28.674209Z  INFO vma_io_gst::audio_devices: audio device kind="source" id=wasapi2:{0.0.1.00000000}.{fc911e2a-73ae-42aa-aead-42b1ad5e7b68} name=Réseau de microphones (Realtek(R) Audio)
+2026-11-13T09:35:28.674211Z  INFO vma_io_gst::audio_devices: audio device kind="source" id=wasapi2:{2EEF81BE-33FA-4800-9670-1CD474972C3F} name=Default Audio Capture Device
+2026-11-13T09:35:28.674212Z  INFO vma_io_gst::audio_devices: audio device kind="source" id=wasapi2:{E6327CAD-DCEC-4949-AE8A-991E976A79D2} name=Default Audio Render Device
+2026-11-13T09:35:28.674213Z  INFO vma_io_gst::audio_devices: audio device kind="source" id=wasapi:{0.0.1.00000000}.{7fe044a9-20f7-4b5c-a6d6-167497875e66} name=AI Noise-cancelling Input (ASUS Utility)
+2026-11-13T09:35:28.674213Z  INFO vma_io_gst::audio_devices: audio device kind="source" id=wasapi:{0.0.1.00000000}.{fc911e2a-73ae-42aa-aead-42b1ad5e7b68} name=Réseau de microphones (Realtek(R) Audio)
+2026-11-13T09:35:28.674214Z  INFO vma_io_gst::audio_devices: audio device kind="sink" id=wasapi2:{0.0.0.00000000}.{1951f040-3673-4bd1-9cdf-7ad8da900d6f} name=Haut-parleurs (Realtek(R) Audio)
+2026-11-13T09:35:28.674215Z  INFO vma_io_gst::audio_devices: audio device kind="sink" id=wasapi2:{0.0.0.00000000}.{8e1688d6-5a24-4518-9660-0c64381c43f9} name=AI Noise-cancelling Output (ASUS Utility)
+2026-11-13T09:35:28.674215Z  INFO vma_io_gst::audio_devices: audio device kind="sink" id=wasapi2:{E6327CAD-DCEC-4949-AE8A-991E976A79D2} name=Default Audio Render Device
+2026-11-13T09:35:28.674216Z  INFO vma_io_gst::audio_devices: audio device kind="sink" id=wasapi:{0.0.0.00000000}.{1951f040-3673-4bd1-9cdf-7ad8da900d6f} name=Haut-parleurs (Realtek(R) Audio)
+2026-11-13T09:35:28.674216Z  INFO vma_io_gst::audio_devices: audio device kind="sink" id=wasapi:{0.0.0.00000000}.{8e1688d6-5a24-4518-9660-0c64381c43f9} name=AI Noise-cancelling Output (ASUS Utility)
+2026-11-13T09:35:28.699631Z  INFO vma_io_gst::pipeline: source format input=input#1 format=VideoFormat { pixel: Nv12, resolution: Resolution { width: 1920, height: 1080 }, color: ColorInfo { matrix: Bt709, range: Limited }, alpha: Opaque, rate: Some(FrameRate { num: 50, den: 1 }) } converting=false
+2026-11-13T09:35:28.699634Z  INFO vma_io_gst::pipeline: source format input=input#3 format=VideoFormat { pixel: Nv12, resolution: Resolution { width: 1920, height: 1080 }, color: ColorInfo { matrix: Bt709, range: Limited }, alpha: Opaque, rate: Some(FrameRate { num: 50, den: 1 }) } converting=false
+2026-11-13T09:35:28.699701Z  INFO vma_io_gst::pipeline: source format input=input#2 format=VideoFormat { pixel: Nv12, resolution: Resolution { width: 1920, height: 1080 }, color: ColorInfo { matrix: Bt709, range: Limited }, alpha: Opaque, rate: Some(FrameRate { num: 50, den: 1 }) } converting=false
+2026-11-13T09:35:28.716424Z  WARN vma_io_gst::pipeline: paced pictures published close to their tick (slow copy to the GPU) input=input#2 pictures=1 before_tick_ms=-6.86495 copy_ms=16.7178 late_wake_ms=0.14715
+2026-11-13T09:35:28.716424Z  WARN vma_io_gst::pipeline: paced pictures published close to their tick (slow copy to the GPU) input=input#3 pictures=1 before_tick_ms=-6.87775 copy_ms=16.7954 late_wake_ms=0.08235
+2026-11-13T09:35:28.716520Z  WARN vma_io_gst::pipeline: paced pictures published close to their tick (slow copy to the GPU) input=input#1 pictures=1 before_tick_ms=-6.97355 copy_ms=16.9142 late_wake_ms=0.05935
+2026-11-13T09:35:28.719741Z  INFO vma_io_gst::pipeline: source format input=input#4 format=VideoFormat { pixel: Nv12, resolution: Resolution { width: 1920, height: 1080 }, color: ColorInfo { matrix: Bt709, range: Limited }, alpha: Opaque, rate: Some(FrameRate { num: 50, den: 1 }) } converting=false
+2026-11-13T09:35:36.077793Z  WARN vma_clock: frame clock missed slots index=626 missed=1 total_missed=5
+2026-11-13T09:35:36.744827Z  WARN vma_io_gst::pipeline: paced pictures published close to their tick (slow copy to the GPU) input=input#4 pictures=1 before_tick_ms=4.72315 copy_ms=2.3691 late_wake_ms=5.45915
+2026-11-13T09:35:45.955707Z  WARN vma_engine::render: slow tick encode frame=1120 total_ms=5.6377 uploads_ms=0.095 mixers_ms=1.3828 output_ms=0.0 thumbnails_ms=0.2024 finish_ms=3.9575 overlays=0
+2026-11-13T09:35:55.576085Z  WARN vma_engine::render: slow tick encode frame=1601 total_ms=6.0276000000000005 uploads_ms=0.031 mixers_ms=0.2137 output_ms=0.0 thumbnails_ms=0.0005 finish_ms=5.7824 overlays=0
+2026-11-13T09:35:58.757770Z  WARN vma_io_gst::pipeline: paced pictures published close to their tick (slow copy to the GPU) input=input#2 pictures=4 before_tick_ms=-8.21195 copy_ms=1.3312 late_wake_ms=21.88075
+2026-11-13T09:35:58.778266Z  WARN vma_io_gst::pipeline: paced pictures published close to their tick (slow copy to the GPU) input=input#4 pictures=3 before_tick_ms=-8.71745 copy_ms=0.6033 late_wake_ms=21.05705
+2026-11-13T09:36:06.345005Z  WARN vma_io_gst::pipeline: paced pictures published close to their tick (slow copy to the GPU) input=input#3 pictures=3 before_tick_ms=4.54475 copy_ms=2.592 late_wake_ms=6.67355
+2026-11-13T09:36:06.778191Z  WARN vma_engine::render: slow tick encode frame=2161 total_ms=8.3322 uploads_ms=0.2339 mixers_ms=0.2153 output_ms=0.0 thumbnails_ms=0.0012 finish_ms=7.881799999999999 overlays=0
+2026-11-13T09:36:26.175659Z  WARN vma_engine::render: slow tick encode frame=3131 total_ms=5.5053 uploads_ms=0.0304 mixers_ms=2.2742 output_ms=0.0 thumbnails_ms=0.0035 finish_ms=3.1972 overlays=0
+2026-11-13T09:36:35.946843Z  WARN vma_io_gst::pipeline: paced pictures published close to their tick (slow copy to the GPU) input=input#1 pictures=2 before_tick_ms=2.70695 copy_ms=1.7498 late_wake_ms=10.54325
+2026-11-13T09:36:36.175276Z  WARN vma_engine::render: slow tick encode frame=3631 total_ms=5.419700000000001 uploads_ms=0.021500000000000002 mixers_ms=0.49050000000000005 output_ms=0.0 thumbnails_ms=0.0007 finish_ms=4.907 overlays=0
+2026-11-13T09:36:36.244718Z  WARN vma_io_gst::pipeline: paced pictures published close to their tick (slow copy to the GPU) input=input#3 pictures=1 before_tick_ms=4.83325 copy_ms=1.4853 late_wake_ms=7.73955
+2026-11-13T09:36:36.544913Z  WARN vma_io_gst::pipeline: paced pictures published close to their tick (slow copy to the GPU) input=input#2 pictures=1 before_tick_ms=4.63595 copy_ms=1.4636 late_wake_ms=7.52305
+2026-11-13T09:36:36.884680Z  WARN vma_io_gst::pipeline: paced pictures published close to their tick (slow copy to the GPU) input=input#4 pictures=1 before_tick_ms=4.86775 copy_ms=0.4627 late_wake_ms=9.66955
+2026-11-13T09:36:46.744945Z  WARN vma_io_gst::pipeline: paced pictures published close to their tick (slow copy to the GPU) input=input#3 pictures=3 before_tick_ms=4.61285 copy_ms=4.3553 late_wake_ms=4.81095
+2026-11-13T09:36:49.007373Z  WARN vma_io_gst::pipeline: paced pictures published close to their tick (slow copy to the GPU) input=input#4 pictures=1 before_tick_ms=2.18105 copy_ms=12.0206 late_wake_ms=0.55255
+2026-11-13T09:36:49.007376Z  WARN vma_io_gst::pipeline: paced pictures published close to their tick (slow copy to the GPU) input=input#2 pictures=1 before_tick_ms=2.16955 copy_ms=12.0533 late_wake_ms=0.52055
+2026-11-13T09:36:49.009264Z  WARN vma_engine::render: slow tick encode frame=4272 total_ms=19.6863 uploads_ms=0.0048 mixers_ms=0.25329999999999997 output_ms=0.0 thumbnails_ms=0.0443 finish_ms=19.3839 overlays=0
+2026-11-13T09:36:49.010214Z  WARN vma_io_gst::pipeline: paced pictures published close to their tick (slow copy to the GPU) input=input#1 pictures=1 before_tick_ms=-0.57665 copy_ms=4.7081 late_wake_ms=10.86855
+2026-11-13T09:36:49.121366Z  WARN vma_engine::render: slow tick encode frame=4278 total_ms=11.1418 uploads_ms=0.2039 mixers_ms=1.3639999999999999 output_ms=0.0 thumbnails_ms=0.2242 finish_ms=9.3497 overlays=0
+2026-11-13T09:36:49.160628Z  WARN vma_engine::render: slow tick encode frame=4280 total_ms=7.2023 uploads_ms=0.1186 mixers_ms=0.5674 output_ms=0.0 thumbnails_ms=0.36160000000000003 finish_ms=6.1547 overlays=0
+2026-11-13T09:36:49.195184Z  WARN vma_engine::render: slow tick encode frame=4282 total_ms=5.0653 uploads_ms=0.15330000000000002 mixers_ms=0.5842 output_ms=0.0 thumbnails_ms=0.19019999999999998 finish_ms=4.1376 overlays=0
+2026-11-13T09:36:49.217048Z  WARN vma_engine::render: slow tick encode frame=4283 total_ms=6.103 uploads_ms=0.0931 mixers_ms=1.2651999999999999 output_ms=0.0 thumbnails_ms=0.0007999999999999999 finish_ms=4.7439 overlays=0
+2026-11-13T09:36:49.237287Z  WARN vma_engine::render: slow tick encode frame=4284 total_ms=5.3454 uploads_ms=0.47009999999999996 mixers_ms=1.3371 output_ms=0.0 thumbnails_ms=0.2277 finish_ms=3.3105 overlays=0
+2026-11-13T09:36:49.966876Z  WARN vma_clock: frame clock missed slots index=4320 missed=1 total_missed=6
+2026-11-13T09:36:49.974296Z  WARN vma_engine::render: slow tick encode frame=4320 total_ms=5.585299999999999 uploads_ms=0.0897 mixers_ms=0.6103000000000001 output_ms=0.0 thumbnails_ms=0.1021 finish_ms=4.7832 overlays=0
+2026-11-13T09:36:50.048333Z  WARN vma_clock: frame clock missed slots index=4324 missed=1 total_missed=7
+2026-11-13T09:36:50.058534Z  WARN vma_engine::render: slow tick encode frame=4324 total_ms=9.818800000000001 uploads_ms=0.027200000000000002 mixers_ms=0.34400000000000003 output_ms=0.0 thumbnails_ms=0.048600000000000004 finish_ms=9.399 overlays=0
+2026-11-13T09:36:50.149559Z  WARN vma_engine::render: GPU backpressure: frame repeated index=4330
+2026-11-13T09:36:56.076277Z  WARN vma_engine::render: slow tick encode frame=4626 total_ms=6.4514000000000005 uploads_ms=0.0322 mixers_ms=0.2407 output_ms=0.0 thumbnails_ms=0.0421 finish_ms=6.1364 overlays=0
+2026-11-13T09:36:56.375034Z  WARN vma_engine::render: slow tick encode frame=4641 total_ms=5.3275 uploads_ms=0.034100000000000005 mixers_ms=0.2778 output_ms=0.0 thumbnails_ms=0.0006 finish_ms=5.015000000000001 overlays=0
+2026-11-13T09:36:56.477021Z  WARN vma_engine::render: slow tick encode frame=4646 total_ms=7.3376 uploads_ms=0.0315 mixers_ms=0.3157 output_ms=0.0 thumbnails_ms=0.043699999999999996 finish_ms=6.9467 overlays=0
+2026-11-13T09:37:05.928254Z  WARN vma_io_gst::pipeline: paced pictures published close to their tick (slow copy to the GPU) input=input#1 pictures=8 before_tick_ms=1.29985 copy_ms=1.087 late_wake_ms=12.61315
+2026-11-13T09:37:13.816940Z  WARN vma_io_gst::pipeline: paced pictures published close to their tick (slow copy to the GPU) input=input#3 pictures=8 before_tick_ms=-7.39075 copy_ms=0.5338 late_wake_ms=21.85695
+2026-11-13T09:37:13.857108Z  WARN vma_io_gst::pipeline: paced pictures published close to their tick (slow copy to the GPU) input=input#4 pictures=4 before_tick_ms=-27.55685 copy_ms=0.9023 late_wake_ms=41.65455
+2026-11-13T09:37:13.896925Z  WARN vma_io_gst::pipeline: paced pictures published close to their tick (slow copy to the GPU) input=input#2 pictures=3 before_tick_ms=-47.37355 copy_ms=0.6463 late_wake_ms=61.72725
+2026-11-13T09:37:15.948097Z  WARN vma_io_gst::pipeline: paced pictures published close to their tick (slow copy to the GPU) input=input#1 pictures=1 before_tick_ms=1.45285 copy_ms=0.7855 late_wake_ms=12.76165
+2026-11-13T09:37:25.959555Z  WARN vma_engine::render: slow tick encode frame=6120 total_ms=9.3255 uploads_ms=0.1773 mixers_ms=1.2711000000000001 output_ms=0.0 thumbnails_ms=0.14459999999999998 finish_ms=7.7325 overlays=0
+2026-11-13T09:37:25.965134Z  WARN vma_io_gst::pipeline: paced pictures published close to their tick (slow copy to the GPU) input=input#3 pictures=3 before_tick_ms=4.41665 copy_ms=2.9947 late_wake_ms=7.58865
+2026-11-13T09:37:35.957766Z  WARN vma_engine::render: slow tick encode frame=6620 total_ms=7.0325 uploads_ms=0.20579999999999998 mixers_ms=0.6960999999999999 output_ms=0.0 thumbnails_ms=0.09390000000000001 finish_ms=6.0367 overlays=0
+2026-11-13T09:37:36.380778Z  WARN vma_engine::render: slow tick encode frame=6641 total_ms=10.9804 uploads_ms=0.2662 mixers_ms=0.2329 output_ms=0.0 thumbnails_ms=0.0014 finish_ms=10.4799 overlays=0
+2026-11-13T09:37:43.876700Z  WARN vma_io_gst::pipeline: paced pictures published close to their tick (slow copy to the GPU) input=input#1 pictures=3 before_tick_ms=-47.14825 copy_ms=1.0841 late_wake_ms=61.06415
+2026-11-13T09:37:43.897076Z  WARN vma_io_gst::pipeline: paced pictures published close to their tick (slow copy to the GPU) input=input#2 pictures=6 before_tick_ms=-7.52835 copy_ms=0.4533 late_wake_ms=20.72975
+2026-11-13T09:37:43.916387Z  WARN vma_io_gst::pipeline: paced pictures published close to their tick (slow copy to the GPU) input=input#3 pictures=2 before_tick_ms=-86.83315 copy_ms=1.2404 late_wake_ms=100.59275
+2026-11-13T09:37:43.937638Z  WARN vma_io_gst::pipeline: paced pictures published close to their tick (slow copy to the GPU) input=input#4 pictures=5 before_tick_ms=-68.08915 copy_ms=0.8633 late_wake_ms=81.38455
+2026-11-13T09:38:06.067016Z  WARN vma_io_gst::pipeline: paced pictures published close to their tick (slow copy to the GPU) input=input#3 pictures=6 before_tick_ms=2.53285 copy_ms=4.8793 late_wake_ms=7.58785
+2026-11-13T09:38:06.068147Z  WARN vma_engine::render: slow tick encode frame=8125 total_ms=9.4296 uploads_ms=0.11309999999999999 mixers_ms=8.218100000000002 output_ms=0.0 thumbnails_ms=0.0012 finish_ms=1.0972 overlays=0
+2026-11-13T09:38:06.111498Z  WARN vma_io_gst::pipeline: paced pictures published close to their tick (slow copy to the GPU) input=input#1 pictures=9 before_tick_ms=-1.92855 copy_ms=2.962 late_wake_ms=13.96655
+2026-11-13T09:38:06.845769Z  WARN vma_io_gst::pipeline: paced pictures published close to their tick (slow copy to the GPU) input=input#2 pictures=2 before_tick_ms=3.78145 copy_ms=1.3685 late_wake_ms=8.40705
+2026-11-13T09:38:13.957098Z  WARN vma_io_gst::pipeline: paced pictures published close to their tick (slow copy to the GPU) input=input#4 pictures=6 before_tick_ms=-47.54335 copy_ms=0.796 late_wake_ms=61.36145
+2026-11-13T09:38:28.837472Z  WARN vma_io_gst::pipeline: paced pictures published close to their tick (slow copy to the GPU) input=input#3 pictures=5 before_tick_ms=-7.91475 copy_ms=1.1128 late_wake_ms=21.74875
+2026-11-13T09:38:28.858084Z  WARN vma_io_gst::pipeline: paced pictures published close to their tick (slow copy to the GPU) input=input#2 pictures=3 before_tick_ms=-8.53655 copy_ms=0.6592 late_wake_ms=21.30815
+2026-11-13T09:38:28.897053Z  WARN vma_io_gst::pipeline: paced pictures published close to their tick (slow copy to the GPU) input=input#4 pictures=3 before_tick_ms=-7.50375 copy_ms=0.7718 late_wake_ms=21.34605
+2026-11-13T09:39:26.874869Z  WARN vma_engine::render: slow tick encode frame=12166 total_ms=5.230300000000001 uploads_ms=0.0231 mixers_ms=0.2354 output_ms=0.0 thumbnails_ms=0.0415 finish_ms=4.9303 overlays=0
+2026-11-13T09:39:36.924635Z  WARN vma_io_gst::pipeline: paced pictures published close to their tick (slow copy to the GPU) input=input#1 pictures=4 before_tick_ms=4.91285 copy_ms=0.5618 late_wake_ms=9.43095
+2026-11-13T09:40:25.957121Z  WARN vma_engine::render: slow tick encode frame=15120 total_ms=7.188 uploads_ms=0.0538 mixers_ms=0.6446 output_ms=0.0 thumbnails_ms=0.1774 finish_ms=6.3122 overlays=0
+2026-11-13T09:40:36.047027Z  WARN vma_io_gst::pipeline: paced pictures published close to their tick (slow copy to the GPU) input=input#1 pictures=1 before_tick_ms=2.53705 copy_ms=2.8299 late_wake_ms=8.96085
+2026-11-13T09:41:15.948585Z  WARN vma_io_gst::pipeline: paced pictures published close to their tick (slow copy to the GPU) input=input#1 pictures=1 before_tick_ms=0.97005 copy_ms=3.2291 late_wake_ms=10.30485
+2026-11-13T09:41:15.948596Z  WARN vma_io_gst::pipeline: paced pictures published close to their tick (slow copy to the GPU) input=input#3 pictures=1 before_tick_ms=0.95055 copy_ms=3.2081 late_wake_ms=9.73455
+2026-11-13T09:42:25.965283Z  WARN vma_io_gst::pipeline: paced pictures published close to their tick (slow copy to the GPU) input=input#3 pictures=1 before_tick_ms=4.29525 copy_ms=3.3298 late_wake_ms=6.13785
+2026-11-13T09:43:06.027145Z  WARN vma_io_gst::pipeline: paced pictures published close to their tick (slow copy to the GPU) input=input#2 pictures=1 before_tick_ms=3.92145 copy_ms=2.1817 late_wake_ms=7.11155
+2026-11-13T09:43:06.045595Z  WARN vma_io_gst::pipeline: paced pictures published close to their tick (slow copy to the GPU) input=input#3 pictures=1 before_tick_ms=3.95405 copy_ms=0.863 late_wake_ms=9.81655
+2026-11-13T09:43:06.049030Z  WARN vma_io_gst::pipeline: paced pictures published close to their tick (slow copy to the GPU) input=input#1 pictures=1 before_tick_ms=0.53015 copy_ms=3.1224 late_wake_ms=10.07095
+2026-11-13T09:43:15.955116Z  WARN vma_engine::render: slow tick encode frame=23620 total_ms=5.1694 uploads_ms=0.1242 mixers_ms=0.6053000000000001 output_ms=0.0 thumbnails_ms=0.1388 finish_ms=4.301100000000001 overlays=0
+2026-11-13T09:43:26.275989Z  WARN vma_engine::render: slow tick encode frame=24136 total_ms=6.2408 uploads_ms=0.17459999999999998 mixers_ms=2.7162 output_ms=0.0 thumbnails_ms=0.145 finish_ms=3.205 overlays=0
+2026-11-13T09:43:36.004789Z  WARN vma_io_gst::pipeline: paced pictures published close to their tick (slow copy to the GPU) input=input#1 pictures=1 before_tick_ms=4.76105 copy_ms=1.1389 late_wake_ms=8.11405
+2026-11-13T09:45:26.745089Z  WARN vma_io_gst::pipeline: paced pictures published close to their tick (slow copy to the GPU) input=input#3 pictures=1 before_tick_ms=4.46455 copy_ms=0.6067 late_wake_ms=8.68155
+2026-11-13T09:45:45.957091Z  WARN vma_engine::render: slow tick encode frame=31120 total_ms=6.240500000000001 uploads_ms=0.1192 mixers_ms=4.1485 output_ms=0.0 thumbnails_ms=0.21350000000000002 finish_ms=1.7593 overlays=0
+2026-11-13T09:46:06.978797Z  WARN vma_engine::render: slow tick encode frame=32171 total_ms=6.8637999999999995 uploads_ms=0.2332 mixers_ms=3.9083 output_ms=0.0 thumbnails_ms=0.0034000000000000002 finish_ms=2.7188999999999997 overlays=0
+2026-11-13T09:46:06.986914Z  WARN vma_io_gst::pipeline: paced pictures published close to their tick (slow copy to the GPU) input=input#3 pictures=1 before_tick_ms=2.65225 copy_ms=2.977 late_wake_ms=8.30025
+2026-11-13T09:48:15.956484Z  WARN vma_engine::render: slow tick encode frame=38620 total_ms=6.4538 uploads_ms=0.1094 mixers_ms=0.8308 output_ms=0.0 thumbnails_ms=0.1756 finish_ms=5.338 overlays=0
+2026-11-13T09:48:16.145108Z  WARN vma_io_gst::pipeline: paced pictures published close to their tick (slow copy to the GPU) input=input#3 pictures=1 before_tick_ms=4.45845 copy_ms=2.0708 late_wake_ms=7.44995
+2026-11-13T09:49:06.244600Z  WARN vma_io_gst::pipeline: paced pictures published close to their tick (slow copy to the GPU) input=input#3 pictures=1 before_tick_ms=4.96585 copy_ms=1.7459 late_wake_ms=6.53415
+2026-11-13T09:50:36.046384Z  WARN vma_io_gst::pipeline: paced pictures published close to their tick (slow copy to the GPU) input=input#4 pictures=1 before_tick_ms=3.17165 copy_ms=3.0473 late_wake_ms=6.62635
+2026-11-13T09:50:36.056585Z  WARN vma_engine::render: slow tick encode frame=45625 total_ms=6.4865 uploads_ms=0.2252 mixers_ms=2.9593000000000003 output_ms=0.0 thumbnails_ms=0.0014 finish_ms=3.3005999999999998 overlays=0
+2026-11-13T09:53:16.645782Z  WARN vma_io_gst::pipeline: paced pictures published close to their tick (slow copy to the GPU) input=input#1 pictures=1 before_tick_ms=3.76655 copy_ms=1.7352 late_wake_ms=9.25325
+2026-11-13T09:53:36.964438Z  WARN vma_engine::render: slow tick encode frame=54670 total_ms=11.3101 uploads_ms=0.23570000000000002 mixers_ms=1.5104 output_ms=0.0 thumbnails_ms=0.9355 finish_ms=8.6285 overlays=0
+2026-11-13T09:53:36.969257Z  WARN vma_io_gst::pipeline: paced pictures published close to their tick (slow copy to the GPU) input=input#1 pictures=1 before_tick_ms=0.29305 copy_ms=4.4604 late_wake_ms=9.34075
+2026-11-13T09:53:36.970140Z  WARN vma_io_gst::pipeline: paced pictures published close to their tick (slow copy to the GPU) input=input#3 pictures=1 before_tick_ms=-0.59215 copy_ms=5.4376 late_wake_ms=10.15455
+2026-11-13T09:53:55.946452Z  WARN vma_io_gst::pipeline: paced pictures published close to their tick (slow copy to the GPU) input=input#3 pictures=1 before_tick_ms=3.10405 copy_ms=1.4322 late_wake_ms=10.46375
+2026-11-13T09:53:55.947588Z  WARN vma_io_gst::pipeline: paced pictures published close to their tick (slow copy to the GPU) input=input#1 pictures=1 before_tick_ms=1.96035 copy_ms=1.0506 late_wake_ms=11.44945
+2026-11-13T09:54:36.274781Z  WARN vma_engine::render: slow tick encode frame=57636 total_ms=5.1289 uploads_ms=0.0235 mixers_ms=1.6032 output_ms=0.0 thumbnails_ms=0.7638 finish_ms=2.7384000000000004 overlays=0
+2026-11-13T09:56:15.945549Z  WARN vma_io_gst::pipeline: paced pictures published close to their tick (slow copy to the GPU) input=input#2 pictures=1 before_tick_ms=4.00515 copy_ms=6.3365 late_wake_ms=2.80305
+2026-11-13T09:57:35.947237Z  WARN vma_io_gst::pipeline: paced pictures published close to their tick (slow copy to the GPU) input=input#1 pictures=1 before_tick_ms=2.33735 copy_ms=3.0988 late_wake_ms=9.56385
+2026-11-13T09:57:35.948047Z  WARN vma_io_gst::pipeline: paced pictures published close to their tick (slow copy to the GPU) input=input#3 pictures=1 before_tick_ms=1.50405 copy_ms=3.1328 late_wake_ms=9.11375
+2026-11-13T09:58:06.045992Z  WARN vma_io_gst::pipeline: paced pictures published close to their tick (slow copy to the GPU) input=input#1 pictures=1 before_tick_ms=3.57935 copy_ms=3.8428 late_wake_ms=6.09985
+2026-11-13T09:58:06.046555Z  WARN vma_io_gst::pipeline: paced pictures published close to their tick (slow copy to the GPU) input=input#3 pictures=1 before_tick_ms=2.99405 copy_ms=5.2614 late_wake_ms=5.55165
+2026-11-13T09:58:15.958395Z  WARN vma_engine::render: slow tick encode frame=68620 total_ms=7.91 uploads_ms=0.1134 mixers_ms=4.5648 output_ms=0.0 thumbnails_ms=0.3644 finish_ms=2.8674 overlays=0
+2026-11-13T09:58:25.955728Z  WARN vma_engine::render: slow tick encode frame=69120 total_ms=6.0415 uploads_ms=0.12129999999999999 mixers_ms=1.434 output_ms=0.0 thumbnails_ms=0.24509999999999998 finish_ms=4.2411 overlays=0
+2026-11-13T09:58:27.408809Z  WARN vma_io_gst::pipeline: paced pictures published close to their tick (slow copy to the GPU) input=input#3 pictures=1 before_tick_ms=0.73955 copy_ms=0.7891 late_wake_ms=13.47135
+2026-11-13T09:58:27.409547Z  WARN vma_io_gst::pipeline: paced pictures published close to their tick (slow copy to the GPU) input=input#1 pictures=1 before_tick_ms=0.00025 copy_ms=0.7006 late_wake_ms=13.45725
+2026-11-13T09:58:27.492110Z  WARN vma_io_gst::pipeline: paced pictures published close to their tick (slow copy to the GPU) input=input#4 pictures=1 before_tick_ms=-2.56075 copy_ms=0.9381 late_wake_ms=14.77495
+2026-11-13T10:01:06.009483Z  WARN vma_io_gst::pipeline: paced pictures published close to their tick (slow copy to the GPU) input=input#2 pictures=1 before_tick_ms=0.06525 copy_ms=0.9347 late_wake_ms=12.85765
+2026-11-13T10:01:06.025217Z  WARN vma_io_gst::pipeline: paced pictures published close to their tick (slow copy to the GPU) input=input#4 pictures=3 before_tick_ms=4.33255 copy_ms=9.0121 late_wake_ms=0.11625
+2026-11-13T10:03:15.957795Z  WARN vma_engine::render: slow tick encode frame=83620 total_ms=8.0933 uploads_ms=6.566800000000001 mixers_ms=0.305 output_ms=0.0 thumbnails_ms=0.041100000000000005 finish_ms=1.1804000000000001 overlays=0
+2026-11-13T10:03:16.164712Z  WARN vma_io_gst::pipeline: paced pictures published close to their tick (slow copy to the GPU) input=input#4 pictures=1 before_tick_ms=4.83645 copy_ms=0.6209 late_wake_ms=7.70255
+2026-11-13T10:03:16.385263Z  WARN vma_io_gst::pipeline: paced pictures published close to their tick (slow copy to the GPU) input=input#2 pictures=2 before_tick_ms=4.30495 copy_ms=0.6808 late_wake_ms=8.19295
+2026-11-13T10:03:17.004605Z  WARN vma_io_gst::pipeline: paced pictures published close to their tick (slow copy to the GPU) input=input#3 pictures=1 before_tick_ms=4.94315 copy_ms=0.6544 late_wake_ms=8.20755
+2026-11-13T10:03:17.035043Z  WARN vma_clock: frame clock missed slots index=83674 missed=1 total_missed=8
+2026-11-13T10:03:17.064931Z  WARN vma_io_gst::pipeline: paced pictures published close to their tick (slow copy to the GPU) input=input#1 pictures=1 before_tick_ms=4.61785 copy_ms=1.6317 late_wake_ms=7.97065
+2026-11-13T10:03:17.097978Z  WARN vma_engine::render: slow tick encode frame=83677 total_ms=5.8842 uploads_ms=0.0283 mixers_ms=5.1762 output_ms=0.0 thumbnails_ms=0.00039999999999999996 finish_ms=0.6793 overlays=0
+2026-11-13T10:03:17.713276Z  INFO vma::screens: screens screens=["\\\\.\\DISPLAY1 · 1920 × 1080 · 144 Hz"]
+2026-11-13T10:03:23.423214Z  WARN vma_engine::render: slow tick encode frame=83993 total_ms=5.1962 uploads_ms=0.19039999999999999 mixers_ms=1.9040000000000001 output_ms=0.0 thumbnails_ms=0.0047 finish_ms=3.0971 overlays=0
+2026-11-13T10:03:23.438696Z  WARN vma_engine::render: slow tick encode frame=83994 total_ms=6.3225 uploads_ms=0.1116 mixers_ms=1.1399 output_ms=0.0 thumbnails_ms=0.1577 finish_ms=4.9133 overlays=0
+2026-11-13T10:03:26.097740Z  WARN vma_engine::render: slow tick encode frame=84126 total_ms=19.349800000000002 uploads_ms=0.057 mixers_ms=0.7499 output_ms=0.0 thumbnails_ms=0.1778 finish_ms=18.365099999999998 overlays=0
+2026-11-13T10:03:26.112071Z  WARN vma_clock: frame clock missed slots index=84128 missed=1 total_missed=9
+2026-11-13T10:03:26.542157Z  WARN vma_engine::render: slow tick encode frame=84149 total_ms=11.5866 uploads_ms=0.10679999999999999 mixers_ms=0.9060999999999999 output_ms=0.0 thumbnails_ms=0.0007 finish_ms=10.573 overlays=0
+2026-11-13T10:03:26.559477Z  WARN vma_engine::render: slow tick encode frame=84150 total_ms=7.5261 uploads_ms=0.0927 mixers_ms=6.6987000000000005 output_ms=0.0 thumbnails_ms=0.0416 finish_ms=0.6930999999999999 overlays=0
+2026-11-13T10:03:26.598172Z  WARN vma_engine::render: slow tick encode frame=84151 total_ms=5.6032 uploads_ms=0.0895 mixers_ms=1.053 output_ms=0.0 thumbnails_ms=0.0062 finish_ms=4.4545 overlays=0
+2026-11-13T10:03:26.620484Z  WARN vma_engine::render: slow tick encode frame=84153 total_ms=6.4087 uploads_ms=0.06820000000000001 mixers_ms=0.8442000000000001 output_ms=0.0 thumbnails_ms=0.0049 finish_ms=5.4914 overlays=0
+2026-11-13T10:03:26.717280Z  WARN vma_engine::render: slow tick encode frame=84158 total_ms=6.973199999999999 uploads_ms=0.13449999999999998 mixers_ms=3.0159000000000002 output_ms=0.0 thumbnails_ms=0.215 finish_ms=3.6078 overlays=0
+2026-11-13T10:03:26.815698Z  WARN vma_engine::render: slow tick encode frame=84163 total_ms=6.0717 uploads_ms=0.0318 mixers_ms=4.2616 output_ms=0.0 thumbnails_ms=0.0015 finish_ms=1.7768 overlays=0
+2026-11-13T10:03:26.857018Z  WARN vma_engine::render: slow tick encode frame=84165 total_ms=5.2383999999999995 uploads_ms=0.032799999999999996 mixers_ms=1.879 output_ms=0.0 thumbnails_ms=0.0013 finish_ms=3.3253 overlays=0
+2026-11-13T10:03:26.924595Z  WARN vma_io_gst::pipeline: paced pictures published close to their tick (slow copy to the GPU) input=input#4 pictures=6 before_tick_ms=4.95415 copy_ms=2.5305 late_wake_ms=7.51535
+2026-11-13T10:03:31.815466Z  WARN vma_engine::render: slow tick encode frame=84413 total_ms=5.3521 uploads_ms=0.1285 mixers_ms=0.9844 output_ms=0.0 thumbnails_ms=0.0025 finish_ms=4.236700000000001 overlays=0
+2026-11-13T10:03:36.677255Z  WARN vma_engine::render: slow tick encode frame=84656 total_ms=6.8427999999999995 uploads_ms=0.028 mixers_ms=0.856 output_ms=0.0 thumbnails_ms=0.8143 finish_ms=5.1445 overlays=0
+2026-11-13T10:03:36.859700Z  WARN vma_engine::render: slow tick encode frame=84665 total_ms=9.4279 uploads_ms=3.6731 mixers_ms=1.2271999999999998 output_ms=0.0 thumbnails_ms=0.0015 finish_ms=4.5261 overlays=0
+2026-11-13T10:03:36.998947Z  WARN vma_engine::render: slow tick encode frame=84672 total_ms=8.0705 uploads_ms=0.1326 mixers_ms=2.3016 output_ms=0.0 thumbnails_ms=0.6944 finish_ms=4.9418999999999995 overlays=0
+2026-11-13T10:03:37.006461Z  WARN vma_io_gst::pipeline: paced pictures published close to their tick (slow copy to the GPU) input=input#4 pictures=2 before_tick_ms=3.10335 copy_ms=3.4809 late_wake_ms=8.41575
+2026-11-13T10:03:44.997956Z  WARN vma_io_gst::pipeline: paced pictures published close to their tick (slow copy to the GPU) input=input#3 pictures=10 before_tick_ms=-108.40215 copy_ms=1.0188 late_wake_ms=122.38335
+2026-11-13T10:03:45.097698Z  WARN vma_io_gst::pipeline: paced pictures published close to their tick (slow copy to the GPU) input=input#1 pictures=7 before_tick_ms=-48.15095 copy_ms=0.5821 late_wake_ms=62.56885
+2026-11-13T10:03:45.177270Z  WARN vma_io_gst::pipeline: paced pictures published close to their tick (slow copy to the GPU) input=input#2 pictures=5 before_tick_ms=-127.72285 copy_ms=0.6649 late_wake_ms=142.05795
+2026-11-13T10:03:46.196739Z  WARN vma_engine::render: slow tick encode frame=85132 total_ms=6.0912 uploads_ms=0.0236 mixers_ms=0.207 output_ms=0.0 thumbnails_ms=3.2912000000000003 finish_ms=2.5694 overlays=0
+2026-11-13T10:03:46.279137Z  WARN vma_engine::render: slow tick encode frame=85136 total_ms=8.8065 uploads_ms=0.0837 mixers_ms=0.6974 output_ms=0.0 thumbnails_ms=1.8103 finish_ms=6.2151000000000005 overlays=0
+2026-11-13T10:03:55.988548Z  WARN vma_io_gst::pipeline: paced pictures published close to their tick (slow copy to the GPU) input=input#2 pictures=9 before_tick_ms=1.02055 copy_ms=3.5252 late_wake_ms=10.45425
+2026-11-13T10:03:56.025767Z  WARN vma_io_gst::pipeline: paced pictures published close to their tick (slow copy to the GPU) input=input#4 pictures=13 before_tick_ms=3.78315 copy_ms=7.7981 late_wake_ms=3.41875
+2026-11-13T10:04:03.789961Z  WARN vma_io_gst::pipeline: paced pictures published close to their tick (slow copy to the GPU) input=input#1 pictures=7 before_tick_ms=-0.38495 copy_ms=14.772 late_wake_ms=0.61295
+2026-11-13T10:04:03.792698Z  WARN vma_io_gst::pipeline: paced pictures published close to their tick (slow copy to the GPU) input=input#3 pictures=8 before_tick_ms=-3.14895 copy_ms=1.6453 late_wake_ms=16.50365
+2026-11-13T10:04:03.835854Z  WARN vma_engine::render: slow tick encode frame=86014 total_ms=5.1549 uploads_ms=0.4572 mixers_ms=1.7671 output_ms=0.0 thumbnails_ms=0.2152 finish_ms=2.7154000000000003 overlays=0
+2026-11-13T10:04:06.021103Z  WARN vma_engine::render: slow tick encode frame=86123 total_ms=10.5439 uploads_ms=0.0664 mixers_ms=6.4068 output_ms=0.0 thumbnails_ms=0.0046 finish_ms=4.0661 overlays=0
+2026-11-13T10:04:11.411943Z  WARN vma_engine::render: slow tick encode frame=86392 total_ms=5.3515999999999995 uploads_ms=0.0541 mixers_ms=1.3155000000000001 output_ms=0.0 thumbnails_ms=0.933 finish_ms=3.049 overlays=0
+2026-11-13T10:04:11.810137Z  WARN vma_io_gst::pipeline: paced pictures published close to their tick (slow copy to the GPU) input=input#4 pictures=1 before_tick_ms=-0.56475 copy_ms=7.7407 late_wake_ms=7.82405
+2026-11-13T10:04:11.814767Z  WARN vma_io_gst::pipeline: paced pictures published close to their tick (slow copy to the GPU) input=input#2 pictures=2 before_tick_ms=-5.21685 copy_ms=1.5424 late_wake_ms=18.67445
+2026-11-13T10:04:16.507318Z  WARN vma_io_gst::pipeline: paced pictures published close to their tick (slow copy to the GPU) input=input#1 pictures=6 before_tick_ms=2.23285 copy_ms=9.0968 late_wake_ms=3.67035
+2026-11-13T10:04:16.562348Z  WARN vma_engine::render: slow tick encode frame=86650 total_ms=11.751 uploads_ms=0.051 mixers_ms=0.8631 output_ms=0.0 thumbnails_ms=10.139199999999999 finish_ms=0.6977 overlays=0
+2026-11-13T10:04:16.637979Z  WARN vma_engine::render: slow tick encode frame=86654 total_ms=7.096 uploads_ms=0.13219999999999998 mixers_ms=1.7237 output_ms=0.0 thumbnails_ms=0.0936 finish_ms=5.1465 overlays=0
+2026-11-13T10:04:16.679751Z  WARN vma_engine::render: slow tick encode frame=86656 total_ms=6.9102 uploads_ms=0.15339999999999998 mixers_ms=6.0314000000000005 output_ms=0.0 thumbnails_ms=0.0543 finish_ms=0.6711 overlays=0
+2026-11-13T10:04:26.516526Z  WARN vma_engine::render: slow tick encode frame=87148 total_ms=6.2607 uploads_ms=0.0805 mixers_ms=0.7484 output_ms=0.0 thumbnails_ms=0.0577 finish_ms=5.374099999999999 overlays=0
+2026-11-13T10:04:26.597348Z  WARN vma_engine::render: slow tick encode frame=87152 total_ms=6.564 uploads_ms=0.337 mixers_ms=3.5961000000000003 output_ms=0.0 thumbnails_ms=0.0511 finish_ms=2.5798 overlays=0
+2026-11-13T10:04:26.733083Z  WARN vma_io_gst::pipeline: paced pictures published close to their tick (slow copy to the GPU) input=input#1 pictures=1 before_tick_ms=-3.53155 copy_ms=11.7778 late_wake_ms=6.75375
+2026-11-13T10:04:26.740682Z  WARN vma_engine::render: slow tick encode frame=87158 total_ms=26.1073 uploads_ms=0.08660000000000001 mixers_ms=18.0061 output_ms=0.0 thumbnails_ms=4.1808000000000005 finish_ms=3.8338 overlays=0
+2026-11-13T10:04:26.748172Z  WARN vma_io_gst::pipeline: paced pictures published close to their tick (slow copy to the GPU) input=input#3 pictures=6 before_tick_ms=1.37985 copy_ms=1.8835 late_wake_ms=11.73665
+2026-11-13T10:04:26.799344Z  WARN vma_engine::render: slow tick encode frame=87162 total_ms=7.7251 uploads_ms=0.0483 mixers_ms=3.6035 output_ms=0.0 thumbnails_ms=0.1918 finish_ms=3.8815 overlays=0
+2026-11-13T10:04:26.839132Z  WARN vma_engine::render: slow tick encode frame=87164 total_ms=5.8283 uploads_ms=0.1196 mixers_ms=0.2062 output_ms=0.0 thumbnails_ms=0.0439 finish_ms=5.4586 overlays=0
+2026-11-13T10:04:26.862932Z  WARN vma_engine::render: slow tick encode frame=87165 total_ms=5.906899999999999 uploads_ms=0.22039999999999998 mixers_ms=4.9413 output_ms=0.0 thumbnails_ms=0.00039999999999999996 finish_ms=0.7448 overlays=0
+2026-11-13T10:04:26.899640Z  WARN vma_engine::render: slow tick encode frame=87167 total_ms=8.7517 uploads_ms=3.7569 mixers_ms=2.7951 output_ms=0.0 thumbnails_ms=0.0065 finish_ms=2.1932 overlays=0
+2026-11-13T10:04:35.960842Z  WARN vma_engine::render: slow tick encode frame=87620 total_ms=5.8725000000000005 uploads_ms=0.14889999999999998 mixers_ms=1.3175999999999999 output_ms=0.0 thumbnails_ms=0.2052 finish_ms=4.2008 overlays=0
+2026-11-13T10:04:35.996431Z  WARN vma_engine::render: slow tick encode frame=87621 total_ms=23.7502 uploads_ms=16.3056 mixers_ms=0.9647 output_ms=0.0 thumbnails_ms=0.0066 finish_ms=6.4733 overlays=0
+2026-11-13T10:04:36.117378Z  WARN vma_engine::render: slow tick encode frame=87628 total_ms=5.5699 uploads_ms=0.163 mixers_ms=0.9705 output_ms=0.0 thumbnails_ms=0.129 finish_ms=4.3074 overlays=0
+2026-11-13T10:04:43.585330Z  WARN vma_io_gst::pipeline: paced pictures published close to their tick (slow copy to the GPU) input=input#4 pictures=2 before_tick_ms=4.24145 copy_ms=2.4939 late_wake_ms=8.26465
+2026-11-13T10:04:44.957160Z  WARN vma_io_gst::pipeline: paced pictures published close to their tick (slow copy to the GPU) input=input#3 pictures=6 before_tick_ms=-27.61125 copy_ms=0.7226 late_wake_ms=41.88865
+2026-11-13T10:04:46.019384Z  WARN vma_engine::render: slow tick encode frame=88123 total_ms=9.4278 uploads_ms=0.0742 mixers_ms=0.7739999999999999 output_ms=0.0 thumbnails_ms=0.0024 finish_ms=8.5772 overlays=0
+2026-11-13T10:04:46.155035Z  WARN vma_engine::render: slow tick encode frame=88130 total_ms=5.0045 uploads_ms=0.2187 mixers_ms=2.1441 output_ms=0.0 thumbnails_ms=0.1908 finish_ms=2.4509000000000003 overlays=0
+2026-11-13T10:04:51.856917Z  WARN vma_engine::render: slow tick encode frame=88415 total_ms=5.2987 uploads_ms=0.131 mixers_ms=1.1023 output_ms=0.0 thumbnails_ms=0.0026 finish_ms=4.0628 overlays=0
+2026-11-13T10:04:56.118142Z  WARN vma_engine::render: slow tick encode frame=88628 total_ms=6.6239 uploads_ms=0.3337 mixers_ms=0.5091 output_ms=0.0 thumbnails_ms=0.0948 finish_ms=5.6863 overlays=0
+2026-11-13T10:04:56.264901Z  WARN vma_io_gst::pipeline: paced pictures published close to their tick (slow copy to the GPU) input=input#3 pictures=3 before_tick_ms=4.64965 copy_ms=4.7934 late_wake_ms=5.55695
+2026-11-13T10:04:59.756292Z  WARN vma_engine::render: slow tick encode frame=88810 total_ms=5.4402 uploads_ms=0.1893 mixers_ms=2.3045 output_ms=0.0 thumbnails_ms=0.0504 finish_ms=2.8960000000000004 overlays=0
+2026-11-13T10:05:06.283468Z  WARN vma_engine::render: slow tick encode frame=89136 total_ms=10.6811 uploads_ms=0.033 mixers_ms=0.9581999999999999 output_ms=0.0 thumbnails_ms=0.0701 finish_ms=9.6198 overlays=0
+2026-11-13T10:05:06.419112Z  WARN vma_engine::render: slow tick encode frame=89143 total_ms=7.9179 uploads_ms=0.13019999999999998 mixers_ms=0.7787999999999999 output_ms=0.0 thumbnails_ms=0.0023 finish_ms=7.0066 overlays=0
+2026-11-13T10:05:06.438133Z  WARN vma_engine::render: slow tick encode frame=89144 total_ms=5.7995 uploads_ms=1.3236999999999999 mixers_ms=0.7836 output_ms=0.0 thumbnails_ms=0.26489999999999997 finish_ms=3.4273 overlays=0
+2026-11-13T10:05:06.466024Z  WARN vma_io_gst::pipeline: paced pictures published close to their tick (slow copy to the GPU) input=input#3 pictures=1 before_tick_ms=3.54605 copy_ms=1.5942 late_wake_ms=9.85975
+2026-11-13T10:05:06.544598Z  WARN vma_io_gst::pipeline: paced pictures published close to their tick (slow copy to the GPU) input=input#1 pictures=5 before_tick_ms=4.95285 copy_ms=0.8044 late_wake_ms=9.24275
+2026-11-13T10:05:06.684904Z  WARN vma_io_gst::pipeline: paced pictures published close to their tick (slow copy to the GPU) input=input#2 pictures=1 before_tick_ms=4.66635 copy_ms=2.6503 late_wake_ms=7.68335
+2026-11-13T10:05:15.616003Z  WARN vma_engine::render: slow tick encode frame=89603 total_ms=5.2919 uploads_ms=1.8577000000000001 mixers_ms=1.2310999999999999 output_ms=0.0 thumbnails_ms=0.0036 finish_ms=2.1995 overlays=0
+2026-11-13T10:05:15.996394Z  WARN vma_engine::render: slow tick encode frame=89622 total_ms=5.0334 uploads_ms=2.2779 mixers_ms=1.0348 output_ms=0.0 thumbnails_ms=0.054599999999999996 finish_ms=1.6661 overlays=0
+2026-11-13T10:05:16.078633Z  WARN vma_engine::render: slow tick encode frame=89626 total_ms=5.552 uploads_ms=0.0797 mixers_ms=2.0217 output_ms=0.0 thumbnails_ms=0.1167 finish_ms=3.3339 overlays=0
+2026-11-13T10:05:16.141684Z  WARN vma_engine::render: slow tick encode frame=89629 total_ms=7.8463 uploads_ms=4.4928 mixers_ms=0.6013000000000001 output_ms=0.0 thumbnails_ms=0.0069 finish_ms=2.7453 overlays=0
+2026-11-13T10:05:23.776665Z  WARN vma_engine::render: slow tick encode frame=90011 total_ms=5.8975 uploads_ms=0.0725 mixers_ms=0.7336 output_ms=0.0 thumbnails_ms=0.0006 finish_ms=5.090800000000001 overlays=0
+2026-11-13T10:05:23.810837Z  INFO vma::soak: soak finished report=C:\Users\<utilisateur>\Downloads\VMA-windows (1)\VMA\Rapports\2026-11-13-phase1-a1-windows.md passed=false end=Completed
+2026-11-13T10:05:23.825057Z  WARN vma_io_gst::pipeline: paced pictures published close to their tick (slow copy to the GPU) input=input#4 pictures=1 before_tick_ms=4.50925 copy_ms=2.7061 late_wake_ms=7.78465
+2026-11-13T10:05:23.831223Z  INFO vma_engine::render: render thread stopped
+2026-11-13T10:05:23.838670Z  INFO vma_engine::control: control thread stopped
+2026-11-13T10:05:23.840441Z  INFO vma_engine::outputs: output thread stopped
+2026-11-13T10:05:23.841608Z  INFO vma_engine::audio: audio thread stopped
+2026-11-13T10:05:23.885931Z  INFO vma_io_gst::runtime: io thread stopped

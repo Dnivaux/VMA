@@ -1,0 +1,8 @@
+﻿Paquet : VMA 0.0.1, commit 51ddbb3, GStreamer 1.26.11, construit le 2026-11-11
+Windows : Microsoft Windows 11 Famille 10.0.26200 (build 26200)
+Processeur : 11th Gen Intel(R) Core(TM) i7-11370H @ 3.30GHz
+Mémoire : 15,7 Gio
+GPU : Intel(R) Iris(R) Xe Graphics, pilote 31.0.101.5333, 1920x1080 à 60 Hz
+GPU : NVIDIA GeForce RTX 3060 Laptop GPU, pilote 32.0.15.5597, x à  Hz
+Alimentation : portable, SUR BATTERIE, 83 %
+Mode d'alimentation : GUID du mode de gestion de l’alimentation : 27fa6203-3987-4dcc-918d-748559d549ec  (Performance)
