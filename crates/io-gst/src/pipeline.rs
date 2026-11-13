@@ -1466,6 +1466,8 @@ pub(crate) mod tests {
         pub(crate) first_bytes: Vec<u8>,
         /// First 4 bytes of the last picture (its first pixel, for RGBA / BGRA).
         pub(crate) first_texel: [u8; 4],
+        /// First byte of each row of the first plane, for each picture.
+        pub(crate) first_column: Vec<Vec<u8>>,
     }
 
     /// CPU stand-in for the engine's feeds.
@@ -1495,6 +1497,13 @@ pub(crate) mod tests {
                     .copied()
                     .unwrap_or(0),
             );
+            f.first_column
+                .push(planes.first().map_or_else(Vec::new, |p| {
+                    p.data
+                        .chunks(p.stride.max(1) as usize)
+                        .filter_map(|row| row.first().copied())
+                        .collect()
+                }));
             f.plane_bytes = planes.iter().map(|p| p.data.len()).collect();
             if let Some(texel) = planes.first().and_then(|p| p.data.first_chunk::<4>()) {
                 f.first_texel = *texel;

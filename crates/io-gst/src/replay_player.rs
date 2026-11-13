@@ -38,8 +38,6 @@ const CACHE: usize = 12;
 const REFRESH_TICKS: u64 = 5;
 /// Side of the black picture shown before the first event (scaled to the master size).
 const BLACK_SIDE: u32 = 16;
-/// Longest sleep between two looks at the controls and the stop flag.
-const MAX_SLEEP: Duration = Duration::from_millis(5);
 /// Longest wait for one decoded picture.
 const DECODE_TIMEOUT: gst::ClockTime = gst::ClockTime::from_mseconds(500);
 
@@ -207,26 +205,20 @@ impl<F: Feeds> Worker<F> {
         while !self.stop.load(Ordering::Acquire) {
             // Half a period before the tick: its picture reaches the feed in time.
             let release = self.ticks.tick_ns(tick).saturating_sub(period / 2);
-            // A sleep, not the channel's timeout: under Windows that follows the system timer
-            // (15.6 ms by default), more than the half period of margin, and pictures missed
-            // their tick (CI Windows, Phase 6); a sleep has a high-resolution timer there. What
-            // comes meanwhile is taken before the release, for this tick, as on reception.
             loop {
-                loop {
-                    match self.rx.try_recv() {
-                        Ok(control) => self.control(tick, control),
-                        Err(crossbeam_channel::TryRecvError::Empty) => break,
-                        Err(crossbeam_channel::TryRecvError::Disconnected) => return,
-                    }
-                }
                 let now = self.clock.now();
                 let wait = Duration::from_nanos(release.saturating_sub(now));
                 if wait.is_zero() {
                     break;
                 }
-                std::thread::sleep(wait.min(MAX_SLEEP));
-                if self.stop.load(Ordering::Acquire) {
-                    return;
+                match self.rx.recv_timeout(wait.min(Duration::from_millis(50))) {
+                    Ok(control) => self.control(tick, control),
+                    Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
+                        if self.stop.load(Ordering::Acquire) {
+                            return;
+                        }
+                    }
+                    Err(crossbeam_channel::RecvTimeoutError::Disconnected) => return,
                 }
             }
             // Late (a slow decode, a suspended machine): on to the next tick still ahead.
@@ -564,18 +556,58 @@ mod tests {
 
     const MS: u64 = 1_000_000;
 
-    /// Picture *n* is grey `16 + 2n`: what the feed receives tells which picture it is.
-    fn luma(n: u64) -> u8 {
-        (16 + 2 * n) as u8
+    /// Rows of each of the 8 bands of a coded picture (180 rows).
+    const BAND: usize = 22;
+
+    /// Picture *n* of camera A carries the code *n*.
+    fn code_a(n: u64) -> u8 {
+        n as u8
+    }
+
+    /// Picture *n* of camera B: the code 128 + *n*.
+    fn code_b(n: u64) -> u8 {
+        128 + n as u8
+    }
+
+    /// A 320 × 180 picture carrying `code` in binary, bit *k* in the *k*-th band of rows,
+    /// black or white: what the feed receives tells which picture it is, through a lossy
+    /// encoder too (a grey per picture did not, read ±2 after Media Foundation's H.264, CI
+    /// Windows).
+    fn coded_picture(code: u8) -> gst::Sample {
+        let info =
+            gstreamer_video::VideoInfo::builder(gstreamer_video::VideoFormat::Nv12, 320, 180)
+                .fps(gst::Fraction::new(25, 1))
+                .build()
+                .unwrap();
+        let mut bytes: Vec<u8> = (0..180)
+            .flat_map(|row| {
+                let bit = (row / BAND).min(7);
+                let luma = if code & (1 << bit) != 0 { 235 } else { 16 };
+                std::iter::repeat_n(luma, 320)
+            })
+            .collect();
+        bytes.extend(std::iter::repeat_n(128u8, 320 * 90));
+        gst::Sample::builder()
+            .buffer(&gst::Buffer::from_mut_slice(bytes))
+            .caps(&info.to_caps().unwrap())
+            .build()
+    }
+
+    /// The code of a picture, from the first byte of each of its rows.
+    fn code_of(column: &[u8]) -> u8 {
+        (0..8).fold(0, |code, bit| {
+            let middle = column.get(bit * BAND + BAND / 2).copied().unwrap_or(0);
+            if middle > 128 { code | 1 << bit } else { code }
+        })
     }
 
     /// Records 100 pictures, 20 ms apart, into `dir`; their instants.
     fn record(dir: &std::path::Path) -> Vec<Entry> {
-        record_with(dir, 0, luma)
+        record_with(dir, 0, code_a)
     }
 
-    /// Records 100 pictures `grey(n)`, 20 ms apart from `offset_ns`, into `dir`.
-    fn record_with(dir: &std::path::Path, offset_ns: u64, grey: fn(u64) -> u8) -> Vec<Entry> {
+    /// Records 100 pictures `code(n)`, 20 ms apart from `offset_ns`, into `dir`.
+    fn record_with(dir: &std::path::Path, offset_ns: u64, code: fn(u64) -> u8) -> Vec<Entry> {
         let recorder = Recorder::start(
             "replay",
             RecordSettings {
@@ -589,7 +621,7 @@ mod tests {
         let tap = recorder.tap();
         for n in 0..100u64 {
             let at = 7_000_000_000 + offset_ns + n * 20 * MS;
-            tap.offer(&crate::record::tests::picture(grey(n)), at);
+            tap.offer(&coded_picture(code(n)), at);
             // In real time, as an input hands them over.
             std::thread::sleep(Duration::from_millis(20));
         }
@@ -622,10 +654,10 @@ mod tests {
     fn pushes(feeds: &FakeFeeds) -> Vec<(u64, Instant)> {
         let feeds = feeds.feeds.lock().unwrap();
         let feed = feeds.last().unwrap().lock().unwrap();
-        feed.first_bytes
+        feed.first_column
             .iter()
             .zip(&feed.arrivals)
-            .map(|(b, at)| ((u64::from(*b) - 15) / 2, *at))
+            .map(|(column, at)| (u64::from(code_of(column)), *at))
             .collect()
     }
 
@@ -734,8 +766,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         let (dir_a, dir_b) = (root.join("a"), root.join("b"));
         let a = record(&dir_a);
-        // The other camera: 7 ms later, its pictures grey 230 − 2n (going down).
-        record_with(&dir_b, 7 * MS, |n| (230 - 2 * n) as u8);
+        // The other camera: 7 ms later.
+        record_with(&dir_b, 7 * MS, code_b);
         let clock = crate::stream_clock();
         let ticks = TickGrid {
             origin_ns: clock.now(),
@@ -748,22 +780,19 @@ mod tests {
         player.plan(plan(&dir_b, &a, 50, false, 1));
         std::thread::sleep(Duration::from_millis(600));
         drop(player);
-        let greys: Vec<u8> = {
-            let feeds = feeds.feeds.lock().unwrap();
-            let feed = feeds.last().unwrap().lock().unwrap();
-            feed.first_bytes.clone()
-        };
-        // Picture n of camera A is 16 + 2n, of camera B 230 − 2n.
-        let switch = greys.windows(2).position(|w| w[1] > w[0] + 4).unwrap() + 1;
-        let last_a = u64::from(greys[switch - 1] - 15) / 2;
-        let first_b = u64::from(231 - greys[switch]) / 2;
+        let codes: Vec<u8> = pushes(&feeds).iter().map(|p| p.0 as u8).collect();
+        // Picture n of camera A carries n, of camera B 128 + n.
+        let switch = codes.iter().position(|c| *c >= 128).unwrap();
+        assert!(switch > 0, "{codes:?}");
+        let last_a = u64::from(codes[switch - 1]);
+        let first_b = u64::from(codes[switch] - 128);
         assert!(
             first_b.abs_diff(last_a) <= 1,
-            "A {last_a} → B {first_b}: {greys:?}"
+            "A {last_a} → B {first_b}: {codes:?}"
         );
-        let after: Vec<u64> = greys[switch..]
+        let after: Vec<u64> = codes[switch..]
             .iter()
-            .map(|g| u64::from(231 - g) / 2)
+            .map(|c| u64::from(c.saturating_sub(128)))
             .collect();
         assert!(
             after.windows(2).all(|w| w[1] == w[0] + 1),
