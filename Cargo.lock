@@ -5262,6 +5262,7 @@ name = "vma-io-html"
 version = "0.0.1"
 dependencies = [
  "cef",
+ "cef-dll-sys",
  "crossbeam-channel",
  "memmap2",
  "serde",

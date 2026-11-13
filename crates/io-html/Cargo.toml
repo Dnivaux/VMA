@@ -13,7 +13,7 @@ workspace = true
 [features]
 # Builds the `vma-html` helper (ADR 0009). Downloads CEF at build time: off by default, so that
 # `cargo build --workspace` and `vma` never link to CEF.
-cef = ["dep:cef"]
+cef = ["dep:cef", "dep:cef-dll-sys"]
 
 [[bin]]
 name = "vma-html"
@@ -23,6 +23,7 @@ required-features = ["cef"]
 [dependencies]
 vma-core.workspace = true
 cef = { workspace = true, optional = true }
+cef-dll-sys = { workspace = true, optional = true }
 crossbeam-channel.workspace = true
 memmap2.workspace = true
 serde.workspace = true
