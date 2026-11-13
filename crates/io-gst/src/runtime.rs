@@ -1047,6 +1047,8 @@ mod tests {
     #[test]
     fn without_gstreamer_images_still_work() {
         use vma_engine::{Command, EngineConfig, InputStatus, Journal, RenderEngine, Source};
+        // Before the GPU: see `init`.
+        crate::pipeline::tests::init();
         let gpu = pollster::block_on(vma_compositor::headless::request_gpu())
             .expect("GPU adapter required");
         let config = EngineConfig {
@@ -1101,6 +1103,8 @@ mod tests {
         if vma_io_ndi::status().is_available() {
             return;
         }
+        // Before the GPU: see `init`.
+        crate::pipeline::tests::init();
         let gpu = pollster::block_on(vma_compositor::headless::request_gpu())
             .expect("GPU adapter required");
         let config = EngineConfig {
@@ -1172,6 +1176,8 @@ mod tests {
         let list = AudioDeviceList::default();
         list.set(vec![mic.clone()], vec![phones.clone()]);
 
+        // Before the GPU: see `init`.
+        crate::pipeline::tests::init();
         let gpu = pollster::block_on(vma_compositor::headless::request_gpu())
             .expect("GPU adapter required");
         let config = EngineConfig {

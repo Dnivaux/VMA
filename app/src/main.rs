@@ -314,6 +314,10 @@ impl<'a> App<'a> {
         )?;
         // Images, capture and files (ADR 0004). Without GStreamer the runtime still serves
         // still images; without the thread at all, those inputs stay « Démarrage ».
+        // Started once the GPU device exists, and it must stay so: a GStreamer plugin tied to
+        // the GPU driver (NVENC) loaded for the first time while that driver initialises
+        // Vulkan on another thread deadlocks inside the driver (seen in the tests, ROADMAP
+        // Phase 6, 2026-11-13).
         let io = engine.take_io_port().and_then(|port| {
             let io_options = vma_io_gst::IoOptions {
                 headphones: options.headphones,

@@ -264,6 +264,8 @@ pub(crate) fn spawn_engine(rate: FrameRate, sync_test: bool) -> RenderEngine {
 /// [`spawn_engine`] with other settings (320 × 180 whatever `config` says); also returns the
 /// device, to lose it.
 pub(crate) fn spawn_engine_with(config: EngineConfig) -> (RenderEngine, wgpu::Device) {
+    // Before the GPU: see `init`.
+    init();
     let gpu =
         pollster::block_on(vma_compositor::headless::request_gpu()).expect("GPU adapter required");
     let config = EngineConfig {

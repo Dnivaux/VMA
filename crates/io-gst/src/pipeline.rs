@@ -1549,8 +1549,31 @@ pub(crate) mod tests {
         }
     }
 
+    /// GStreamer for a test, and, under plain `cargo test`, the GPU driver initialised before
+    /// any encoder plugin is loaded.
+    ///
+    /// `cargo test` runs the tests of a binary as threads of one process. A test that creates
+    /// its engine (Vulkan: the NVIDIA driver initialises under its own lock, then asks for the
+    /// dynamic loader's) while another loads the NVENC plugin for the first time (`dlopen`
+    /// holds the loader's lock and runs the same driver's initialisation, which spins on the
+    /// driver's) never returned: the whole run hung, one thread at 100 % (ROADMAP Phase 6;
+    /// stacks read on 2026-11-13). Here both are done once, one after the other, before any
+    /// test goes on. `cargo nextest` gives each test its process: nothing to order. The
+    /// application creates its GPU device before `vma-io` starts (`app`, `Boot`).
     pub(crate) fn init() {
+        static DRIVER_FIRST: std::sync::Once = std::sync::Once::new();
         gst::init().expect("GStreamer required for io-gst tests");
+        if std::env::var_os("NEXTEST").is_some() {
+            return;
+        }
+        DRIVER_FIRST.call_once(|| {
+            use crate::output::encoder;
+            let _gpu = pollster::block_on(vma_compositor::headless::request_gpu());
+            let ladders = [encoder::H264, encoder::HEVC, encoder::AAC];
+            for candidate in ladders.into_iter().flatten() {
+                let _ = encoder::probe_element(candidate.element);
+            }
+        });
     }
 
     pub(crate) fn live(source: &str) -> Recipe {
