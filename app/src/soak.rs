@@ -77,6 +77,8 @@ pub struct SoakContext {
     pub ticks: TickGrid,
     /// The engine's feeds: what the render thread did with the stinger (D11).
     pub feeds: vma_engine::FeedRegistry,
+    /// The counters of `vma-io`'s recorders and replay players (F7), if it runs.
+    pub io: Option<vma_io_gst::IoProbe>,
 }
 
 #[derive(Debug)]
@@ -389,6 +391,16 @@ fn run(
     } else {
         None
     };
+    // F7: the replay at work for the whole run.
+    let replay_load = match &options.replay_load {
+        Some(folder) => Some(crate::replay_load::ReplayLoad::start(
+            soak.commands.clone(),
+            soak.state.clone(),
+            soak.io.clone(),
+            folder.clone(),
+        )?),
+        None => None,
+    };
     let mut sent = [0u64; Action::ALL.len()];
     let mut step = 0u64;
     let mut transitions = 0u64;
@@ -635,6 +647,7 @@ fn run(
     }
 
     let api_load = api_load.map(crate::api_load::ApiLoad::finish);
+    let replay_load = replay_load.map(crate::replay_load::ReplayLoad::finish);
     if options.hostile {
         // Leave the window in a sane state.
         ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
@@ -657,6 +670,7 @@ fn run(
         stingers,
         data_sent,
         api_load: api_load.as_ref(),
+        replay_load: replay_load.as_ref(),
     };
     let (report, passed) = report(options, soak, &run);
     if let Some(dir) = options
@@ -705,6 +719,8 @@ struct Run<'a> {
     data_sent: u64,
     /// `--api-load`: what the client of the compat API saw (E13).
     api_load: Option<&'a crate::api_load::ApiLoadReport>,
+    /// `--replay-load`: what the replay did (F7).
+    replay_load: Option<&'a crate::replay_load::ReplayLoadReport>,
 }
 
 /// One master period of the soak's 50 ms steps, a second.
@@ -1103,7 +1119,10 @@ fn report(options: &SoakOptions, soak: &SoakContext, run: &Run<'_>) -> (String, 
         && phase4_ok
         && run
             .api_load
-            .is_none_or(crate::api_load::ApiLoadReport::passed);
+            .is_none_or(crate::api_load::ApiLoadReport::passed)
+        && run
+            .replay_load
+            .is_none_or(crate::replay_load::ReplayLoadReport::passed);
     let mode = if options.hostile { "hostile" } else { "calme" };
     let ms = |d: Duration| format!("{:.3} ms", d.as_secs_f64() * 1000.0);
 
@@ -1133,6 +1152,8 @@ fn report(options: &SoakOptions, soak: &SoakContext, run: &Run<'_>) -> (String, 
                 "❌ ÉCHEC (habillage : page HTML répétée ou sautée, ou image du stinger répétée)",
             (false, End::Completed) if !sync_ok =>
                 "❌ ÉCHEC (synchro : décalage son / image de plus d'une image, flux relu interrompu ou flashs manquants)",
+            (false, End::Completed) if run.replay_load.is_some_and(|r| !r.passed()) =>
+                "❌ ÉCHEC (replay : commande refusée, pas de retour à l'antenne, image perdue par un enregistreur ou le lecteur)",
             (false, End::Completed) => "❌ ÉCHEC (images manquées ou répétées)",
         }
     );
@@ -1411,6 +1432,9 @@ fn report(options: &SoakOptions, soak: &SoakContext, run: &Run<'_>) -> (String, 
 
     if let Some((text, _)) = &phase4 {
         s.push_str(text);
+    }
+    if let Some(replay) = run.replay_load {
+        crate::replay_load::write_report(&mut s, replay);
     }
     if let Some(api) = run.api_load {
         let _ = writeln!(

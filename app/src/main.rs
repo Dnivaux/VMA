@@ -2,6 +2,7 @@
 
 mod api_load;
 mod cli;
+mod replay_load;
 mod screens;
 mod soak;
 mod sync_diagnosis;
@@ -494,6 +495,8 @@ impl<'a> App<'a> {
             .map(|s| s.key.clone())
             .unwrap_or_default();
         let soak_context = soak_options.map(|options| {
+            // Not with the replay at work: « Rejouer » takes the Program and gives it back.
+            let transitions = inputs.len() >= 2 && options.replay_load.is_none();
             (
                 options,
                 soak::SoakContext {
@@ -508,11 +511,12 @@ impl<'a> App<'a> {
                     outputs: engine.outputs(),
                     commands: engine.commands(),
                     // Mix the sources on air while the soak runs (Fade, then Cut, …).
-                    transitions: inputs.len() >= 2,
+                    transitions,
                     audio: engine.audio_stats(),
                     stream_key: stream_key.clone(),
                     ticks: engine.ticks(),
                     feeds: engine.feeds(),
+                    io: io.as_ref().map(vma_io_gst::IoRuntime::probe),
                 },
             )
         });

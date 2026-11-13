@@ -61,6 +61,10 @@ Options :
                          (code 0 = réussi, 2 = images manquées ou répétées)
   --api-load             pendant le soak, un client de l'API compat TCP (127.0.0.1:8099) :
                          une commande toutes les 100 ms, l'état XML toutes les 250 ms (E13)
+  --replay-load <dossier>
+                         pendant le soak, le replay au travail (F7) : les inputs enregistrés
+                         pour le replay et en ISO dans ce dossier (un SSD de préférence),
+                         « −5 s » puis « Rejouer » toutes les 30 s, un autre angle, l'arrière
   --fullscreen-source <source>
                          ce que montre le plein écran de --fullscreen : program (défaut),
                          preview ou multiview
@@ -151,6 +155,8 @@ pub struct SoakOptions {
     pub stinger: bool,
     /// A client of the compat API runs during the soak (E13).
     pub api_load: bool,
+    /// The replay at work during the soak, recording in that folder (F7).
+    pub replay_load: Option<PathBuf>,
 }
 
 /// Environment variable holding the stream key, to keep it out of the command line.
@@ -202,6 +208,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> anyhow::Result<Options> 
     let mut soak_secs = None;
     let mut hostile = false;
     let mut api_load = false;
+    let mut replay_load = None;
     let mut fullscreen_source = vma_engine::ViewSource::Program;
     let mut report = None;
     let mut help = false;
@@ -275,6 +282,9 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> anyhow::Result<Options> 
                 }
             }
             "--api-load" => api_load = true,
+            "--replay-load" => {
+                replay_load = Some(PathBuf::from(value::<String>(&mut args, &arg)?));
+            }
             "--stream" => stream_url = Some(value::<String>(&mut args, &arg)?),
             "--stream-key" => stream_key = Some(value::<String>(&mut args, &arg)?),
             "--sync-test" => sync_test = true,
@@ -304,9 +314,15 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> anyhow::Result<Options> 
             html_data,
             stinger: stinger.is_some(),
             api_load,
+            replay_load: replay_load.clone(),
         }),
-        None if hostile || report.is_some() || sync_check.is_some() || api_load => {
-            bail!("--hostile, --report, --sync-check et --api-load exigent --soak")
+        None if hostile
+            || report.is_some()
+            || sync_check.is_some()
+            || api_load
+            || replay_load.is_some() =>
+        {
+            bail!("--hostile, --report, --sync-check, --api-load et --replay-load exigent --soak")
         }
         None => None,
     };
@@ -577,8 +593,12 @@ mod tests {
                 html_data: false,
                 stinger: false,
                 api_load: false,
+                replay_load: None,
             })
         );
+        let o = parse_str("--soak 60 --replay-load /ssd/f7").unwrap();
+        assert_eq!(o.soak.unwrap().replay_load, Some(PathBuf::from("/ssd/f7")));
+        assert!(parse_str("--replay-load /ssd/f7").is_err());
         let o =
             parse_str("--soak 60 --api-load --fullscreen 2 --fullscreen-source multiview").unwrap();
         assert!(o.soak.unwrap().api_load);

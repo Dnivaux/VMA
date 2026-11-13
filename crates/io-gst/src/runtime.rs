@@ -50,6 +50,36 @@ pub struct PipelineInfo {
 type Infos = Arc<ArcSwap<Vec<(InputId, PipelineInfo)>>>;
 /// The counters of every replay player.
 type PlayerCounters = Arc<ArcSwap<Vec<(InputId, Arc<crate::replay_player::PlayerStats>)>>>;
+type RecorderCounters = Arc<ArcSwap<Vec<(InputId, Arc<crate::record::RecordStats>)>>>;
+
+/// The counters of the replay players and the recorders, readable from any thread (a soak
+/// report, the statistics): [`IoRuntime::probe`].
+#[derive(Debug, Clone, Default)]
+pub struct IoProbe {
+    players: PlayerCounters,
+    recorders: RecorderCounters,
+}
+
+impl IoProbe {
+    /// What the player of a replay input did (`None`: not a replay input, or not open).
+    pub fn replay(&self, input: InputId) -> Option<ReplayActivity> {
+        self.players
+            .load()
+            .iter()
+            .find(|(id, _)| *id == input)
+            .map(|(_, stats)| stats.snapshot())
+    }
+
+    /// What the recorder of `input` did since it started (`None`: not recorded). A new plan
+    /// (the replay or the ISO started or stopped) starts a new recorder, with new counters.
+    pub fn recording(&self, input: InputId) -> Option<crate::record::RecordActivity> {
+        self.recorders
+            .load()
+            .iter()
+            .find(|(id, _)| *id == input)
+            .map(|(_, stats)| stats.snapshot())
+    }
+}
 
 /// One input backed by a pipeline: running, or waiting to be retried.
 #[derive(Debug)]
@@ -186,7 +216,7 @@ pub struct IoRuntime {
     headphones: Arc<ArcSwap<HeadphonesStatus>>,
     infos: Infos,
     activities: Activities,
-    players: PlayerCounters,
+    probe: IoProbe,
 }
 
 impl IoRuntime {
@@ -253,7 +283,7 @@ impl IoRuntime {
         let devices = DeviceList::default();
         let infos = Infos::default();
         let activities = Activities::default();
-        let players = PlayerCounters::default();
+        let probe = IoProbe::default();
         let outputs = Outputs::new(
             port.outputs.clone(),
             OutputFormat {
@@ -296,7 +326,7 @@ impl IoRuntime {
             recorders: Vec::new(),
             finishing: Vec::new(),
             players: Vec::new(),
-            player_counters: Arc::clone(&players),
+            probe: probe.clone(),
         };
         let thread_stop = Arc::clone(&stop);
         let thread = std::thread::Builder::new()
@@ -314,7 +344,7 @@ impl IoRuntime {
             headphones: headphones_status,
             infos,
             activities,
-            players,
+            probe,
         })
     }
 
@@ -367,11 +397,17 @@ impl IoRuntime {
 
     /// What the player of a replay input did (`None`: not a replay input, or not open).
     pub fn replay_activity(&self, input: InputId) -> Option<ReplayActivity> {
-        self.players
-            .load()
-            .iter()
-            .find(|(id, _)| *id == input)
-            .map(|(_, stats)| stats.snapshot())
+        self.probe.replay(input)
+    }
+
+    /// What the recorder of `input` did since it started (`None`: not recorded).
+    pub fn recording_activity(&self, input: InputId) -> Option<crate::record::RecordActivity> {
+        self.probe.recording(input)
+    }
+
+    /// The counters of the players and recorders, to read from another thread.
+    pub fn probe(&self) -> IoProbe {
+        self.probe.clone()
     }
 
     /// What the pipeline of `input` reports: capture mode, conversion (`None` while it is
@@ -424,8 +460,8 @@ struct Worker {
     finishing: Vec<std::thread::JoinHandle<()>>,
     /// One player per replay input (ADR 0016).
     players: Vec<(InputId, crate::replay_player::ReplayPlayer)>,
-    /// Their counters, for the statistics.
-    player_counters: PlayerCounters,
+    /// Their counters and the recorders', for the statistics.
+    probe: IoProbe,
 }
 
 impl Worker {
@@ -578,6 +614,7 @@ impl Worker {
         if let Some(pos) = self.recorders.iter().position(|(id, _)| *id == input) {
             let (_, old) = self.recorders.swap_remove(pos);
             self.finish_aside(old);
+            self.publish_recorders();
         }
         let Some(plan) = plan else {
             return;
@@ -604,6 +641,7 @@ impl Worker {
             Ok(recorder) => {
                 slot.set_recorder(Some(recorder.tap()));
                 self.recorders.push((input, recorder));
+                self.publish_recorders();
             }
             Err(e) => send(
                 &self.port.events,
@@ -642,6 +680,7 @@ impl Worker {
             if let Some(pos) = self.recorders.iter().position(|(id, _)| *id == input) {
                 let (_, recorder) = self.recorders.swap_remove(pos);
                 self.finish_aside(recorder);
+                self.publish_recorders();
             }
         }
     }
@@ -663,7 +702,16 @@ impl Worker {
             .iter()
             .map(|(id, player)| (*id, player.stats()))
             .collect();
-        self.player_counters.store(Arc::new(all));
+        self.probe.players.store(Arc::new(all));
+    }
+
+    fn publish_recorders(&self) {
+        let all = self
+            .recorders
+            .iter()
+            .map(|(id, recorder)| (*id, recorder.stats()))
+            .collect();
+        self.probe.recorders.store(Arc::new(all));
     }
 
     fn publish_timelines(&self) {
