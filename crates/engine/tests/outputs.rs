@@ -156,12 +156,21 @@ fn frames_carry_the_pts_and_audio_of_n_at_every_master_rate() {
         let seen: Vec<Seen> = rx.try_iter().collect();
         let render = engine.render_stats().snapshot();
         let clock = engine.clock_stats().snapshot();
+        let consumer = engine.outputs().counters(OutputId(1));
         eprintln!(
-            "{rate}: {} frames, {} read back, {} not read back, {} ticks",
+            "{rate}: {} frames, {} read back, {} not read back, {} ticks; consumer: {consumer:?}",
             seen.len(),
             render.outputs_read,
             render.output_dropped,
             clock.ticks
+        );
+        // A frame lost in this consumer's own queue (the test's thread stalled for more than
+        // three frames: CI Windows, 2026-11-13) takes its sound with it, as for any stalled
+        // output (B6): the continuity below is the engine's only when none was lost there.
+        assert_eq!(
+            consumer.map_or(0, |c| c.dropped),
+            0,
+            "{rate}: the test's consumer stalled: {consumer:?}"
         );
         // Software adapters may skip ticks (GPU backpressure): half of them at least.
         assert!(
