@@ -42,6 +42,10 @@ case ce qui a été vu, surtout quand ça ne va pas.
 - [ ] Un événement : son angle, sa vitesse, un commentaire ; « Lire », « Rejouer »,
   « Supprimer ».
 - [ ] Un événement marqué juste avant : il se lit au plus 1 s après sa sortie (F4).
+- [ ] **Son** : Replay A au Program, un événement lu à **100 %** : on entend le son de la
+  caméra, calé sur l'image (une parole, un claquement de mains) ; à 50 %, en arrière, en
+  pause : silence, sans clic. Changer d'angle à 100 % : le son passe à l'autre caméra.
+  Replay A a sa tranche dans le mélangeur (fader, mute). Une caméra sans son : replay muet.
 
 ## Le direct n'est pas touché (F7)
 - [ ] Pendant 20 min de replays (un toutes les 30 s environ), l'enregistrement du Program et

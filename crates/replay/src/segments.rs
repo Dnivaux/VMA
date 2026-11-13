@@ -2,6 +2,10 @@
 //! (access units end to end) and `seg-NNNNNN.idx` (one 24-byte entry per picture: instant on
 //! the shared clock in ns, offset in the segment, length — little-endian, then 4 spare bytes).
 //! The writer appends the picture, then its entry: a reader that sees an entry finds its bytes.
+//!
+//! The sound of the input is kept the same way, beside its pictures (ADR 0016 § 6): in the
+//! `sound` folder, segments `seg-NNNNNN.f32` of runs of interleaved stereo `f32` at 48 kHz
+//! (little-endian), each run an entry dated by its first frame.
 
 use std::fs::{File, OpenOptions};
 use std::io::{Read as _, Seek as _, SeekFrom, Write as _};
@@ -31,8 +35,18 @@ pub enum WriterError {
     },
 }
 
-fn data_path(dir: &Path, segment: u64) -> PathBuf {
-    dir.join(format!("seg-{segment:06}.h264"))
+/// Extension of the segments of pictures (H.264 access units).
+const PICTURES: &str = "h264";
+/// Extension of the segments of sound (stereo `f32`, 48 kHz).
+const SOUND: &str = "f32";
+
+/// Where the sound of the recording in `dir` is kept.
+pub fn sound_dir(dir: &Path) -> PathBuf {
+    dir.join("sound")
+}
+
+fn data_path(dir: &Path, ext: &str, segment: u64) -> PathBuf {
+    dir.join(format!("seg-{segment:06}.{ext}"))
 }
 
 fn index_path(dir: &Path, segment: u64) -> PathBuf {
@@ -69,6 +83,7 @@ struct Open {
 /// Writes one input's recording.
 pub struct SegmentWriter {
     dir: PathBuf,
+    ext: &'static str,
     segment_ns: u64,
     /// Segments wholly older than this before the newest picture are deleted (`None`: kept).
     keep_ns: Option<u64>,
@@ -87,6 +102,21 @@ impl std::fmt::Debug for SegmentWriter {
 impl SegmentWriter {
     /// In `dir` (created; a recording already there is continued after its last segment).
     pub fn new(dir: &Path, segment_ns: u64, keep_ns: Option<u64>) -> Result<Self, WriterError> {
+        Self::with_ext(dir, PICTURES, segment_ns, keep_ns)
+    }
+
+    /// The sound of the recording in `dir`, in its own folder ([`sound_dir`]): each unit
+    /// written is a run of stereo `f32` frames at 48 kHz, dated by its first frame.
+    pub fn sound(dir: &Path, segment_ns: u64, keep_ns: Option<u64>) -> Result<Self, WriterError> {
+        Self::with_ext(&sound_dir(dir), SOUND, segment_ns, keep_ns)
+    }
+
+    fn with_ext(
+        dir: &Path,
+        ext: &'static str,
+        segment_ns: u64,
+        keep_ns: Option<u64>,
+    ) -> Result<Self, WriterError> {
         std::fs::create_dir_all(dir).map_err(|source| WriterError::Io {
             path: dir.to_owned(),
             source,
@@ -94,6 +124,7 @@ impl SegmentWriter {
         let next_segment = segments_in(dir).last().map_or(1, |s| s + 1);
         Ok(Self {
             dir: dir.to_owned(),
+            ext,
             segment_ns: segment_ns.max(1),
             keep_ns,
             open: None,
@@ -120,13 +151,13 @@ impl SegmentWriter {
             self.open = Some(Open {
                 segment,
                 start_ns: at_ns,
-                data: create(data_path(&self.dir, segment))?,
+                data: create(data_path(&self.dir, self.ext, segment))?,
                 index: create(index_path(&self.dir, segment))?,
                 offset: 0,
             });
             self.prune(at_ns);
         }
-        let dir = self.dir.clone();
+        let (dir, ext) = (self.dir.clone(), self.ext);
         let Some(open) = &mut self.open else {
             return Ok(());
         };
@@ -134,7 +165,7 @@ impl SegmentWriter {
         open.data
             .write_all(unit)
             .map_err(|source| WriterError::Io {
-                path: data_path(&dir, open.segment),
+                path: data_path(&dir, ext, open.segment),
                 source,
             })?;
         let mut entry = Vec::with_capacity(ENTRY_BYTES as usize);
@@ -170,7 +201,7 @@ impl SegmentWriter {
             let next_start = first_instant(&self.dir, *next);
             if next_start.is_some_and(|t| now_ns.saturating_sub(t) > keep) {
                 for path in [
-                    data_path(&self.dir, *segment),
+                    data_path(&self.dir, self.ext, *segment),
                     index_path(&self.dir, *segment),
                 ] {
                     if let Err(e) = std::fs::remove_file(&path) {
@@ -193,6 +224,7 @@ fn first_instant(dir: &Path, segment: u64) -> Option<u64> {
 #[derive(Debug)]
 pub struct SegmentReader {
     dir: PathBuf,
+    ext: &'static str,
     entries: Vec<Entry>,
     /// Entries read so far from the last segment seen.
     last: Option<(u64, u64)>,
@@ -200,8 +232,18 @@ pub struct SegmentReader {
 
 impl SegmentReader {
     pub fn open(dir: &Path) -> Self {
+        Self::with_ext(dir, PICTURES)
+    }
+
+    /// The sound of the recording in `dir` ([`SegmentWriter::sound`]); empty if it has none.
+    pub fn open_sound(dir: &Path) -> Self {
+        Self::with_ext(&sound_dir(dir), SOUND)
+    }
+
+    fn with_ext(dir: &Path, ext: &'static str) -> Self {
         let mut reader = Self {
             dir: dir.to_owned(),
+            ext,
             entries: Vec::new(),
             last: None,
         };
@@ -276,7 +318,7 @@ impl SegmentReader {
 
     /// The bytes of a picture.
     pub fn read(&self, entry: &Entry) -> std::io::Result<Vec<u8>> {
-        let mut file = File::open(data_path(&self.dir, entry.segment))?;
+        let mut file = File::open(data_path(&self.dir, self.ext, entry.segment))?;
         file.seek(SeekFrom::Start(entry.offset))?;
         let mut bytes = vec![0; entry.len as usize];
         file.read_exact(&mut bytes)?;
@@ -351,6 +393,35 @@ mod tests {
             picture(600)
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ADR 0016 § 6: the sound sits beside the pictures, in its own folder and files, read
+    /// back the same way; a recording without sound reads as empty.
+    #[test]
+    fn the_sound_is_kept_beside_the_pictures() {
+        let dir = folder("sound");
+        let mut pictures = SegmentWriter::new(&dir, 2_000 * MS, None).unwrap();
+        let mut sound = SegmentWriter::sound(&dir, 2_000 * MS, None).unwrap();
+        for n in 0..150u64 {
+            pictures.write(n * 20 * MS, b"picture").unwrap();
+            let run: Vec<u8> = (0..960 * 2)
+                .flat_map(|_| (n as f32).to_le_bytes())
+                .collect();
+            sound.write(n * 20 * MS, &run).unwrap();
+        }
+        assert_eq!(SegmentReader::open(&dir).entries().len(), 150);
+        let reader = SegmentReader::open_sound(&dir);
+        assert_eq!(reader.entries().len(), 150);
+        let run = reader.read(&reader.entries()[120]).unwrap();
+        assert_eq!(run.len(), 960 * 2 * 4);
+        assert_eq!(run[..4], 120f32.to_le_bytes());
+        assert!(sound_dir(&dir).join("seg-000002.f32").exists());
+        assert!(dir.join("seg-000002.h264").exists());
+        let silent = folder("no-sound");
+        SegmentWriter::new(&silent, 2_000 * MS, None).unwrap();
+        assert!(SegmentReader::open_sound(&silent).entries().is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&silent);
     }
 
     #[test]

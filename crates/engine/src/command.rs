@@ -764,6 +764,7 @@ impl InputSpec {
                 | Self::Srt(_)
                 | Self::Ndi { .. }
                 | Self::Html { .. }
+                | Self::Replay { .. }
         )
     }
 

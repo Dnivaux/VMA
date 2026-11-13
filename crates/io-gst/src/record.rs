@@ -119,7 +119,7 @@ enum Media {
 pub struct RecordTap {
     tx: crossbeam_channel::Sender<Media>,
     stats: Arc<RecordStats>,
-    /// The ISO takes the sound; the replay's segments do not.
+    /// The ISO takes the sound, and the replay's segments keep it beside the pictures.
     sound: bool,
 }
 
@@ -190,7 +190,7 @@ pub struct Recorder {
 
 impl Recorder {
     pub fn start(input: &str, settings: RecordSettings) -> std::io::Result<Self> {
-        let sound = settings.iso.is_some();
+        let sound = settings.iso.is_some() || settings.folder.is_some();
         let (tx, rx) = crossbeam_channel::bounded(if sound { QUEUE_WITH_SOUND } else { QUEUE });
         let stats = Arc::new(RecordStats::default());
         let thread_stats = Arc::clone(&stats);
@@ -310,6 +310,17 @@ fn run(
         },
         None => None,
     };
+    // The replay's sound: the runs as they come, beside the pictures (ADR 0016 § 6).
+    let mut sound_writer = match &settings.folder {
+        Some(folder) => match SegmentWriter::sound(folder, SEGMENT_NS, keep) {
+            Ok(w) => Some(w),
+            Err(e) => {
+                stats.fail(e.to_string());
+                return;
+            }
+        },
+        None => None,
+    };
     let mut encoding: Option<Encoding> = None;
     // A caps change starts a new ISO file: its number.
     let mut part = 0u32;
@@ -330,6 +341,12 @@ fn run(
         let (sample, at_ns) = match media {
             Media::Picture { sample, at_ns } => (sample, at_ns),
             Media::Sound { bytes, at_ns } => {
+                if let Some(writer) = &mut sound_writer
+                    && let Err(e) = writer.write(at_ns, &bytes)
+                {
+                    stats.fail(e.to_string());
+                    break;
+                }
                 // Sound before the first picture has no place in the file, nor sound over
                 // the silence already written (time never goes back in the file).
                 if let Some(e) = &mut encoding

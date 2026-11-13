@@ -42,3 +42,14 @@
 - Débit disque : ~12,5 Mo/s par caméra 1080p50 ; 4 caméras pendant 2 h ≈ 360 Go.
 - NVENC limite le nombre de sessions sur les cartes grand public : 4 enregistrements + les
   sorties, à mesurer (F7).
+
+## Mise en œuvre : le son dans la session (2026-11-13)
+Pour le son du replay (ADR 0016 § 6), l'enregistreur garde aussi le son de l'input, à côté de
+ses images : dans le sous-dossier `sound` du dossier de l'input, des segments de 2 s
+`seg-NNNNNN.f32` (les blocs de son tels qu'ils arrivent : `f32` stéréo entrelacé à 48 kHz,
+petit-boutiste) et `seg-NNNNNN.idx` (même entrée de 24 octets : instant de la première trame
+du bloc sur l'horloge partagée, décalage, longueur). Même durée gardée, même effacement, même
+lecture pendant l'écriture (`SegmentWriter::sound`, `SegmentReader::open_sound`). Ce sont les
+blocs donnés à l'anneau audio de l'input, avec les mêmes dates : rien n'est rééchantillonné
+ni encodé. Coût : 384 ko/s par caméra (1,4 Go par heure), 3 % du débit des images à
+100 Mb/s. Un input sans son n'a pas de dossier `sound` : son replay est muet.

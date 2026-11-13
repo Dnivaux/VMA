@@ -977,6 +977,28 @@ mod tests {
             .count();
         assert!(inside.abs_diff(50) <= 2, "one second: {inside} pictures");
 
+        // The camera's sound beside its pictures, for the replay (ADR 0016 § 6): over the
+        // same time, each run where the one before ends.
+        let sound = vma_replay::SegmentReader::open_sound(&dir.join("session").join(&key));
+        let runs = sound.entries();
+        assert!(!runs.is_empty(), "the session has the sound");
+        let frames: u64 = runs.iter().map(|r| u64::from(r.len) / 8).sum();
+        let span_ns = last - first;
+        let expected = span_ns * 48 / 1_000_000;
+        assert!(
+            frames.abs_diff(expected) <= 48_000 / 4,
+            "{frames} frames of sound for {} ms of pictures",
+            span_ns / 1_000_000
+        );
+        let holes = runs
+            .windows(2)
+            .filter(|w| {
+                let end = w[0].at_ns + u64::from(w[0].len) / 8 * 1_000_000_000 / 48_000;
+                end.abs_diff(w[1].at_ns) > 1_000_000
+            })
+            .count();
+        assert_eq!(holes, 0, "runs end to end");
+
         let isos: Vec<PathBuf> = std::fs::read_dir(dir.join("iso"))
             .unwrap()
             .map(|e| e.unwrap().path())
@@ -1090,6 +1112,112 @@ mod tests {
         drop(engine);
         drop(io);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// ADR 0016 § 6 through the engine: an event played at 100 % in « Replay A », on Program,
+    /// has the sound of its camera on its pictures (the beep of each flash within a frame);
+    /// played at 50 %, it is silent.
+    #[test]
+    #[cfg_attr(
+        windows,
+        ignore = "Windows CI (WARP, 2 cores) repeats every other tick with an input feed: gaps in the recording"
+    )]
+    fn a_replay_at_full_speed_has_the_sound_of_its_angle() {
+        let master = FrameRate::FPS_50;
+        let (mut engine, _device) = spawn_engine_with(EngineConfig {
+            rate: master,
+            stream_clock: Some(crate::stream_clock()),
+            ..EngineConfig::default()
+        });
+        let io = IoRuntime::start(engine.take_io_port().unwrap()).unwrap();
+        let state = engine.state();
+        let spec = sync_source(master, 0, 0);
+        send(
+            &engine,
+            Command::AddInput {
+                spec: spec.clone(),
+                name: None,
+            },
+        );
+        let camera = wait_live(&state, &spec);
+        let session = folder("replay-sound");
+        let replay = vma_engine::InputSpec::Replay {
+            channel: vma_engine::ReplayChannel::A,
+        };
+        for command in [
+            Command::SetReplaySession {
+                folder: Some(session.clone()),
+                keep_minutes: 10,
+                kbps: 8_000,
+            },
+            Command::SetReplayCameras {
+                inputs: vec![camera],
+            },
+            Command::StartReplayRecording,
+            Command::AddInput {
+                spec: replay.clone(),
+                name: None,
+            },
+        ] {
+            send(&engine, command);
+        }
+        let input = wait_live(&state, &replay);
+        assert!(
+            state.load().input(input).unwrap().audio.is_some(),
+            "Replay A has a strip"
+        );
+        send(&engine, Command::CutDirect { input });
+        std::thread::sleep(Duration::from_secs(6));
+        let files = folder("replay-sound-rec");
+        record_into(&engine, Some(files.clone()), Container::Mkv);
+        // The last 4 s played at `percent` for 4.5 s, the Program recorded meanwhile.
+        let play = |percent: u8| {
+            send(&engine, Command::ReplaySpeed { percent });
+            send(&engine, Command::StartRecording);
+            let status = wait_status(&state, REC, |s| matches!(s, OutputStatus::Running { .. }));
+            let OutputStatus::Running { target, .. } = status else {
+                unreachable!()
+            };
+            for command in [
+                Command::ReplayMark {
+                    mark: vma_engine::Mark::Last { seconds: 4 },
+                    at_ns: None,
+                },
+                Command::ReplayPlayEvent { id: None },
+            ] {
+                send(&engine, command);
+            }
+            std::thread::sleep(Duration::from_millis(4_500));
+            send(&engine, Command::StopRecording);
+            wait_status(&state, REC, |s| *s == OutputStatus::Idle);
+            read_sync(&target.unwrap(), master, 5)
+        };
+        let full = play(100);
+        let slow = play(50);
+        let render = engine.render_stats().snapshot();
+        let heard = engine
+            .audio_stats()
+            .inputs()
+            .into_iter()
+            .find(|i| i.input == input);
+        drop(engine);
+        drop(io);
+        eprintln!("100 %: {full:?}\n50 %: {slow:?}\n{heard:?}");
+        assert_eq!(render.gpu_dropped, 0, "{render:?}");
+        // Four flashes in 4 s, the first or the last maybe cut by the ends of the event.
+        assert!(full.offsets_ns.len() >= 3, "{full:?}");
+        assert!(
+            full.unpaired_beeps <= 1 && full.unpaired_flashes <= 1,
+            "{full:?}"
+        );
+        for &offset in &full.offsets_ns {
+            assert!(offset.abs() < video_pts_ns(master, 1) as i64, "{full:?}");
+        }
+        // Slowed down: its pictures (a flash shown twice as long), no sound.
+        assert!(slow.flashes >= 1, "{slow:?}");
+        assert_eq!(slow.beeps, 0, "{slow:?}");
+        let _ = std::fs::remove_dir_all(session);
+        let _ = std::fs::remove_dir_all(files);
     }
 
     /// F6, the BRIEF's acceptance in two actions: « −2 s » then « Rejouer »: the transition of
@@ -1320,7 +1448,16 @@ mod tests {
         // A repeated tick leaves a gap in the recording: the measure would be meaningless.
         assert_eq!(render.gpu_dropped, 0, "{render:?}");
 
-        let path = PathBuf::from(target.unwrap());
+        let sync = read_sync(&target.unwrap(), master, seconds);
+        let _ = std::fs::remove_dir_all(dir);
+        assert_eq!(sync.unpaired_beeps, 0, "{sync:?}");
+        assert_eq!(sync.offsets_ns.len() as u64, sync.flashes, "{sync:?}");
+        sync
+    }
+
+    /// Reads the recording `target` (of about `seconds`) back with the sync analyser.
+    fn read_sync(target: &str, master: FrameRate, seconds: u64) -> crate::SyncSnapshot {
+        let path = PathBuf::from(target);
         let uri = format!("file://{}", path.display()).replace('\\', "/");
         let uri = if uri.starts_with("file:///") {
             uri
@@ -1333,10 +1470,7 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
         }
         let sync = analyser.stop();
-        let _ = std::fs::remove_dir_all(dir);
         assert!(sync.ended && sync.last_error.is_none(), "{sync:?}");
-        assert_eq!(sync.unpaired_beeps, 0, "{sync:?}");
-        assert_eq!(sync.offsets_ns.len() as u64, sync.flashes, "{sync:?}");
         sync
     }
 

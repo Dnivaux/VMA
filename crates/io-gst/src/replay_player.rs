@@ -9,6 +9,13 @@
 //! decoder; all-intra, each one decodes alone. The decoder has no latency (`avdec_h264` in
 //! slice threads, else `openh264dec`): a picture pushed comes out at once, which the steps
 //! and the reverse need.
+//!
+//! **Sound** (ADR 0016 § 6): played forward at 100 %, the event has the sound of its angle,
+//! recorded beside its pictures; slowed down, in reverse, paused or stepped, it is silent. For
+//! such a stretch (a [`Voice`]) the pictures carry a stream time — their recorded instant moved
+//! to now — and the recorded sound goes to the input's ring at the same times, a little ahead:
+//! `vma-audio` reads it at the time of the picture shown, as for any input. A picture without
+//! a stream time silences the input.
 
 use std::collections::VecDeque;
 use std::path::PathBuf;
@@ -22,6 +29,7 @@ use gstreamer::prelude::*;
 use gstreamer_app as gst_app;
 use gstreamer_video as gst_video;
 use gstreamer_video::prelude::*;
+use vma_audio::{CHANNELS, RingWriter, SAMPLE_RATE};
 use vma_clock::{StreamClock, TickGrid};
 use vma_compositor::Plane;
 use vma_core::{AlphaMode, ColorInfo, InputId, PixelFormat, Resolution};
@@ -40,6 +48,19 @@ const REFRESH_TICKS: u64 = 5;
 const BLACK_SIDE: u32 = 16;
 /// Longest sleep between two looks at the controls and the stop flag.
 const MAX_SLEEP: Duration = Duration::from_millis(5);
+/// The sound is handed to the ring this many master periods ahead of the picture shown (its
+/// block is mixed three ticks later: `vma_engine::MIX_DELAY_TICKS`).
+const SOUND_AHEAD: u64 = 2;
+/// Bytes of one stereo frame of the recorded sound.
+const FRAME_BYTES: usize = CHANNELS * std::mem::size_of::<f32>();
+/// Two runs of sound this close (frames) follow each other: the jitter of their dates.
+const SOUND_JITTER: i64 = 2;
+/// A hole in the recorded sound up to this long (frames, 100 ms) is filled with silence, so
+/// that the ring keeps its time; a longer one starts the sound again where it resumes.
+const SOUND_HOLE: i64 = SAMPLE_RATE as i64 / 10;
+/// Silence after the last sound of a stretch (frames, 125 ms): its last picture stays the one
+/// shown, and `vma-audio` goes on reading at its time until it finds it stale (100 ms).
+const SOUND_TAIL: usize = SAMPLE_RATE as usize / 8;
 /// Longest wait for one decoded picture.
 const DECODE_TIMEOUT: gst::ClockTime = gst::ClockTime::from_mseconds(500);
 
@@ -121,6 +142,9 @@ impl ReplayPlayer {
             head: Playhead::new(ticks.rate),
             plan: None,
             reader: None,
+            sound: None,
+            audio: None,
+            voice: None,
             decoder: None,
             cache: VecDeque::new(),
             out: None,
@@ -171,6 +195,25 @@ fn key(entry: &Entry) -> Key {
     (entry.segment, entry.offset)
 }
 
+/// A stretch played forward at 100 %: heard.
+#[derive(Debug, Clone, Copy)]
+struct Voice {
+    /// Stream time of a recorded instant: the instant plus this (the recording is older).
+    shift_ns: u64,
+    /// The latest new picture shown: its recorded instant, and its tick.
+    picture_ns: u64,
+    tick: u64,
+    /// Recorded instant up to which the sound is in the ring (`None`: none yet), and the
+    /// run that ended there.
+    sound_until_ns: Option<u64>,
+    last_run: Option<Key>,
+}
+
+/// Duration of `frames` frames of sound.
+fn frames_ns(frames: u64) -> u64 {
+    frames * 1_000_000_000 / u64::from(SAMPLE_RATE)
+}
+
 struct Worker<F: Feeds> {
     input: InputId,
     feeds: F,
@@ -183,6 +226,11 @@ struct Worker<F: Feeds> {
     plan: Option<PlayerPlan>,
     /// The angle played: its folder and its index.
     reader: Option<(PathBuf, SegmentReader)>,
+    /// The sound of that angle (empty if it was recorded without).
+    sound: Option<SegmentReader>,
+    /// The input's sound ring (`None`: no audio thread).
+    audio: Option<RingWriter>,
+    voice: Option<Voice>,
     decoder: Option<Decoder>,
     cache: VecDeque<(Key, gst::Sample)>,
     out: Option<(VideoFormat, F::Out)>,
@@ -196,6 +244,7 @@ struct Worker<F: Feeds> {
 impl<F: Feeds> Worker<F> {
     fn run(mut self) {
         self.black();
+        self.audio = self.feeds.audio(self.input);
         // Ready before the first event: started when it comes, it would make that event's
         // first picture late.
         match Decoder::new() {
@@ -240,8 +289,12 @@ impl<F: Feeds> Worker<F> {
             {
                 reader.refresh();
                 self.head.extend(reader.entries());
+                if let Some(sound) = &mut self.sound {
+                    sound.refresh();
+                }
             }
             self.show(tick);
+            self.sound(tick);
             if let Some(cue) = self.plan.as_ref().map(|p| p.cue)
                 && self.ended != Some(cue)
                 && self.head.ended(tick)
@@ -297,7 +350,10 @@ impl<F: Feeds> Worker<F> {
 
     fn control(&mut self, tick: u64, control: Control) {
         match control {
-            Control::Step(frames) => self.head.step(tick, i64::from(frames)),
+            Control::Step(frames) => {
+                self.head.step(tick, i64::from(frames));
+                self.hush();
+            }
             Control::Plan(plan) => {
                 let before = self.plan.take();
                 let angle_changed = before.as_ref().map(|b| &b.angle) != Some(&plan.angle);
@@ -316,6 +372,11 @@ impl<F: Feeds> Worker<F> {
                     let entries = self.reader.as_ref().map_or(&[][..], |(_, r)| r.entries());
                     self.head.follow(tick, old.entries(), entries);
                 }
+                // Heard on: only another angle of the same event, still forward at 100 %
+                // (its sound takes over where the other one's stops).
+                if cued || !audible(&plan) {
+                    self.hush();
+                }
                 self.plan = Some(plan);
             }
         }
@@ -327,6 +388,11 @@ impl<F: Feeds> Worker<F> {
     fn open(&mut self, angle: Option<PathBuf>) -> Option<SegmentReader> {
         let previous = self.reader.take().map(|(_, r)| r);
         self.cache.clear();
+        self.sound = angle.as_deref().map(SegmentReader::open_sound);
+        // Another recording: its runs are not the ones handed over (their places may match).
+        if let Some(voice) = &mut self.voice {
+            voice.last_run = None;
+        }
         self.reader = angle.map(|folder| {
             let reader = SegmentReader::open(&folder);
             (folder, reader)
@@ -409,13 +475,103 @@ impl<F: Feeds> Worker<F> {
         let Some(sample) = self.decoded(&entry) else {
             return;
         };
-        if self.push(&sample) {
+        // Heard: the picture is dated, one period before its tick, as a live source's.
+        let stream_ns = if self.plan.as_ref().is_some_and(audible) {
+            let now_ns = self
+                .ticks
+                .tick_ns(tick)
+                .saturating_sub(self.ticks.period_ns());
+            let voice = self.voice.get_or_insert(Voice {
+                shift_ns: now_ns.saturating_sub(entry.at_ns),
+                picture_ns: entry.at_ns,
+                tick,
+                sound_until_ns: None,
+                last_run: None,
+            });
+            voice.picture_ns = entry.at_ns;
+            voice.tick = tick;
+            Some(entry.at_ns + voice.shift_ns)
+        } else {
+            self.hush();
+            None
+        };
+        if self.push(&sample, stream_ns) {
             self.shown = Some(key(&entry));
             self.stats.shown.fetch_add(1, Ordering::Relaxed);
         }
     }
 
-    fn push(&mut self, sample: &gst::Sample) -> bool {
+    /// Ends the stretch heard: silence after its last sound ([`SOUND_TAIL`]).
+    fn hush(&mut self) {
+        if let Some(voice) = self.voice.take()
+            && let (Some(until), Some(ring)) = (voice.sound_until_ns, &mut self.audio)
+        {
+            ring.push_le_bytes(until + voice.shift_ns, &vec![0; SOUND_TAIL * FRAME_BYTES]);
+        }
+    }
+
+    /// The recorded sound of the stretch heard, into the input's ring: up to
+    /// [`SOUND_AHEAD`] periods past the picture of `tick`, never past the event.
+    fn sound(&mut self, tick: u64) {
+        // The event played to its end: its last picture stays, without sound.
+        if self.voice.is_some() && self.head.ended(tick) {
+            self.hush();
+        }
+        let (Some(voice), Some(plan), Some(sound), Some(ring)) =
+            (&mut self.voice, &self.plan, &self.sound, &mut self.audio)
+        else {
+            return;
+        };
+        let period = self.ticks.period_ns();
+        let now_ns = voice.picture_ns + tick.saturating_sub(voice.tick) * period;
+        let until_ns = (now_ns + SOUND_AHEAD * period).min(plan.out_ns.saturating_add(period));
+        let entries = sound.entries();
+        // From the run that holds the picture's instant, then from the one that holds the end
+        // of the sound handed over: the last run itself, or another angle's, cut to its rest.
+        let from_ns = voice.sound_until_ns.unwrap_or(voice.picture_ns);
+        let mut next = entries
+            .partition_point(|e| e.at_ns <= from_ns)
+            .saturating_sub(1);
+        while let Some(entry) = entries.get(next).filter(|e| e.at_ns < until_ns) {
+            next += 1;
+            if voice.last_run == Some(key(entry)) {
+                continue;
+            }
+            let Ok(run) = sound.read(entry) else {
+                self.stats.failed.fetch_add(1, Ordering::Relaxed);
+                continue;
+            };
+            let mut at_ns = entry.at_ns;
+            let mut bytes = run.as_slice();
+            if let Some(until) = voice.sound_until_ns {
+                let gap = (i128::from(at_ns) - i128::from(until)) * i128::from(SAMPLE_RATE)
+                    / 1_000_000_000;
+                let gap = i64::try_from(gap).unwrap_or(i64::MAX);
+                if gap > SOUND_JITTER && gap <= SOUND_HOLE {
+                    // A hole (sound lost by the recorder, another angle's runs): silence.
+                    let frames = usize::try_from(gap).unwrap_or(0);
+                    ring.push_le_bytes(until + voice.shift_ns, &vec![0; frames * FRAME_BYTES]);
+                } else if gap < -SOUND_JITTER {
+                    // Already heard (another angle's runs overlap): its start is skipped.
+                    let skip = usize::try_from(-gap).unwrap_or(usize::MAX);
+                    let Some(rest) = bytes.get(skip.saturating_mul(FRAME_BYTES)..) else {
+                        continue;
+                    };
+                    bytes = rest;
+                    at_ns = until;
+                }
+            }
+            let frames = (bytes.len() / FRAME_BYTES) as u64;
+            if frames == 0 {
+                continue;
+            }
+            ring.push_le_bytes(at_ns + voice.shift_ns, bytes);
+            voice.sound_until_ns = Some(at_ns + frames_ns(frames));
+            voice.last_run = Some(key(entry));
+        }
+    }
+
+    fn push(&mut self, sample: &gst::Sample, stream_ns: Option<u64>) -> bool {
         let (Some(buffer), Some(caps)) = (sample.buffer(), sample.caps()) else {
             return false;
         };
@@ -456,8 +612,12 @@ impl<F: Feeds> Worker<F> {
         };
         let frame_number = self.next_frame;
         self.next_frame += 1;
-        // No stream time: the replay's sound is not read from the input's ring (Q12).
-        match out.push(planes.get(..count).unwrap_or_default(), frame_number, None) {
+        // Without a stream time (slowed down, reverse, steps) the input is silent (Q12).
+        match out.push(
+            planes.get(..count).unwrap_or_default(),
+            frame_number,
+            stream_ns,
+        ) {
             Ok(()) => true,
             Err(e) => {
                 tracing::warn!(input = %self.input, error = %e, "replay picture refused");
@@ -465,6 +625,11 @@ impl<F: Feeds> Worker<F> {
             }
         }
     }
+}
+
+/// Heard: played forward at full speed (ADR 0016 § 6).
+fn audible(plan: &PlayerPlan) -> bool {
+    plan.playing && !plan.reverse && plan.speed == vma_replay::MAX_SPEED
 }
 
 /// `appsrc ! h264parse ! <decoder> ! videoconvert ! NV12 ! appsink`, one picture at a time.
@@ -614,8 +779,24 @@ mod tests {
         record_with(dir, 0, code_a)
     }
 
+    /// The sound recorded at each instant: a ramp over each second of the shared clock (the
+    /// value of a frame tells when it was recorded, whatever the camera).
+    fn ramp(at_ns: u64) -> f32 {
+        (at_ns % 1_000_000_000) as f32 / 1e9
+    }
+
     /// Records 100 pictures `code(n)`, 20 ms apart from `offset_ns`, into `dir`.
     fn record_with(dir: &std::path::Path, offset_ns: u64, code: fn(u64) -> u8) -> Vec<Entry> {
+        record_all(dir, offset_ns, code, false)
+    }
+
+    /// [`record_with`], and with `sound` the 20 ms of [`ramp`] that follow each picture.
+    fn record_all(
+        dir: &std::path::Path,
+        offset_ns: u64,
+        code: fn(u64) -> u8,
+        sound: bool,
+    ) -> Vec<Entry> {
         let recorder = Recorder::start(
             "replay",
             RecordSettings {
@@ -630,6 +811,15 @@ mod tests {
         for n in 0..100u64 {
             let at = 7_000_000_000 + offset_ns + n * 20 * MS;
             tap.offer(&coded_picture(code(n)), at);
+            if sound {
+                let run: Vec<u8> = (0..960u64)
+                    .flat_map(|f| {
+                        let v = ramp(at + f * 1_000_000_000 / 48_000).to_le_bytes();
+                        [v, v].concat()
+                    })
+                    .collect();
+                tap.offer_sound(at, &run);
+            }
             // In real time, as an input hands them over.
             std::thread::sleep(Duration::from_millis(20));
         }
@@ -806,6 +996,131 @@ mod tests {
             after.windows(2).all(|w| w[1] == w[0] + 1),
             "then on in order: {after:?}"
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// ADR 0016 § 6: forward at 100 %, the pictures are dated and the sound recorded with them
+    /// is in the input's ring at the same times, also across a change of angle (the other
+    /// camera's sound takes over at the same moment); at 50 % the pictures are not dated and
+    /// no sound is handed over.
+    #[test]
+    fn a_stretch_at_full_speed_carries_the_sound_of_its_angle() {
+        init();
+        let root = std::env::temp_dir().join(format!("vma-replay-sound-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (dir_a, dir_b) = (root.join("a"), root.join("b"));
+        let a = record_all(&dir_a, 0, code_a, true);
+        // The other camera: its pictures and its runs of sound 7 ms later.
+        let b = record_all(&dir_b, 7 * MS, code_b, true);
+        assert_eq!(SegmentReader::open_sound(&dir_a).entries().len(), 100);
+        let clock = crate::stream_clock();
+        let ticks = TickGrid {
+            origin_ns: clock.now(),
+            rate: vma_core::FrameRate::FPS_50,
+        };
+        let feeds = FakeFeeds::with_audio();
+        let player = ReplayPlayer::start(InputId(9), feeds.clone(), ticks, clock, |_| {}).unwrap();
+        player.plan(plan(&dir_a, &a, 100, false, 1));
+        std::thread::sleep(Duration::from_millis(500));
+        player.plan(plan(&dir_b, &a, 100, false, 1));
+        std::thread::sleep(Duration::from_millis(61 * 20 - 500 + 400));
+
+        // Each picture and its stream time, the black one before the event left out.
+        let dated = |feeds: &FakeFeeds| -> Vec<(u8, Option<u64>)> {
+            let feeds = feeds.feeds.lock().unwrap();
+            let feed = feeds.last().unwrap().lock().unwrap();
+            feed.first_column
+                .iter()
+                .zip(&feed.stream_times)
+                .map(|(column, at)| (code_of(column), *at))
+                .collect()
+        };
+        let pictures = dated(&feeds);
+        assert!(pictures.len() >= 58, "{} pictures", pictures.len());
+        let switch = pictures.iter().position(|p| p.0 >= 128).unwrap();
+        assert!(switch > 10 && switch < 40, "switched at {switch}");
+        let rings = feeds.rings.as_ref().unwrap().lock().unwrap();
+        let ring = &rings[0];
+        let anchor = ring.anchor().unwrap();
+        let written = ring.written();
+        let (mut worst, mut compared) = (0.0f32, 0);
+        for &(code, stream_ns) in &pictures {
+            // When it was recorded.
+            let at_ns = if code >= 128 {
+                b[usize::from(code - 128)].at_ns
+            } else {
+                a[usize::from(code)].at_ns
+            };
+            let stream_ns = stream_ns.expect("dated at 100 %");
+            // The frame of the ring at that stream time.
+            let back = (anchor.time_ns as i128 - stream_ns as i128) * 48_000 / 1_000_000_000;
+            let position = anchor.position as i128 - back;
+            let mut frame = [0.0f32; 2];
+            assert!(
+                ring.read(position as i64, &mut frame).is_complete(),
+                "picture {code}: no sound at {position} of {written}"
+            );
+            // Not on the wrap of the ramp.
+            if (0.01..0.99).contains(&ramp(at_ns)) {
+                worst = worst.max((frame[0] - ramp(at_ns)).abs());
+                compared += 1;
+            }
+        }
+        // Between two pictures as well: no hole where the other camera's sound takes over.
+        let first = pictures[2];
+        let last = pictures[pictures.len() - 3];
+        let recorded = |code: u8| {
+            if code >= 128 {
+                b[usize::from(code - 128)].at_ns
+            } else {
+                a[usize::from(code)].at_ns
+            }
+        };
+        let shift_ns = first.1.unwrap() - recorded(first.0);
+        let position_of = |stream_ns: u64| {
+            let back = (anchor.time_ns as i128 - stream_ns as i128) * 48_000 / 1_000_000_000;
+            (anchor.position as i128 - back) as i64
+        };
+        let (from, to) = (position_of(first.1.unwrap()), position_of(last.1.unwrap()));
+        let mut span = vec![0.0f32; 2 * (to - from) as usize];
+        assert!(ring.read(from, &mut span).is_complete());
+        let mut holes = 0;
+        for (i, frame) in span.as_chunks::<2>().0.iter().enumerate() {
+            let at_ns = first.1.unwrap() - shift_ns + i as u64 * 1_000_000_000 / 48_000;
+            let expected = ramp(at_ns);
+            if (0.01..0.99).contains(&expected) && (frame[0] - expected).abs() > 5e-5 {
+                holes += 1;
+            }
+        }
+        assert_eq!(
+            holes,
+            0,
+            "frames off the recorded sound, of {}",
+            span.len() / 2
+        );
+        eprintln!(
+            "{} pictures, angle changed at {switch}: sound {:.1} µs off at most",
+            pictures.len(),
+            worst * 1e6
+        );
+        // Two frames of 48 kHz: 42 µs of the ramp.
+        assert!(worst < 5e-5, "sound {worst} s off its pictures");
+        assert!(compared >= 50, "{compared} pictures compared");
+        drop(rings);
+
+        let before = (pictures.len(), written);
+        player.plan(plan(&dir_b, &a, 50, false, 2));
+        std::thread::sleep(Duration::from_millis(600));
+        drop(player);
+        let slow = dated(&feeds);
+        assert!(slow.len() > before.0 + 10, "{} pictures", slow.len());
+        assert!(
+            slow[before.0..].iter().all(|p| p.1.is_none()),
+            "not dated at 50 %"
+        );
+        let rings = feeds.rings.as_ref().unwrap().lock().unwrap();
+        assert_eq!(rings[0].written(), before.1, "no sound at 50 %");
+        drop(rings);
         let _ = std::fs::remove_dir_all(&root);
     }
 }

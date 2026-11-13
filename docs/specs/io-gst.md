@@ -713,3 +713,22 @@ NDI® est une marque déposée de Vizrt NDI AB. ADR 0008.
 | **D8** (son) : au Master à l'échantillon près, rien avant, après ni sur les autres bus ; décodé en entier à 48 kHz stéréo ; aucun pour un fichier sans son, sans attente | `audio::tests::the_sound_of_a_stinger_follows_its_pictures_on_the_master`, `stinger::tests` (2) | CI |
 | **D9** (stinger, UI) : bouton → Stinger 1, fichier, état, bascule, vider | `ui/tests/switcher.rs::stingers_are_set_in_the_settings_and_taken_by_the_buttons` | CI |
 
+## Phase 6 — Son du replay (ADR 0016 § 6, 2026-11-13)
+- **Enregistreur** (`record`) : avec un dossier de replay, les blocs de son de l'input (ceux
+  donnés à son anneau, mêmes dates) sont écrits dans `<input>/sound` (ADR 0015, « Mise en
+  œuvre : le son dans la session ») ; une écriture impossible arrête l'enregistreur comme
+  pour les images.
+- **Lecteur** (`replay_player`) : passage entendu = lecture vers l'avant à 100 % ; images
+  datées (`PictureOut::push` avec leur temps de flux), son du dossier `sound` de l'angle
+  écrit dans l'anneau de l'input deux périodes en avance, jamais au-delà de la sortie de
+  l'événement ; 125 ms de silence à la fin du passage ; changement d'angle : le son de
+  l'autre caméra au même instant. Ailleurs : images non datées, input silencieux.
+
+### Critères
+- `replay_player::a_stretch_at_full_speed_carries_the_sound_of_its_angle` : à 100 %, le son
+  de l'anneau à l'heure de chaque image est celui enregistré à son instant (à 2 trames
+  près), avant et après un changement d'angle ; à 50 %, images non datées, aucun son écrit.
+- `outputs::a_replay_at_full_speed_has_the_sound_of_its_angle` (moteur réel) : Replay A au
+  Program, 4 s à 100 % : chaque bip à moins d'une image de son flash ; à 50 % : aucun bip.
+- `outputs::an_input_is_recorded_for_the_replay_and_as_iso_through_the_commands` : le son de
+  la session couvre la durée des images, blocs bout à bout.
