@@ -225,6 +225,9 @@ impl State {
     /// What every input's recorder must do now (`None`: not recorded).
     pub fn record_plans(&self) -> Vec<(InputId, Option<RecordPlan>)> {
         let replay = &self.replay;
+        // Two inputs of the same name started in the same second would write the same ISO
+        // file (soak F7 of 2026-11-13: four recorders stalled on one file): « (2) », « (3) »…
+        let mut iso_names: Vec<String> = Vec::new();
         self.inputs
             .iter()
             .map(|input| {
@@ -238,10 +241,19 @@ impl State {
                     .folder
                     .as_ref()
                     .filter(|_| replay.iso.recording && replay.iso.inputs.contains(&input.id))
-                    .map(|f| IsoPlan {
-                        folder: f.clone(),
-                        name: file_name(&input.name),
-                        split_minutes: replay.iso.split_minutes,
+                    .map(|f| {
+                        let base = file_name(&input.name);
+                        let same = iso_names.iter().filter(|n| **n == base).count();
+                        iso_names.push(base.clone());
+                        IsoPlan {
+                            folder: f.clone(),
+                            name: if same == 0 {
+                                base
+                            } else {
+                                format!("{base} ({})", same + 1)
+                            },
+                            split_minutes: replay.iso.split_minutes,
+                        }
                     });
                 let plan = (segments.is_some() || iso.is_some()).then_some(RecordPlan {
                     segments,
@@ -650,6 +662,30 @@ mod tests {
         })
         .unwrap();
         s
+    }
+
+    /// Two inputs of the same name get two ISO files (soak F7: one file for four cameras).
+    #[test]
+    fn iso_files_of_inputs_of_the_same_name_differ() {
+        let mut s = show();
+        let (a, b) = (s.inputs[0].id, s.inputs[1].id);
+        s.apply(&Command::RenameInput {
+            input: b,
+            name: "Caméra 1".into(),
+        })
+        .unwrap();
+        s.apply(&Command::SetIso {
+            folder: Some("/iso".into()),
+            inputs: vec![a, b],
+            split_minutes: None,
+        })
+        .unwrap();
+        let plans = records(&s.apply(&Command::StartIso).unwrap());
+        let names: Vec<String> = plans
+            .iter()
+            .filter_map(|(_, p)| p.as_ref()?.iso.as_ref().map(|i| i.name.clone()))
+            .collect();
+        assert_eq!(names, ["Caméra 1", "Caméra 1 (2)"]);
     }
 
     fn records(io: &[IoRequest]) -> Vec<(InputId, Option<RecordPlan>)> {

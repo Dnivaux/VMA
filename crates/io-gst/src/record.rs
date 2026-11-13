@@ -13,6 +13,7 @@ use std::time::Duration;
 use gstreamer as gst;
 use gstreamer::prelude::*;
 use gstreamer_app as gst_app;
+use vma_audio::{CHANNELS, SAMPLE_RATE};
 use vma_core::VideoCodec;
 use vma_replay::SegmentWriter;
 
@@ -78,6 +79,33 @@ impl RecordStats {
             .unwrap_or_else(PoisonError::into_inner)
             .clone()
     }
+
+    pub fn snapshot(&self) -> RecordActivity {
+        RecordActivity {
+            offered: self.offered.load(Ordering::Relaxed),
+            dropped: self.dropped.load(Ordering::Relaxed),
+            sound_dropped: self.sound_dropped.load(Ordering::Relaxed),
+            written: self.written.load(Ordering::Relaxed),
+            encoder: *self.encoder.lock().unwrap_or_else(PoisonError::into_inner),
+            failure: self.failure(),
+        }
+    }
+}
+
+/// What the recorder of an input did since it started ([`crate::IoRuntime::recording_activity`]).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct RecordActivity {
+    /// Pictures the input offered.
+    pub offered: u64,
+    /// Dropped because the encoder was behind.
+    pub dropped: u64,
+    /// Runs of sound dropped.
+    pub sound_dropped: u64,
+    /// Pictures written.
+    pub written: u64,
+    pub encoder: Option<&'static str>,
+    /// Why it stopped, if it did.
+    pub failure: Option<String>,
 }
 
 /// A picture, or a run of sound (F32LE 48 kHz stereo), on its way to the recorder.
@@ -213,9 +241,42 @@ struct Encoding {
     sound: Option<gst_app::AppSrc>,
     caps: gst::Caps,
     base_ns: u64,
+    /// Real sound reached the file.
+    heard: bool,
+    /// Silence written so far, up to this time of the file (ns).
+    silence_ns: u64,
 }
 
+/// Pictures waiting for the encoder, at most (2 s at 50p: it starts in a few hundred ms).
+const ENCODER_QUEUE: u64 = 100;
+
+/// No sound this long after the first picture: the input is silent, its ISO gets silence (a
+/// file waiting for a sound that never comes holds every picture back: soak F7, 2026-11-13).
+const SILENT_AFTER_NS: u64 = 200_000_000;
+
 impl Encoding {
+    /// Silence up to `pts_ns` (the time of the picture just written) for a silent input.
+    fn fill_silence(&mut self, pts_ns: u64) {
+        let Some(src) = &self.sound else {
+            return;
+        };
+        if self.heard || pts_ns < SILENT_AFTER_NS || pts_ns <= self.silence_ns {
+            return;
+        }
+        let rate = u64::from(SAMPLE_RATE);
+        let samples = (pts_ns - self.silence_ns) * rate / 1_000_000_000;
+        if samples == 0 {
+            return;
+        }
+        let bytes = usize::try_from(samples).unwrap_or(0) * CHANNELS * std::mem::size_of::<f32>();
+        let mut buffer = gst::Buffer::from_mut_slice(vec![0u8; bytes]);
+        if let Some(b) = buffer.get_mut() {
+            b.set_pts(gst::ClockTime::from_nseconds(self.silence_ns));
+        }
+        let _ = src.push_buffer(buffer);
+        self.silence_ns += samples * 1_000_000_000 / rate;
+    }
+
     fn finish(self) {
         let _ = self.src.end_of_stream();
         if let Some(sound) = &self.sound {
@@ -269,16 +330,19 @@ fn run(
         let (sample, at_ns) = match media {
             Media::Picture { sample, at_ns } => (sample, at_ns),
             Media::Sound { bytes, at_ns } => {
-                // Sound before the first picture has no place in the file.
-                if let Some(e) = &encoding
+                // Sound before the first picture has no place in the file, nor sound over
+                // the silence already written (time never goes back in the file).
+                if let Some(e) = &mut encoding
                     && let Some(src) = &e.sound
                     && at_ns >= e.base_ns
+                    && at_ns - e.base_ns >= e.silence_ns
                 {
                     let mut buffer = gst::Buffer::from_mut_slice(bytes);
                     if let Some(b) = buffer.get_mut() {
                         b.set_pts(gst::ClockTime::from_nseconds(at_ns - e.base_ns));
                     }
                     let _ = src.push_buffer(buffer);
+                    e.heard = true;
                 }
                 continue;
             }
@@ -299,9 +363,18 @@ fn run(
                 }
             }
         }
-        let (Some(e), Some(buffer)) = (&encoding, sample.buffer()) else {
+        let (Some(e), Some(buffer)) = (&mut encoding, sample.buffer()) else {
             continue;
         };
+        // An encoder or a file that no longer takes pictures (a stalled branch): the newest
+        // are dropped and counted, as when the queue is full, rather than piled up in memory
+        // (soak F7 of 2026-11-13: 4 recorders stalled, the memory filled up).
+        let size = u64::try_from(buffer.size()).unwrap_or(u64::MAX);
+        let queued = e.src.current_level_bytes();
+        if queued.saturating_add(size) > size.saturating_mul(ENCODER_QUEUE) {
+            stats.dropped.fetch_add(1, Ordering::Relaxed);
+            continue;
+        }
         let mut buffer = buffer.copy();
         if let Some(b) = buffer.get_mut() {
             b.set_pts(gst::ClockTime::from_nseconds(
@@ -314,6 +387,7 @@ fn run(
             stats.fail("l'encodeur de l'enregistrement s'est arrêté".into());
             break;
         }
+        e.fill_silence(at_ns.saturating_sub(e.base_ns));
     }
     if let Some(e) = encoding {
         e.finish();
@@ -506,6 +580,8 @@ fn start(
         sound,
         caps: caps.clone(),
         base_ns,
+        heard: false,
+        silence_ns: 0,
     })
 }
 
@@ -665,6 +741,51 @@ pub(crate) mod tests {
             .map(|p| crate::output::tests::read_back(p).0.video.len())
             .sum();
         assert_eq!(pictures, 50, "no picture lost between the parts");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A silent input (a camera without sound) has its ISO too, and its replay goes on: the
+    /// file gets silence (soak F7: the muxer waited for a sound that never came, and held
+    /// every picture back).
+    #[test]
+    fn a_silent_input_has_its_iso_and_its_replay() {
+        init();
+        let dir = folder("silent");
+        let recorder = Recorder::start(
+            "silent",
+            RecordSettings {
+                folder: Some(dir.join("replay")),
+                kbps: 4_000,
+                keep: None,
+                iso: Some(IsoSettings {
+                    location: dir.join("Muette %03d.mkv"),
+                    split: None,
+                }),
+            },
+        )
+        .unwrap();
+        let tap = recorder.tap();
+        for n in 0..50u64 {
+            tap.offer(&picture((n % 200) as u8), 5_000_000_000 + n * 40_000_000);
+            std::thread::sleep(Duration::from_millis(40));
+        }
+        let stats = recorder.stats();
+        recorder.finish();
+        assert_eq!(stats.failure(), None);
+        assert_eq!(
+            stats.dropped.load(Ordering::Relaxed),
+            0,
+            "nothing held back"
+        );
+        assert_eq!(stats.written.load(Ordering::Relaxed), 50);
+        let (back, error) = crate::output::tests::read_back(&dir.join("Muette 000.mkv"));
+        assert_eq!(error, None);
+        assert_eq!(back.video.len(), 50, "every picture");
+        assert!(
+            back.audio_samples.abs_diff(96_000) <= 4_096,
+            "2 s of silence: {} samples",
+            back.audio_samples
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
