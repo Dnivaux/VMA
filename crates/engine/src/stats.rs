@@ -15,6 +15,7 @@ pub struct RenderStats {
     cpu: PhaseHistograms,
     measured_fps_bits: AtomicU64,
     gpu_errors: AtomicU64,
+    window_gpu_errors: AtomicU64,
     device_lost: AtomicBool,
     device_lost_ticks: AtomicU64,
     device_lost_reason: OnceLock<String>,
@@ -37,8 +38,12 @@ pub struct RenderStatsSnapshot {
     pub avg_cpu: Duration,
     /// Frame rate measured over the last second of ticks.
     pub measured_fps: f64,
-    /// Uncaptured wgpu errors (validation, out of memory…), logged and counted, never fatal.
+    /// Uncaptured wgpu errors (validation, out of memory…) of the engine and the inputs,
+    /// logged and counted, never fatal.
     pub gpu_errors: u64,
+    /// The same, made by the main thread: the window and its full screens (egui), on the
+    /// device they share with the engine (ADR 0001). The Program is not affected by them.
+    pub window_gpu_errors: u64,
     /// The GPU device is lost: nothing is rendered any more (see ADR 0001, « Perte du GPU »).
     pub device_lost: bool,
     /// Ticks elapsed since the device was lost (no frame rendered for them).
@@ -148,6 +153,10 @@ impl RenderStats {
         self.gpu_errors.fetch_add(1, Ordering::Relaxed);
     }
 
+    pub(crate) fn record_window_gpu_error(&self) {
+        self.window_gpu_errors.fetch_add(1, Ordering::Relaxed);
+    }
+
     /// Called from the wgpu device-lost callback (any thread). Allocates once, on this
     /// exceptional path only.
     pub(crate) fn set_device_lost(&self, reason: String) {
@@ -190,6 +199,7 @@ impl RenderStats {
             avg_cpu: Duration::from_nanos(self.avg_cpu_ns.load(Ordering::Relaxed)),
             measured_fps: f64::from_bits(self.measured_fps_bits.load(Ordering::Relaxed)),
             gpu_errors: self.gpu_errors.load(Ordering::Relaxed),
+            window_gpu_errors: self.window_gpu_errors.load(Ordering::Relaxed),
             device_lost: self.device_lost.load(Ordering::Acquire),
             device_lost_ticks: self.device_lost_ticks.load(Ordering::Relaxed),
             outputs_read: self.outputs_read.load(Ordering::Relaxed),

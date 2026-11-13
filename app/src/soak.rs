@@ -1436,10 +1436,11 @@ fn report(options: &SoakOptions, soak: &SoakContext, run: &Run<'_>) -> (String, 
         "| Rafraîchissement moyen | {:.1} Hz |",
         ui_frames as f64 / elapsed.as_secs_f64().max(1e-9)
     );
+    let _ = writeln!(s, "| Plus long blocage UI | {} |", ms(ui_max_gap));
     let _ = writeln!(
         s,
-        "| Plus long blocage UI | {} |\n\nUn blocage de l'UI (déplacement, minimisation) ne doit pas affecter le Program.\n",
-        ms(ui_max_gap)
+        "| Erreurs GPU des fenêtres | {} |\n\nUn blocage de l'UI (déplacement, minimisation) ne doit pas affecter le Program. Les erreurs GPU des fenêtres (thread principal) sont comptées à part de celles du Program, sur le GPU qu'ils partagent.\n",
+        r.window_gpu_errors
     );
     let shown = soak.fullscreen.snapshot();
     if shown.painted > 0 {

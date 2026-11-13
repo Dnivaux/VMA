@@ -65,7 +65,15 @@ ce fichier couvre le thread de rendu.
   moteur soumettent sur la même `Queue`.
 - `EngineConfig { rate, resolution, spin_margin }` (marge d'attente active de l'horloge).
 - **Erreurs GPU** : le moteur installe le gestionnaire d'erreurs non capturées du device
-  (journalisées, comptées dans `gpu_errors`, jamais de panique).
+  (journalisées, jamais de panique). wgpu l'appelle sur le thread fautif : celles du thread
+  principal (la fenêtre et ses plein écrans, egui) sont comptées dans `window_gpu_errors`,
+  les autres (rendu, inputs) dans `gpu_errors`. Sans ce partage, le soak hostile Windows du
+  2026-11-11 comptait au Program 42 erreurs de la fenêtre (surface reconfigurée pendant un
+  redimensionnement).
+- **Démarrage** : l'horloge (créneau 0) est créée en dernier, juste avant le thread de
+  rendu ; l'application ne démarre le moteur qu'après la première image de sa fenêtre
+  (création de la chaîne d'images et première image sur le GPU partagé). Sous Windows, les
+  deux faisaient manquer les premiers créneaux (soaks du 2026-11-11).
 - **Perte du device** : callback `device_lost` → plus aucune commande GPU, l'horloge continue
   (`device_lost_ticks`), `device_lost` et `RenderStats::device_lost_reason()` exposés.
   L'application ferme alors la fenêtre et sort en erreur (ADR 0001, « Perte du GPU »).

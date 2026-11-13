@@ -147,26 +147,40 @@ fn main() -> anyhow::Result<ExitCode> {
             "VMA",
             native_options,
             Box::new(|cc| {
+                let render_state = cc
+                    .wgpu_render_state
+                    .clone()
+                    .context("the wgpu renderer is not available")?;
                 let journal = match &options.journal_dir {
                     Some(dir) => Journal::Directory(dir.clone()),
                     None => Journal::Disabled,
                 };
-                let app = App::new(
-                    cc,
-                    config,
-                    &options,
-                    Startup {
-                        journal,
-                        project: project.clone(),
-                        secrets: Arc::clone(&secrets),
-                        config_folder: config_folder.clone(),
-                    },
-                    &device_lost,
-                    &soak_handle,
-                    screens.clone(),
-                );
-                let _ = started.set(app.as_ref().map(|_| ()).map_err(|e| format!("{e:#}")));
-                Ok(Box::new(app?))
+                let startup = Startup {
+                    journal,
+                    project: project.clone(),
+                    secrets: Arc::clone(&secrets),
+                    config_folder: config_folder.clone(),
+                };
+                let (options, device_lost, soak_handle, started) =
+                    (&options, &device_lost, &soak_handle, &started);
+                let screens = screens.clone();
+                Ok(Box::new(Boot::Waiting {
+                    frames: 0,
+                    start: Box::new(move |ctx: &egui::Context| {
+                        let app = App::new(
+                            &render_state,
+                            ctx,
+                            config,
+                            options,
+                            startup,
+                            device_lost,
+                            soak_handle,
+                            screens,
+                        );
+                        let _ = started.set(app.as_ref().map(|_| ()).map_err(|e| format!("{e:#}")));
+                        app
+                    }),
+                }))
             }),
             &event_loop,
         ),
@@ -195,6 +209,53 @@ fn main() -> anyhow::Result<ExitCode> {
     })
 }
 
+/// The window first, then the engine: the swap chain and the first frame of the window,
+/// on the GPU the rendering shares, stalled its first ticks under Windows (soaks of
+/// 2026-11-11). The engine starts once the window has shown its first frame.
+enum Boot<'a> {
+    Waiting {
+        /// Frames of the window drawn so far.
+        frames: u32,
+        start: StartApp<'a>,
+    },
+    Running(Box<App<'a>>),
+    /// The start failed (logged, and returned by `main`): the window closes.
+    Failed,
+}
+
+/// Starts the engine, `vma-io` and the UI (`App::new`), with what `main` prepared.
+type StartApp<'a> = Box<dyn FnOnce(&egui::Context) -> anyhow::Result<App<'a>> + 'a>;
+
+impl eframe::App for Boot<'_> {
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        match self {
+            Boot::Running(app) => app.ui(ui, frame),
+            Boot::Waiting { frames, .. } if *frames == 0 => {
+                // Drawn and presented after this call: the next one starts the engine.
+                *frames += 1;
+                ui.ctx().request_repaint();
+            }
+            Boot::Waiting { .. } => {
+                let Boot::Waiting { start, .. } = std::mem::replace(self, Boot::Failed) else {
+                    return;
+                };
+                match start(ui.ctx()) {
+                    Ok(app) => {
+                        let mut app = Box::new(app);
+                        app.ui(ui, frame);
+                        *self = Boot::Running(app);
+                    }
+                    Err(e) => {
+                        tracing::error!(error = %format!("{e:#}"), "start-up failed");
+                        ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+                    }
+                }
+            }
+            Boot::Failed => {}
+        }
+    }
+}
+
 struct App<'a> {
     /// Owns the engine and `vma-io` (dropped after the engine: its requests channel closes
     /// first).
@@ -220,8 +281,10 @@ struct Startup {
 }
 
 impl<'a> App<'a> {
+    #[allow(clippy::too_many_arguments, reason = "what main prepares, passed once")]
     fn new(
-        cc: &eframe::CreationContext<'_>,
+        render_state: &egui_wgpu::RenderState,
+        egui_ctx: &egui::Context,
         config: EngineConfig,
         options: &cli::Options,
         startup: Startup,
@@ -234,10 +297,6 @@ impl<'a> App<'a> {
             options.record.clone(),
             options.soak.clone(),
         );
-        let render_state = cc
-            .wgpu_render_state
-            .as_ref()
-            .context("the wgpu renderer is not available")?;
         let info = render_state.adapter.get_info();
         let adapter = format!(
             "{} · {:?} · {:?}",
@@ -475,7 +534,7 @@ impl<'a> App<'a> {
         );
         if let Some((options, mut context)) = soak_context {
             context.fullscreen = ui.fullscreen_stats();
-            let handle = soak::spawn(cc.egui_ctx.clone(), options, context)?;
+            let handle = soak::spawn(egui_ctx.clone(), options, context)?;
             // Only ever set here, once.
             let _ = soak_handle.set(handle);
         }

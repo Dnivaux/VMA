@@ -270,17 +270,11 @@ impl RenderEngine {
             ready_rx,
             Some(buses),
         )?;
-        let clock = FrameClock::with_spin_margin(config.rate, config.spin_margin);
         let stream_clock = config
             .stream_clock
             .unwrap_or_else(|| StreamClock::new(Instant::now(), 0));
         // A few ticks of slack: `vma-io` passes them on at once (Phase 4 step 6).
         let (html_ticks_tx, html_ticks_rx) = crossbeam_channel::bounded(HTML_TICKS);
-        let ticks = TickGrid {
-            origin_ns: stream_clock.at(clock.origin_instant()),
-            rate: config.rate,
-        };
-        let clock_stats = clock.stats();
         let render_stats = Arc::new(RenderStats::default());
         install_gpu_handlers(&device, &render_stats);
         let stop = Arc::new(AtomicBool::new(false));
@@ -355,6 +349,15 @@ impl RenderEngine {
             Arc::clone(&stop),
         )?;
 
+        // Last, just before the render thread: slot 0 starts now, and what comes before
+        // (pipelines compiled, threads started) took up to 80 ms under Windows, the first
+        // slots missed (soaks of 2026-11-11).
+        let clock = FrameClock::with_spin_margin(config.rate, config.spin_margin);
+        let ticks = TickGrid {
+            origin_ns: stream_clock.at(clock.origin_instant()),
+            rate: config.rate,
+        };
+        let clock_stats = clock.stats();
         let worker = RenderWorker {
             device,
             queue,
@@ -596,9 +599,17 @@ impl FrameReader {
 fn install_gpu_handlers(device: &wgpu::Device, stats: &Arc<RenderStats>) {
     // The default wgpu handler panics: replace it (rule 2.4).
     let on_error = Arc::clone(stats);
+    // wgpu calls it on the thread that made the error. The window and its full screens draw
+    // on the main thread (winit): their errors (a surface reconfigured during a resize,
+    // Windows soak of 2026-11-11) are not the Program's.
     device.on_uncaptured_error(Arc::new(move |error| {
-        on_error.record_gpu_error();
-        tracing::error!(%error, "uncaptured GPU error");
+        if std::thread::current().name() == Some("main") {
+            on_error.record_window_gpu_error();
+            tracing::error!(%error, "uncaptured GPU error in a window");
+        } else {
+            on_error.record_gpu_error();
+            tracing::error!(%error, "uncaptured GPU error");
+        }
     }));
     let on_lost = Arc::clone(stats);
     device.set_device_lost_callback(move |reason, message| {

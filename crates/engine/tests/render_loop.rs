@@ -3,6 +3,8 @@
 //! - `runs_one_second`: CI smoke test.
 //! - `triple_buffer_gpu_stress`: the UI-side triple-buffer invariant holds on the GPU.
 //! - `device_lost_stops_rendering_not_the_clock`: behaviour on GPU device loss.
+//! - `window_gpu_errors_are_counted_apart`: errors of the main thread (the window) are not
+//!   the Program's.
 //! - `commands_reach_the_render_thread_and_the_journal`: command → control → plan → render
 //!   with the real threads, journal written and replayable.
 //! - `program_pixels_follow_cut_and_fade`: solid colours on air, Cut, Fade, read back from the
@@ -298,6 +300,44 @@ fn device_lost_stops_rendering_not_the_clock() {
     let reason = stats.device_lost_reason().unwrap_or_default().to_owned();
     eprintln!("reason: {reason}; {after:?}");
     assert!(reason.contains("Destroyed"), "reason: {reason}");
+    engine.stop();
+}
+
+/// The Windows soak of 2026-11-11 counted 42 errors of the window (surface reconfigured
+/// during a resize) as the Program's: the window draws on the main thread.
+#[test]
+fn window_gpu_errors_are_counted_apart() {
+    let Spawned {
+        mut engine, device, ..
+    } = spawn(FrameRate::FPS_50, Resolution::new(320, 180).unwrap());
+    let stats = engine.render_stats();
+    // Mapped for reading and writing at once: a validation error.
+    let invalid_buffer = |thread: &str| {
+        let device = device.clone();
+        std::thread::Builder::new()
+            .name(thread.into())
+            .spawn(move || {
+                let _ = device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("invalid"),
+                    size: 16,
+                    usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::MAP_WRITE,
+                    mapped_at_creation: false,
+                });
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    };
+    let before = stats.snapshot();
+    assert_eq!((before.gpu_errors, before.window_gpu_errors), (0, 0));
+
+    invalid_buffer("main");
+    let after = stats.snapshot();
+    assert_eq!((after.gpu_errors, after.window_gpu_errors), (0, 1));
+
+    invalid_buffer("vma-io");
+    let after = stats.snapshot();
+    assert_eq!((after.gpu_errors, after.window_gpu_errors), (1, 1));
     engine.stop();
 }
 

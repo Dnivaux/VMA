@@ -36,6 +36,7 @@ pub(crate) fn show(
             counter(ui, "Images manquées (horloge)", clock.missed);
             counter(ui, "Images répétées (GPU saturé)", render.gpu_dropped);
             counter(ui, "Erreurs GPU", render.gpu_errors);
+            counter(ui, "Erreurs GPU des fenêtres", render.window_gpu_errors);
             row(ui, "Images rendues", render.frames_rendered.to_string());
             row(
                 ui,
