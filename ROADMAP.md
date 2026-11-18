@@ -17,7 +17,7 @@ titres HTML + natifs, multi-cadence dès la Phase 1, macOS plus tard).
 | Workspace Cargo (12 crates `vma-*`, édition 2024, MSRV 1.95) | ✅ | CI `msrv` |
 | Lints : clippy `-D warnings`, `unwrap`/`expect`/`panic` interdits hors tests | ✅ | CI `test` (Ubuntu, Windows) |
 | Format (`rustfmt`) | ✅ | CI `fmt` |
-| Politique de licences (`cargo deny`) | ✅ | CI `deny` (3 advisories « unmaintained » et les polices d'egui en exception justifiée dans `deny.toml`) |
+| Politique de licences (`cargo deny`) | ✅ | CI `deny` (4 advisories « unmaintained » — dont `chrono`, ajouté le 2026-11-18, dépendance de build seulement — et les polices d'egui en exception justifiée dans `deny.toml`) |
 | CI GitHub Actions (Ubuntu + Windows, fmt, clippy, tests, deny, MSRV) | ✅ | Run [40373180391](https://github.com/Dnivaux/VMA/actions/runs/40373180391) vert sur les 2 OS (commit `46a4162`) |
 | `core` : `FrameRate` rationnel, `Resolution`, `InputId` | ✅ | 7 tests unitaires (CI) |
 | `clock` : horloge à cadence fixe, images manquées, stats lock-free, `tracing` | ✅ | 6 tests (CI) |

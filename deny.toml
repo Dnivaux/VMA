@@ -14,6 +14,10 @@ ignore = [
     { id = "RUSTSEC-2026-0370", reason = "zvariant merged into zbus 6; transitive via accesskit" },
     { id = "RUSTSEC-2026-0371", reason = "zbus_names merged into zbus 6; transitive via accesskit" },
     { id = "RUSTSEC-2026-0372", reason = "zvariant_derive merged into zbus 6; transitive via accesskit" },
+    # Not a vulnerability: chrono flagged "unmaintained" (2026-11). Only a build dependency of
+    # gst-plugin-ndi (gst-plugin-version-helper dates the plugin's version at build time):
+    # not in the binary. Remove once the helper moves off chrono. Reviewed 2026-11-18.
+    { id = "RUSTSEC-2026-0543", reason = "chrono unmaintained; build-time only, via gst-plugin-version-helper" },
 ]
 
 [licenses]
