@@ -13,7 +13,7 @@ use crate::command::{
     TRANSITION_BUTTONS, TransitionSetting,
 };
 use crate::output_spec::OutputSpec;
-use crate::replay::ReplayState;
+use crate::replay::{ReplaySound, ReplayState};
 use crate::state::{BusState, Format, InputAudio, Monitor, State};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -63,6 +63,8 @@ pub struct ProjectReplay {
     /// « Rejouer »: speed (percent) and transition button.
     pub auto_speed: u8,
     pub auto_button: u8,
+    /// The sound of a replay at 100 %.
+    pub sound: ReplaySound,
 }
 
 impl Default for ProjectReplay {
@@ -78,6 +80,7 @@ impl Default for ProjectReplay {
             iso_split_minutes: None,
             auto_speed: replay.auto_speed,
             auto_button: replay.auto_button,
+            sound: replay.sound,
         }
     }
 }
@@ -187,6 +190,7 @@ impl State {
                     iso_split_minutes: replay.iso.split_minutes,
                     auto_speed: replay.auto_speed,
                     auto_button: replay.auto_button,
+                    sound: replay.sound,
                 }
             },
         }
@@ -379,6 +383,9 @@ mod tests {
             Command::SetReplayAuto {
                 speed: 25,
                 button: 2,
+            },
+            Command::SetReplaySound {
+                sound: ReplaySound::Master,
             },
             Command::SetIso {
                 folder: Some("/iso".into()),

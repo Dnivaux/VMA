@@ -555,6 +555,10 @@ pub enum IoRequest {
         input: InputId,
         plan: Option<crate::replay::RecordPlan>,
     },
+    /// The Master is recorded into the replay session from now on (`None`: no more).
+    RecordMaster {
+        plan: Option<crate::replay::MasterRecordPlan>,
+    },
     /// What the player of a replay input plays from now on.
     ReplayPlayer {
         input: InputId,
@@ -1602,6 +1606,7 @@ impl State {
                 self.replay.auto_button = *button;
                 Ok(Change::changed())
             }
+            Command::SetReplaySound { sound } => self.set_replay_sound(*sound),
             Command::SetMultiview { settings } => {
                 if !settings.validate() {
                     return Err(Rejection::MultiviewSlots);
@@ -2315,6 +2320,12 @@ impl State {
                 button: replay.auto_button,
             },
             "Rejouer".into(),
+        ));
+        settings.push((
+            Command::SetReplaySound {
+                sound: replay.sound,
+            },
+            "Son du replay".into(),
         ));
         settings.push((
             Command::SetIso {

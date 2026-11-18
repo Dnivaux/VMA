@@ -46,6 +46,12 @@ case ce qui a été vu, surtout quand ça ne va pas.
   caméra, calé sur l'image (une parole, un claquement de mains) ; à 50 %, en arrière, en
   pause : silence, sans clic. Changer d'angle à 100 % : le son passe à l'autre caméra.
   Replay A a sa tranche dans le mélangeur (fader, mute). Une caméra sans son : replay muet.
+- [ ] **« Master de l'instant »** (Réglages du replay → Son du replay) : un événement lu à
+  **100 %** a le son du Master tel qu'il était à l'antenne à ce moment-là (commentaire et musique
+  compris), calé sur l'image, **quel que soit l'angle** ; changer d'angle ne coupe pas le son.
+  Le réglage change le son d'un événement en cours de lecture. À noter : le micro du
+  commentateur, s'il reste ouvert au Master, s'entend alors deux fois (en direct et dans le
+  replay) : est-ce le comportement attendu ?
 
 ## Le direct n'est pas touché (F7)
 - [ ] Pendant 20 min de replays (un toutes les 30 s environ), l'enregistrement du Program et

@@ -64,8 +64,9 @@ pub use project::{
 };
 pub use render::{EngineConfig, EngineError, FrameReader, IoPort, Readers, RenderEngine};
 pub use replay::{
-    AutoReplay, IsoPlan, IsoState, MAX_MARK_SECONDS, MAX_REPLAY_CAMERAS, MAX_REPLAY_SPEED, Mark,
-    PlayerPlan, PlayerState, RecordFailure, RecordPlan, ReplayChannel, ReplayEvent, ReplayState,
+    AutoReplay, IsoPlan, IsoState, MASTER_FOLDER, MAX_MARK_SECONDS, MAX_REPLAY_CAMERAS,
+    MAX_REPLAY_SPEED, Mark, MasterRecordPlan, PlayerPlan, PlayerState, RecordFailure, RecordPlan,
+    ReplayChannel, ReplayEvent, ReplaySound, ReplayState,
 };
 pub use sequence::{
     RING as STINGER_RING, Refused, SequenceStats, SequenceStatsSnapshot, StingerSink,

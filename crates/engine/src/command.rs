@@ -340,6 +340,11 @@ pub enum Command {
         speed: u8,
         button: u8,
     },
+    /// The sound of a replay played at 100 %: its angle's, or the Master of the moment
+    /// (`phase-6.md` Q12).
+    SetReplaySound {
+        sound: crate::replay::ReplaySound,
+    },
     /// The MultiView's layout and titles (ADR 0014).
     SetMultiview {
         settings: MultiviewSettings,

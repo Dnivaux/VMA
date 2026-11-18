@@ -416,6 +416,12 @@ pub(crate) struct AudioMix {
     buses: [RingWriter; 3],
     /// What the headphones hear, by output sample index like the buses (played by `vma-io`).
     headphones: RingWriter,
+    /// The Master again, dated by the moment it goes with (ADR 0016, « Master de l'instant »):
+    /// the reading time of the input most on air with pictures, so that it falls on the
+    /// recorded instants of the cameras. Written into the replay session by `vma-io`.
+    moment: RingWriter,
+    /// Tick time minus that reading time, kept while no input with pictures is on air.
+    moment_lag_ns: u64,
     /// Output sample index of the next sample written.
     next_sample: Option<u64>,
     /// Ticks received, oldest first, waiting for their delay.
@@ -445,16 +451,26 @@ pub struct BusReaders {
     pub b: RingReader,
 }
 
+/// The ends of the mix that are not buses: what the headphones hear, by output sample index,
+/// and the Master dated by the moment of the pictures on air (« Master de l'instant »).
+#[derive(Debug)]
+pub(crate) struct MixReaders {
+    pub(crate) buses: BusReaders,
+    pub(crate) headphones: RingReader,
+    pub(crate) moment: RingReader,
+}
+
 impl AudioMix {
     pub(crate) fn new(
         rate: FrameRate,
         stats: Arc<AudioStats>,
         plan: AudioPlanReader,
-    ) -> (Self, BusReaders, RingReader) {
+    ) -> (Self, MixReaders) {
         let (master_w, master) = ring(RING_FRAMES);
         let (a_w, a) = ring(RING_FRAMES);
         let (b_w, b) = ring(RING_FRAMES);
         let (headphones_w, headphones) = ring(RING_FRAMES);
+        let (moment_w, moment) = ring(RING_FRAMES);
         let period_ns = u64::try_from(rate.frame_offset_nanos(1)).unwrap_or(20_000_000);
         let mix = Self {
             rate,
@@ -466,6 +482,9 @@ impl AudioMix {
             mixer: Mixer::new(MAX_INPUTS + StingerSlot::COUNT),
             buses: [master_w, a_w, b_w],
             headphones: headphones_w,
+            moment: moment_w,
+            // As a sound-only input is read.
+            moment_lag_ns: period_ns,
             next_sample: None,
             pending: (0..PENDING).map(|_| None).collect(),
             pending_head: 0,
@@ -477,7 +496,14 @@ impl AudioMix {
             stinger_block: vec![0.0; MAX_BLOCK * CHANNELS].into_boxed_slice(),
             stats,
         };
-        (mix, BusReaders { master, a, b }, headphones)
+        (
+            mix,
+            MixReaders {
+                buses: BusReaders { master, a, b },
+                headphones,
+                moment,
+            },
+        )
     }
 
     pub(crate) fn meters(&self) -> AudioMeters {
@@ -607,6 +633,8 @@ impl AudioMix {
                     bus.push(tick.tick_ns, silence);
                 }
                 self.headphones.push(tick.tick_ns, silence);
+                self.moment
+                    .push(tick.tick_ns.saturating_sub(self.moment_lag_ns), silence);
                 gap -= frames as u64;
             }
         } else if next > start {
@@ -617,6 +645,8 @@ impl AudioMix {
         if let Some(plan) = self.plan.read() {
             self.params = plan;
         }
+        // The input with pictures most on air, and its reading time.
+        let mut moment: Option<(f32, u64)> = None;
         for (index, slot) in self.strips.iter_mut().enumerate() {
             let Some(strip) = slot else {
                 continue;
@@ -639,6 +669,14 @@ impl AudioMix {
                     .reading_time(tick.tick_ns, picture, self.period_ns),
                 None => None,
             };
+            if let Some(at) = reading
+                && planned.is_some_and(|p| p.video)
+            {
+                let share = tick.on_air.share(strip.input);
+                if share > 0.0 && moment.is_none_or(|(best, _)| share > best) {
+                    moment = Some((share, at));
+                }
+            }
             match reading {
                 Some(at) => {
                     strip.unseen = 0;
@@ -717,6 +755,13 @@ impl AudioMix {
             }
         }
         self.headphones.push(tick.tick_ns, self.mixer.headphones());
+        if let Some((_, at)) = moment {
+            self.moment_lag_ns = tick.tick_ns.saturating_sub(at);
+        }
+        self.moment.push(
+            tick.tick_ns.saturating_sub(self.moment_lag_ns),
+            self.mixer.bus(AudioBus::Master),
+        );
         self.next_sample = Some(start + frames as u64);
         self.stats.blocks.fetch_add(1, Ordering::Relaxed);
     }
@@ -771,6 +816,8 @@ pub(crate) struct AudioThread {
     pub(crate) buses: BusReaders,
     /// What the headphones hear, for `vma-io`.
     pub(crate) headphones: RingReader,
+    /// The Master dated by the moment on air, for the replay session (`vma-io`).
+    pub(crate) moment: RingReader,
     pub(crate) meters: AudioMeters,
     pub(crate) stats: Arc<AudioStats>,
     pub(crate) thread: JoinHandle<()>,
@@ -779,7 +826,14 @@ pub(crate) struct AudioThread {
 /// Spawns `vma-audio`. It ends when the render thread drops its [`TickSender`].
 pub(crate) fn spawn(rate: FrameRate, plan: AudioPlanReader) -> std::io::Result<AudioThread> {
     let stats = Arc::new(AudioStats::default());
-    let (mut mix, buses, headphones) = AudioMix::new(rate, Arc::clone(&stats), plan);
+    let (
+        mut mix,
+        MixReaders {
+            buses,
+            headphones,
+            moment,
+        },
+    ) = AudioMix::new(rate, Arc::clone(&stats), plan);
     let meters = mix.meters();
     let (tx, ticks) = crossbeam_channel::bounded(TICK_QUEUE);
     let (attach_tx, attach) = crossbeam_channel::bounded(ATTACH_QUEUE);
@@ -796,6 +850,7 @@ pub(crate) fn spawn(rate: FrameRate, plan: AudioPlanReader) -> std::io::Result<A
         stinger_sounds: StingerSounds(sounds_tx),
         buses,
         headphones,
+        moment,
         meters,
         stats,
         thread,
@@ -921,7 +976,7 @@ mod tests {
         let rate = FrameRate::FPS_50;
         let (writer, plan) = audio_plan_channel();
         writer.publish(&plan_of(&[(InputId(3), audio)]));
-        let (mut mix, buses, _) = AudioMix::new(rate, Arc::default(), plan);
+        let (mut mix, MixReaders { buses, .. }) = AudioMix::new(rate, Arc::default(), plan);
         let ring_of = |b: AudioBus| match b {
             AudioBus::Master => &buses.master,
             AudioBus::A => &buses.a,
@@ -1012,6 +1067,71 @@ mod tests {
         }
     }
 
+    /// « Master de l'instant » (ADR 0016): the Master is also written dated by the moment of
+    /// the pictures on air, so that a beep falls on the stream time it was captured at (the
+    /// recorded instant of its picture), not on the later tick that showed it; continuous,
+    /// and still dated once nothing with pictures is on air.
+    #[test]
+    fn the_master_of_the_moment_is_dated_by_the_pictures_on_air() {
+        let rate = FrameRate::FPS_50;
+        let (writer, plan) = audio_plan_channel();
+        writer.publish(&plan_of(&[(InputId(3), default_audio())]));
+        let (mut mix, MixReaders { moment, .. }) = AudioMix::new(rate, Arc::default(), plan);
+        let (writer, reader) = ring(RING_FRAMES);
+        mix.attach(InputId(3), reader);
+        let mut source = Source {
+            writer,
+            fps: 50,
+            written: 0,
+            signal: beep_every_second,
+        };
+        let on_air = OnAir {
+            from: Some(InputId(3)),
+            to: None,
+            mix: 0.0,
+        };
+        // Each frame of the ring with its date, read after each tick.
+        let (mut samples, mut dates) = (Vec::new(), Vec::new());
+        let mut read = 0u64;
+        for n in 0..400u64 {
+            let tick_ns = START + 200 * MS + n * P;
+            source.capture_until(tick_ns);
+            // Off air for the last second.
+            let on_air = if n < 350 { on_air } else { OnAir::default() };
+            let mut tick = AudioTick::new(n, tick_ns, on_air);
+            tick.shown[0] = Some((InputId(3), source.picture(tick_ns, 30 * MS)));
+            mix.tick(&tick);
+            let written = moment.written();
+            if written == read {
+                continue;
+            }
+            let anchor = moment.anchor().unwrap();
+            let mut out = vec![0.0f32; 2 * (written - read) as usize];
+            assert!(moment.read(read as i64, &mut out).is_complete());
+            for (i, frame) in out.chunks(2).enumerate() {
+                let p = read + i as u64;
+                let offset = (p as i128 - anchor.position as i128) * 1_000_000_000 / 48_000;
+                dates.push((anchor.time_ns as i128 + offset) as u64);
+                samples.push(frame[0]);
+            }
+            read = written;
+        }
+        let found = onsets(&samples);
+        assert!(found.len() >= 5, "{found:?}");
+        for &s in found.iter().skip(1) {
+            // Beep k starts at source second k: its date is that second, to a sample.
+            let date = dates[s];
+            let second = (date - START + 500 * MS) / (1_000 * MS);
+            let error = date as i64 - (START + second * 1_000 * MS) as i64;
+            assert!(error.abs() <= 50_000, "beep at {date}: {error} ns off");
+        }
+        // Continuous: one frame after the other, also once off air (tick − its last lag).
+        for w in dates.windows(2) {
+            let step = w[1] as i64 - w[0] as i64;
+            assert!((step - 20_833).abs() <= 1, "step of {step} ns");
+        }
+    }
+
     /// The reader of each input publishes its counters (C14 « 0 trou audio »).
     #[test]
     fn the_readers_publish_their_counters() {
@@ -1019,7 +1139,7 @@ mod tests {
         let (writer, plan) = audio_plan_channel();
         writer.publish(&plan_of(&[(InputId(3), default_audio())]));
         let stats = Arc::new(AudioStats::default());
-        let (mut mix, _buses, _) = AudioMix::new(rate, Arc::clone(&stats), plan);
+        let (mut mix, _) = AudioMix::new(rate, Arc::clone(&stats), plan);
         assert!(stats.inputs().is_empty());
         let (writer, reader) = ring(RING_FRAMES);
         mix.attach(InputId(3), reader);
@@ -1162,7 +1282,7 @@ mod tests {
     fn meters_by_input_and_inputs_without_settings() {
         let rate = FrameRate::FPS_50;
         let (writer, plan) = audio_plan_channel();
-        let (mut mix, buses, _) = AudioMix::new(rate, Arc::default(), plan);
+        let (mut mix, MixReaders { buses, .. }) = AudioMix::new(rate, Arc::default(), plan);
         let meters = mix.meters();
         let (mut ring_writer, reader) = ring(RING_FRAMES);
         mix.attach(InputId(7), reader);
@@ -1206,7 +1326,7 @@ mod tests {
     fn the_sound_of_a_stinger_follows_its_pictures_on_the_master() {
         let rate = FrameRate::FPS_50;
         let (_writer, plan) = audio_plan_channel();
-        let (mut mix, buses, _headphones) = AudioMix::new(rate, Arc::default(), plan);
+        let (mut mix, MixReaders { buses, .. }) = AudioMix::new(rate, Arc::default(), plan);
         let slot = StingerSlot::new(2).unwrap();
         // 10 ticks of sound (9 600 frames), each sample its own number / 1e5.
         let sound: Arc<[f32]> = (0..9_600u32)
@@ -1279,7 +1399,12 @@ mod tests {
             writer.publish(&plan);
         };
         publish(InputAudio { mute: false, ..mic });
-        let (mut mix, buses, headphones) = AudioMix::new(rate, Arc::default(), plan);
+        let (
+            mut mix,
+            MixReaders {
+                buses, headphones, ..
+            },
+        ) = AudioMix::new(rate, Arc::default(), plan);
         let (writer_ring, reader) = ring(RING_FRAMES);
         mix.attach(InputId(4), reader);
         let mut source = Source {
@@ -1358,7 +1483,7 @@ mod tests {
         let rate = FrameRate::FPS_50;
         let (writer, plan) = audio_plan_channel();
         writer.publish(&plan_of(&[(InputId(3), default_audio())]));
-        let (mut mix, buses, _) = AudioMix::new(rate, Arc::default(), plan);
+        let (mut mix, MixReaders { buses, .. }) = AudioMix::new(rate, Arc::default(), plan);
         let (mut source, reader) = ring(RING_FRAMES);
         mix.attach(InputId(3), reader);
         let on_air = OnAir {

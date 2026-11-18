@@ -1220,6 +1220,118 @@ mod tests {
         let _ = std::fs::remove_dir_all(files);
     }
 
+    /// « Master de l'instant » (`phase-6.md` Q12) through the engine: the camera on air while
+    /// the replay records, its sound in the Master; the event played back at 100 % with the
+    /// Master of its moment, Replay A on Program: the Master recorded then (here the camera's
+    /// beeps) falls on the replayed pictures, each beep on its flash within a frame.
+    #[test]
+    #[cfg_attr(
+        windows,
+        ignore = "Windows CI (WARP, 2 cores) repeats every other tick with an input feed: gaps in the recording"
+    )]
+    fn a_replay_at_full_speed_has_the_master_of_its_moment() {
+        let master = FrameRate::FPS_50;
+        let (mut engine, _device) = spawn_engine_with(EngineConfig {
+            rate: master,
+            stream_clock: Some(crate::stream_clock()),
+            ..EngineConfig::default()
+        });
+        let io = IoRuntime::start(engine.take_io_port().unwrap()).unwrap();
+        let probe = io.probe();
+        let state = engine.state();
+        let spec = sync_source(master, 0, 0);
+        send(
+            &engine,
+            Command::AddInput {
+                spec: spec.clone(),
+                name: None,
+            },
+        );
+        let camera = wait_live(&state, &spec);
+        let session = folder("replay-master");
+        let replay = vma_engine::InputSpec::Replay {
+            channel: vma_engine::ReplayChannel::A,
+        };
+        for command in [
+            Command::CutDirect { input: camera },
+            Command::SetReplaySession {
+                folder: Some(session.clone()),
+                keep_minutes: 10,
+                kbps: 8_000,
+            },
+            Command::SetReplayCameras {
+                inputs: vec![camera],
+            },
+            Command::SetReplaySound {
+                sound: vma_engine::ReplaySound::Master,
+            },
+            Command::StartReplayRecording,
+            Command::AddInput {
+                spec: replay.clone(),
+                name: None,
+            },
+        ] {
+            send(&engine, command);
+        }
+        let input = wait_live(&state, &replay);
+        std::thread::sleep(Duration::from_secs(6));
+        let recorded = probe.master_recording().unwrap();
+        assert!(recorded.frames > 5 * 48_000, "{recorded:?}");
+        // The last 4 s, the camera on air all along, played on Program.
+        send(
+            &engine,
+            Command::ReplayMark {
+                mark: vma_engine::Mark::Last { seconds: 4 },
+                at_ns: None,
+            },
+        );
+        send(&engine, Command::CutDirect { input });
+        let files = folder("replay-master-rec");
+        record_into(&engine, Some(files.clone()), Container::Mkv);
+        send(&engine, Command::StartRecording);
+        let status = wait_status(&state, REC, |s| matches!(s, OutputStatus::Running { .. }));
+        let OutputStatus::Running { target, .. } = status else {
+            unreachable!()
+        };
+        send(&engine, Command::ReplayPlayEvent { id: None });
+        std::thread::sleep(Duration::from_millis(4_500));
+        send(&engine, Command::StopRecording);
+        wait_status(&state, REC, |s| *s == OutputStatus::Idle);
+        let full = read_sync(&target.unwrap(), master, 5);
+        let recorded = probe.master_recording().unwrap();
+        let render = engine.render_stats().snapshot();
+        send(&engine, Command::StopReplayRecording);
+        let end = Instant::now() + Duration::from_secs(5);
+        while probe.master_recording().is_some() {
+            assert!(Instant::now() < end, "the Master's recording never stopped");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        drop(engine);
+        drop(io);
+        eprintln!("100 % with the Master: {full:?}\n{recorded:?}");
+        assert_eq!(render.gpu_dropped, 0, "{render:?}");
+        assert_eq!((recorded.lost, recorded.failed), (0, false), "{recorded:?}");
+        assert!(
+            session
+                .join(vma_engine::MASTER_FOLDER)
+                .join("sound")
+                .is_dir(),
+            "in the session"
+        );
+        assert!(full.offsets_ns.len() >= 3, "{full:?}");
+        assert!(
+            full.unpaired_beeps <= 1 && full.unpaired_flashes <= 1,
+            "{full:?}"
+        );
+        // Within 5 ms, not a frame: dated by the tick that showed them, the beeps would come
+        // about a frame late (17.6 ms here), still within a frame.
+        for &offset in &full.offsets_ns {
+            assert!(offset.abs() < 5_000_000, "{full:?}");
+        }
+        let _ = std::fs::remove_dir_all(session);
+        let _ = std::fs::remove_dir_all(files);
+    }
+
     /// F6, the BRIEF's acceptance in two actions: « −2 s » then « Rejouer »: the transition of
     /// button 1 to Replay A, the event at 50 % (4 s), the transition back to the camera that
     /// was on air.

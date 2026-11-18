@@ -21,6 +21,7 @@ mod devices;
 mod feeds;
 mod headphones;
 mod html;
+mod master_record;
 mod mode;
 mod ndi;
 mod output;
@@ -40,6 +41,7 @@ pub use clock::stream_clock;
 pub use devices::CaptureDevice;
 pub use feeds::{Feeds, PictureOut, VideoFormat};
 pub use headphones::HeadphonesStatus;
+pub use master_record::MasterRecordActivity;
 pub use mode::{CaptureMode, Encoding};
 pub use output::{
     EncoderChoice, GstOutput, OutputFeed, OutputFormat, RecordSettings, Skipped, StreamSettings,

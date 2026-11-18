@@ -15,7 +15,7 @@ use egui::{Color32, Event, MouseWheelUnit, Rect, RichText};
 use vma_core::InputId;
 use vma_engine::{
     Command, InputSpec, InputStatus, MAX_REPLAY_CAMERAS, MAX_REPLAY_SPEED, Mark, ReplayChannel,
-    ReplayEvent, State, TRANSITION_BUTTONS,
+    ReplayEvent, ReplaySound, State, TRANSITION_BUTTONS,
 };
 
 use super::icons::{self, Icon};
@@ -87,6 +87,7 @@ struct Session {
     cameras: Vec<InputId>,
     auto_speed: u8,
     auto_button: u8,
+    sound: ReplaySound,
 }
 
 impl Session {
@@ -99,6 +100,7 @@ impl Session {
             cameras: r.cameras.clone(),
             auto_speed: r.auto_speed,
             auto_button: r.auto_button,
+            sound: r.sound,
         }
     }
 }
@@ -836,6 +838,23 @@ impl Switcher {
                     }
                 });
 
+                ui.separator();
+                ui.label(RichText::new("Son du replay").strong());
+                ui.horizontal(|ui| {
+                    ui.radio_value(&mut edit.sound, ReplaySound::Camera, "Caméra de l'angle")
+                        .on_hover_text("Le son enregistré avec la caméra montrée");
+                    ui.radio_value(&mut edit.sound, ReplaySound::Master, "Master de l'instant")
+                        .on_hover_text(
+                            "Le Master tel qu'il était à l'antenne à ce moment-là, \
+                             commentaires compris, quel que soit l'angle",
+                        );
+                });
+                ui.label(
+                    RichText::new("Entendu à 100 % vers l'avant ; muet au ralenti et en arrière")
+                        .small()
+                        .weak(),
+                );
+
                 let changed = draft.edit != current;
                 ui.separator();
                 ui.horizontal(|ui| {
@@ -865,6 +884,9 @@ impl Switcher {
                                 speed: edit.auto_speed,
                                 button: edit.auto_button,
                             });
+                        }
+                        if edit.sound != current.sound {
+                            send.push(Command::SetReplaySound { sound: edit.sound });
                         }
                     }
                     if ui

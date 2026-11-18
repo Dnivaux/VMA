@@ -2580,6 +2580,16 @@ fn replay_settings_are_applied() {
     h.run();
     h.get_by_role_and_label(Role::RadioButton, "75 %").click();
     h.run();
+    // Q12: the camera's sound by default, the Master of the moment on choice, while recording.
+    assert_eq!(
+        h.get_by_role_and_label(Role::RadioButton, "Caméra de l'angle")
+            .accesskit_node()
+            .toggled(),
+        Some(egui::accesskit::Toggled::True)
+    );
+    h.get_by_role_and_label(Role::RadioButton, "Master de l'instant")
+        .click();
+    h.run();
     assert!(h.state().sent().is_empty(), "nothing before « Appliquer »");
     h.get_by_label("Appliquer").click();
     h.run();
@@ -2592,6 +2602,9 @@ fn replay_settings_are_applied() {
             Command::SetReplayAuto {
                 speed: 75,
                 button: 1
+            },
+            Command::SetReplaySound {
+                sound: vma_engine::ReplaySound::Master
             },
         ]
     );

@@ -51,6 +51,33 @@
   enregistrement relu) : chaque bip sur son flash, écart de −0,25 à +0,42 ms ; à 50 % :
   aucun bip ; aucun échantillon manquant. Lecteur seul : son à la trame près sur ses images,
   y compris après un changement d'angle.
-- **Non fait** : l'option « Master de l'instant » (Q12) ; le son d'une caméra de capture
-  (son périphérique audio est un input à part, pas encore relié à l'enregistreur : ISO et
-  replay muets pour elle, ROADMAP).
+- **Non fait** à cette date : l'option « Master de l'instant » (Q12, faite le 2026-11-18,
+  ci-dessous) ; le son d'une caméra de capture (fait le 2026-11-13, ADR 0007 amendement).
+
+## Mise en œuvre de l'option « Master de l'instant » (Q12, 2026-11-18)
+- **Réglage** : Réglages du replay → « Son du replay » : « Caméra de l'angle » (par défaut) ou
+  « Master de l'instant » ; commande `SetReplaySound`, gardée dans le projet. Il vaut pour
+  tous les événements, y compris celui en cours de lecture. Mêmes règles qu'avec le son de la
+  caméra : entendu à 100 % vers l'avant, muet au ralenti, en arrière, en pause.
+- **Enregistrement** : tant que le replay enregistre, le Master est écrit dans la session
+  (`<session>/master/sound`, même format que le son d'une caméra, même durée gardée,
+  384 ko/s), quel que soit le réglage : on peut changer d'avis pour un événement déjà marqué.
+  `vma-audio` pousse chaque bloc du Master dans un anneau à part, que lit un thread de
+  `vma-io` (`vma-replay-master`) : le disque ne retient ni l'un ni l'autre.
+- **Datation** : le bloc du tick *n* du Master est le son des images montrées au tick *n*,
+  donc capté plus tôt, à leur instant d'enregistrement. Il est daté au **temps de lecture de
+  l'input le plus à l'antenne qui a une image** (le temps de tick moins sa latence lissée,
+  celui auquel `vma-audio` lit son son), puis, quand plus rien d'animé n'est à l'antenne, au
+  temps de tick moins la dernière latence : la datation reste continue. Il tombe ainsi sur les
+  instants enregistrés des caméras, comme le son d'une caméra ; le lecteur le joue sans
+  traitement particulier, et le garde en changeant d'angle. Une caméra d'une autre latence que
+  celle qui était à l'antenne voit le Master décalé de leur différence (quelques ms entre des
+  caméras synchronisées) ; un changement d'input à l'antenne décale la datation d'autant, ce
+  que le lecteur absorbe comme la gigue d'une caméra (blocs coupés ou trous ≤ 100 ms comblés).
+- **Mesuré** (moteur réel, source synchro 50p à l'antenne pendant l'enregistrement, 4 s
+  rejouées à 100 % au Program, enregistrement relu) : chaque bip sur son flash, de −0,25 à
+  +0,42 ms ; daté à l'heure du tick, le son arrivait 17,6 ms en retard.
+- **Panne** : une écriture impossible (disque plein) arrête l'enregistrement du Master seul,
+  écrite dans le journal et dans ses compteurs (`IoProbe::master_recording`) ; elle ne remonte
+  pas dans l'état comme celle d'une caméra (`replay.failures` désigne un input), mais les
+  caméras enregistrées sur le même disque signalent la leur.

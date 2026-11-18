@@ -22,7 +22,8 @@ Replay (Phase 6, les commandes de l'UI) : `"StartReplayRecording"`,
 `{"ReplayMark":{"mark":{"Last":{"seconds":5}}}}` (`"In"`, `"Out"`, `"Cancel"` ; l'instant est
 celui où `vma-control` la reçoit), `{"ReplayPlayEvent":{"id":null}}` (le dernier),
 `{"ReplaySpeed":{"percent":50}}`, `{"ReplayAngle":{"input":4}}`, `{"ReplayAuto":{"id":null}}`
-(« Rejouer »), `"StartIso"`… ; l'état du replay est dans `replay` de `GET /state`.
+(« Rejouer »), `{"SetReplaySound":{"sound":"Master"}}` (« Master de l'instant » ; `"Camera"` par
+défaut), `"StartIso"`… ; l'état du replay est dans `replay` de `GET /state`.
 
 Son d'une caméra : `{"SetCaptureAudio":{"input":2,"device":"alsa:alsa_input.usb-Mic"}}`
 (`"device":null` : aucun) ; les périphériques audio ne sont pas listés par l'API (réglages de

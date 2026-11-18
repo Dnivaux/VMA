@@ -25,7 +25,7 @@ const QUEUE: usize = 25;
 /// With the sound: about as many runs of sound as pictures come.
 const QUEUE_WITH_SOUND: usize = 100;
 /// One segment every 2 s (ADR 0015 § 4).
-const SEGMENT_NS: u64 = 2_000_000_000;
+pub(crate) const SEGMENT_NS: u64 = 2_000_000_000;
 
 /// How an input is recorded.
 #[derive(Debug, Clone, PartialEq, Eq)]

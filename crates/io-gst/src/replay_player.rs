@@ -226,7 +226,8 @@ struct Worker<F: Feeds> {
     plan: Option<PlayerPlan>,
     /// The angle played: its folder and its index.
     reader: Option<(PathBuf, SegmentReader)>,
-    /// The sound of that angle (empty if it was recorded without).
+    /// The sound played with it: the angle's (empty if it was recorded without), or the
+    /// Master's ([`PlayerPlan::sound`]).
     sound: Option<SegmentReader>,
     /// The input's sound ring (`None`: no audio thread).
     audio: Option<RingWriter>,
@@ -360,6 +361,16 @@ impl<F: Feeds> Worker<F> {
                 let old = angle_changed
                     .then(|| self.open(plan.angle.clone()))
                     .flatten();
+                // The angle's sound, or the Master's (« Master de l'instant »): the Master
+                // goes on across a change of angle.
+                if before.as_ref().map(|b| &b.sound) != Some(&plan.sound) {
+                    self.sound = plan.sound.as_deref().map(SegmentReader::open_sound);
+                    // Another recording: its runs are not the ones handed over (their places
+                    // may match).
+                    if let Some(voice) = &mut self.voice {
+                        voice.last_run = None;
+                    }
+                }
                 self.head.set(tick, plan.speed, plan.reverse, plan.playing);
                 let cued = before.as_ref().is_none_or(|b| b.cue != plan.cue)
                     || before
@@ -372,8 +383,8 @@ impl<F: Feeds> Worker<F> {
                     let entries = self.reader.as_ref().map_or(&[][..], |(_, r)| r.entries());
                     self.head.follow(tick, old.entries(), entries);
                 }
-                // Heard on: only another angle of the same event, still forward at 100 %
-                // (its sound takes over where the other one's stops).
+                // Heard on: only another angle (or sound) of the same event, still forward at
+                // 100 % (its sound takes over where the other one's stops).
                 if cued || !audible(&plan) {
                     self.hush();
                 }
@@ -388,11 +399,6 @@ impl<F: Feeds> Worker<F> {
     fn open(&mut self, angle: Option<PathBuf>) -> Option<SegmentReader> {
         let previous = self.reader.take().map(|(_, r)| r);
         self.cache.clear();
-        self.sound = angle.as_deref().map(SegmentReader::open_sound);
-        // Another recording: its runs are not the ones handed over (their places may match).
-        if let Some(voice) = &mut self.voice {
-            voice.last_run = None;
-        }
         self.reader = angle.map(|folder| {
             let reader = SegmentReader::open(&folder);
             (folder, reader)
@@ -726,6 +732,7 @@ mod tests {
     use crate::pipeline::tests::{FakeFeeds, init};
     use crate::record::{RecordSettings, Recorder};
     use std::time::Instant;
+    use vma_replay::SegmentWriter;
 
     const MS: u64 = 1_000_000;
 
@@ -839,6 +846,7 @@ mod tests {
     ) -> PlayerPlan {
         PlayerPlan {
             angle: Some(dir.to_owned()),
+            sound: Some(dir.to_owned()),
             in_ns: entries[20].at_ns,
             out_ns: entries[80].at_ns,
             speed,
@@ -999,43 +1007,28 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// ADR 0016 § 6: forward at 100 %, the pictures are dated and the sound recorded with them
-    /// is in the input's ring at the same times, also across a change of angle (the other
-    /// camera's sound takes over at the same moment); at 50 % the pictures are not dated and
-    /// no sound is handed over.
-    #[test]
-    fn a_stretch_at_full_speed_carries_the_sound_of_its_angle() {
-        init();
-        let root = std::env::temp_dir().join(format!("vma-replay-sound-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        let (dir_a, dir_b) = (root.join("a"), root.join("b"));
-        let a = record_all(&dir_a, 0, code_a, true);
-        // The other camera: its pictures and its runs of sound 7 ms later.
-        let b = record_all(&dir_b, 7 * MS, code_b, true);
-        assert_eq!(SegmentReader::open_sound(&dir_a).entries().len(), 100);
-        let clock = crate::stream_clock();
-        let ticks = TickGrid {
-            origin_ns: clock.now(),
-            rate: vma_core::FrameRate::FPS_50,
-        };
-        let feeds = FakeFeeds::with_audio();
-        let player = ReplayPlayer::start(InputId(9), feeds.clone(), ticks, clock, |_| {}).unwrap();
-        player.plan(plan(&dir_a, &a, 100, false, 1));
-        std::thread::sleep(Duration::from_millis(500));
-        player.plan(plan(&dir_b, &a, 100, false, 1));
-        std::thread::sleep(Duration::from_millis(61 * 20 - 500 + 400));
+    /// Each picture pushed and its stream time, the black one before the event left out.
+    fn dated(feeds: &FakeFeeds) -> Vec<(u8, Option<u64>)> {
+        let feeds = feeds.feeds.lock().unwrap();
+        let feed = feeds.last().unwrap().lock().unwrap();
+        feed.first_column
+            .iter()
+            .zip(&feed.stream_times)
+            .map(|(column, at)| (code_of(column), *at))
+            .collect()
+    }
 
-        // Each picture and its stream time, the black one before the event left out.
-        let dated = |feeds: &FakeFeeds| -> Vec<(u8, Option<u64>)> {
-            let feeds = feeds.feeds.lock().unwrap();
-            let feed = feeds.last().unwrap().lock().unwrap();
-            feed.first_column
-                .iter()
-                .zip(&feed.stream_times)
-                .map(|(column, at)| (code_of(column), *at))
-                .collect()
-        };
-        let pictures = dated(&feeds);
+    /// About 60 pictures were played at 100 % from camera A then B (codes from 128): each one
+    /// is dated, and the ring of the input holds `signal` of its recorded instant at its
+    /// stream time, to two frames, and with no hole between them, across the change of
+    /// angle. The pictures.
+    fn assert_sound_on_pictures(
+        feeds: &FakeFeeds,
+        a: &[Entry],
+        b: &[Entry],
+        signal: fn(u64) -> f32,
+    ) -> Vec<(u8, Option<u64>)> {
+        let pictures = dated(feeds);
         assert!(pictures.len() >= 58, "{} pictures", pictures.len());
         let switch = pictures.iter().position(|p| p.0 >= 128).unwrap();
         assert!(switch > 10 && switch < 40, "switched at {switch}");
@@ -1062,7 +1055,7 @@ mod tests {
             );
             // Not on the wrap of the ramp.
             if (0.01..0.99).contains(&ramp(at_ns)) {
-                worst = worst.max((frame[0] - ramp(at_ns)).abs());
+                worst = worst.max((frame[0] - signal(at_ns)).abs());
                 compared += 1;
             }
         }
@@ -1087,8 +1080,8 @@ mod tests {
         let mut holes = 0;
         for (i, frame) in span.as_chunks::<2>().0.iter().enumerate() {
             let at_ns = first.1.unwrap() - shift_ns + i as u64 * 1_000_000_000 / 48_000;
-            let expected = ramp(at_ns);
-            if (0.01..0.99).contains(&expected) && (frame[0] - expected).abs() > 5e-5 {
+            let expected = signal(at_ns);
+            if (0.01..0.99).contains(&ramp(at_ns)) && (frame[0] - expected).abs() > 5e-5 {
                 holes += 1;
             }
         }
@@ -1106,6 +1099,38 @@ mod tests {
         // Two frames of 48 kHz: 42 µs of the ramp.
         assert!(worst < 5e-5, "sound {worst} s off its pictures");
         assert!(compared >= 50, "{compared} pictures compared");
+        pictures
+    }
+
+    /// ADR 0016 § 6: forward at 100 %, the pictures are dated and the sound recorded with them
+    /// is in the input's ring at the same times, also across a change of angle (the other
+    /// camera's sound takes over at the same moment); at 50 % the pictures are not dated and
+    /// no sound is handed over.
+    #[test]
+    fn a_stretch_at_full_speed_carries_the_sound_of_its_angle() {
+        init();
+        let root = std::env::temp_dir().join(format!("vma-replay-sound-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (dir_a, dir_b) = (root.join("a"), root.join("b"));
+        let a = record_all(&dir_a, 0, code_a, true);
+        // The other camera: its pictures and its runs of sound 7 ms later.
+        let b = record_all(&dir_b, 7 * MS, code_b, true);
+        assert_eq!(SegmentReader::open_sound(&dir_a).entries().len(), 100);
+        let clock = crate::stream_clock();
+        let ticks = TickGrid {
+            origin_ns: clock.now(),
+            rate: vma_core::FrameRate::FPS_50,
+        };
+        let feeds = FakeFeeds::with_audio();
+        let player = ReplayPlayer::start(InputId(9), feeds.clone(), ticks, clock, |_| {}).unwrap();
+        player.plan(plan(&dir_a, &a, 100, false, 1));
+        std::thread::sleep(Duration::from_millis(500));
+        player.plan(plan(&dir_b, &a, 100, false, 1));
+        std::thread::sleep(Duration::from_millis(61 * 20 - 500 + 400));
+
+        let pictures = assert_sound_on_pictures(&feeds, &a, &b, ramp);
+        let rings = feeds.rings.as_ref().unwrap().lock().unwrap();
+        let written = rings[0].written();
         drop(rings);
 
         let before = (pictures.len(), written);
@@ -1122,5 +1147,55 @@ mod tests {
         assert_eq!(rings[0].written(), before.1, "no sound at 50 %");
         drop(rings);
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// « Master de l'instant » (`phase-6.md` Q12): with the Master's recording as the sound of
+    /// the plan, the pictures of either camera carry the Master recorded at their instant
+    /// (cameras recorded without sound), and the Master goes on across a change of angle.
+    #[test]
+    fn a_stretch_at_full_speed_carries_the_master_of_its_moment() {
+        init();
+        let root = std::env::temp_dir().join(format!("vma-replay-master-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (dir_a, dir_b, master) = (root.join("a"), root.join("b"), root.join("master"));
+        let a = record_with(&dir_a, 0, code_a);
+        let b = record_with(&dir_b, 7 * MS, code_b);
+        assert!(SegmentReader::open_sound(&dir_a).entries().is_empty());
+        // The Master: another signal than any camera's, in runs of 20 ms over the event.
+        let mut writer = SegmentWriter::sound(&master, 2_000_000_000, None).unwrap();
+        for n in 0..101u64 {
+            let at = 7_000_000_000 + n * 20 * MS;
+            let run: Vec<u8> = (0..960u64)
+                .flat_map(|f| {
+                    let v = master_signal(at + f * 1_000_000_000 / 48_000).to_le_bytes();
+                    [v, v].concat()
+                })
+                .collect();
+            writer.write(at, &run).unwrap();
+        }
+        drop(writer);
+        let clock = crate::stream_clock();
+        let ticks = TickGrid {
+            origin_ns: clock.now(),
+            rate: vma_core::FrameRate::FPS_50,
+        };
+        let feeds = FakeFeeds::with_audio();
+        let player = ReplayPlayer::start(InputId(9), feeds.clone(), ticks, clock, |_| {}).unwrap();
+        let with_master = |dir: &std::path::Path| PlayerPlan {
+            sound: Some(master.clone()),
+            ..plan(dir, &a, 100, false, 1)
+        };
+        player.plan(with_master(&dir_a));
+        std::thread::sleep(Duration::from_millis(500));
+        player.plan(with_master(&dir_b));
+        std::thread::sleep(Duration::from_millis(61 * 20 - 500 + 400));
+        drop(player);
+        assert_sound_on_pictures(&feeds, &a, &b, master_signal);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The Master of the tests: the ramp of [`ramp`], negated.
+    fn master_signal(at_ns: u64) -> f32 {
+        -ramp(at_ns)
     }
 }

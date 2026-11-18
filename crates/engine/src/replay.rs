@@ -18,6 +18,21 @@ pub const MAX_REPLAY_SPEED: u8 = vma_replay::MAX_SPEED;
 /// Longest « −n s » event.
 pub const MAX_MARK_SECONDS: u32 = 120;
 
+/// The folder of the session where the Master is recorded (« Master de l'instant »), beside
+/// the cameras' (named by their keys, never this).
+pub const MASTER_FOLDER: &str = "master";
+
+/// What a replay played forward at 100 % sounds like (`phase-6.md` Q12; silent otherwise).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum ReplaySound {
+    /// The sound recorded with the angle played.
+    #[default]
+    Camera,
+    /// « Master de l'instant »: the Master as it was heard when those pictures were on air,
+    /// whatever the angle.
+    Master,
+}
+
 /// A replay channel (A now, B later: `phase-6.md` Q5).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ReplayChannel {
@@ -73,6 +88,10 @@ pub struct AutoReplay {
 pub struct PlayerPlan {
     /// The segments of the angle played (`None`: nothing to play).
     pub angle: Option<PathBuf>,
+    /// The recording whose sound is played with it: the angle's, or the Master's
+    /// ([`ReplaySound`]).
+    #[serde(default)]
+    pub sound: Option<PathBuf>,
     /// The event, on the shared clock.
     pub in_ns: u64,
     pub out_ns: u64,
@@ -81,6 +100,15 @@ pub struct PlayerPlan {
     pub playing: bool,
     /// A new value: start the event again (its end in reverse).
     pub cue: u64,
+}
+
+/// The Master recorded into the replay session while it records (« Master de l'instant »).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MasterRecordPlan {
+    /// `<session>/`[`MASTER_FOLDER`]: its sound kept as a camera's.
+    pub folder: PathBuf,
+    /// Older sound is deleted, as the cameras'.
+    pub keep_minutes: u32,
 }
 
 /// What an input's recorder does (`vma-io` turns it into its encoding pipeline).
@@ -177,6 +205,8 @@ pub struct ReplayState {
     pub auto_button: u8,
     /// « Rejouer » under way: back to that input when the event of that cue ends.
     pub auto: Option<AutoReplay>,
+    /// The sound of a replay at 100 %.
+    pub sound: ReplaySound,
     next_event: u32,
 }
 
@@ -198,6 +228,7 @@ impl Default for ReplayState {
             auto_speed: 50,
             auto_button: 1,
             auto: None,
+            sound: ReplaySound::Camera,
             next_event: 1,
         }
     }
@@ -266,6 +297,20 @@ impl State {
             .collect()
     }
 
+    /// The Master's recording into the session (`None`: not recorded): whenever the replay
+    /// records, so that either sound can be chosen for any event.
+    pub fn master_record_plan(&self) -> Option<MasterRecordPlan> {
+        let replay = &self.replay;
+        replay
+            .folder
+            .as_ref()
+            .filter(|_| replay.recording)
+            .map(|folder| MasterRecordPlan {
+                folder: folder.join(MASTER_FOLDER),
+                keep_minutes: replay.keep_minutes,
+            })
+    }
+
     /// `vma-io` requests for the recorders whose plan changed since `before`.
     pub(crate) fn record_requests(
         &self,
@@ -330,11 +375,26 @@ impl State {
             return Err(Rejection::ReplayNotSet);
         }
         let before = self.record_plans();
+        let master_before = self.master_record_plan();
         if on {
             self.replay.failures.clear();
         }
         self.replay.recording = on;
-        Ok(self.recorders_changed(&before))
+        let mut change = self.recorders_changed(&before);
+        let master = self.master_record_plan();
+        if master != master_before {
+            change.io.push(IoRequest::RecordMaster { plan: master });
+        }
+        Ok(change)
+    }
+
+    /// The sound of a replay at 100 % (`phase-6.md` Q12): the player hears of it at once.
+    pub(crate) fn set_replay_sound(&mut self, sound: ReplaySound) -> Result<Change, Rejection> {
+        self.replay.sound = sound;
+        match self.replay_input(ReplayChannel::A) {
+            Some(_) => self.player_change(),
+            None => Ok(Change::changed()),
+        }
     }
 
     pub(crate) fn set_iso(
@@ -493,8 +553,13 @@ impl State {
         let angle = self
             .replay_camera()
             .and_then(|camera| self.camera_folder(camera));
+        let sound = match self.replay.sound {
+            ReplaySound::Camera => angle.clone(),
+            ReplaySound::Master => self.replay.folder.as_ref().map(|f| f.join(MASTER_FOLDER)),
+        };
         PlayerPlan {
             angle,
+            sound,
             in_ns: event.map_or(0, |e| e.in_ns),
             out_ns: event.map_or(0, |e| e.out_ns),
             speed: player.speed,
@@ -942,6 +1007,7 @@ mod tests {
             plan,
             PlayerPlan {
                 angle: Some(PathBuf::from("/ssd").join(&key_a)),
+                sound: Some(PathBuf::from("/ssd").join(&key_a)),
                 in_ns: 195 * sec,
                 out_ns: 200 * sec,
                 speed: 50,
@@ -973,6 +1039,62 @@ mod tests {
         );
         let plan = players(&s.apply(&Command::ReplayPlay).unwrap()).remove(0);
         assert!(plan.playing && plan.reverse && plan.speed == 50);
+    }
+
+    /// Q12, « Master de l'instant »: the Master is recorded into the session whenever the
+    /// replay records; the option tells the player whose sound to play, at once, whatever the
+    /// angle; the camera's by default.
+    #[test]
+    fn the_master_is_recorded_with_the_session_and_heard_on_choice() {
+        let (mut s, a, b, _) = on_air();
+        assert_eq!(s.replay.sound, ReplaySound::Camera);
+        let masters = |io: &[IoRequest]| -> Vec<Option<MasterRecordPlan>> {
+            io.iter()
+                .filter_map(|r| match r {
+                    IoRequest::RecordMaster { plan } => Some(plan.clone()),
+                    _ => None,
+                })
+                .collect()
+        };
+        let io = s.apply(&Command::StartReplayRecording).unwrap();
+        assert_eq!(
+            masters(&io),
+            [Some(MasterRecordPlan {
+                folder: PathBuf::from("/ssd").join(MASTER_FOLDER),
+                keep_minutes: 60,
+            })]
+        );
+        assert!(masters(&s.apply(&Command::StartReplayRecording).unwrap()).is_empty());
+        s.apply(&Command::ReplayMark {
+            mark: Mark::Last { seconds: 5 },
+            at_ns: Some(100_000_000_000),
+        })
+        .unwrap();
+        let plan = players(&s.apply(&Command::ReplayPlayEvent { id: None }).unwrap()).remove(0);
+        let key_a = s.inputs.iter().find(|i| i.id == a).unwrap().key.to_string();
+        assert_eq!(plan.sound, plan.angle, "the camera's sound");
+        assert_eq!(plan.angle, Some(PathBuf::from("/ssd").join(&key_a)));
+
+        let io = s
+            .apply(&Command::SetReplaySound {
+                sound: ReplaySound::Master,
+            })
+            .unwrap();
+        let plan = players(&io).remove(0);
+        let master = Some(PathBuf::from("/ssd").join(MASTER_FOLDER));
+        assert_eq!(plan.sound, master, "the player told at once");
+        assert_eq!(plan.angle, Some(PathBuf::from("/ssd").join(&key_a)));
+        let plan = players(&s.apply(&Command::ReplayAngle { input: b }).unwrap()).remove(0);
+        assert_eq!(plan.sound, master, "whatever the angle");
+
+        let io = s.apply(&Command::StopReplayRecording).unwrap();
+        assert_eq!(masters(&io), [None]);
+        let project = s.project();
+        assert_eq!(
+            project.replay.sound,
+            ReplaySound::Master,
+            "kept in the project"
+        );
     }
 
     /// A show with a camera on air, a second camera, Replay A, two events.

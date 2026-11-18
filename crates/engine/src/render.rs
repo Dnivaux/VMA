@@ -182,6 +182,9 @@ pub struct IoPort {
     pub outputs: OutputHub,
     /// What the headphones hear (taken by the player of `vma-io`).
     pub headphones: Option<vma_audio::RingReader>,
+    /// The Master dated by the moment of the pictures on air (taken by `vma-io`, which writes
+    /// it into the replay session: « Master de l'instant », ADR 0016).
+    pub moment: Option<vma_audio::RingReader>,
     /// The master ticks in stream time: a network input releases each picture just before
     /// the tick it is due on.
     pub ticks: TickGrid,
@@ -255,6 +258,7 @@ impl RenderEngine {
             stinger_sounds,
             buses,
             headphones,
+            moment,
             meters: audio_meters,
             stats: audio_stats,
             thread: audio_thread,
@@ -449,6 +453,7 @@ impl RenderEngine {
                     },
                     outputs: outputs.clone(),
                     headphones: Some(headphones),
+                    moment: Some(moment),
                     ticks,
                     html_ticks: html_ticks_rx,
                 }),

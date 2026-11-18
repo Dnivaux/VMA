@@ -51,6 +51,8 @@ type Infos = Arc<ArcSwap<Vec<(InputId, PipelineInfo)>>>;
 /// The counters of every replay player.
 type PlayerCounters = Arc<ArcSwap<Vec<(InputId, Arc<crate::replay_player::PlayerStats>)>>>;
 type RecorderCounters = Arc<ArcSwap<Vec<(InputId, Arc<crate::record::RecordStats>)>>>;
+/// The counters of the Master's recording (« Master de l'instant »), while it runs.
+type MasterCounters = Arc<ArcSwap<Option<Arc<crate::master_record::MasterRecordStats>>>>;
 
 /// The counters of the replay players and the recorders, readable from any thread (a soak
 /// report, the statistics): [`IoRuntime::probe`].
@@ -58,6 +60,7 @@ type RecorderCounters = Arc<ArcSwap<Vec<(InputId, Arc<crate::record::RecordStats
 pub struct IoProbe {
     players: PlayerCounters,
     recorders: RecorderCounters,
+    master: MasterCounters,
 }
 
 impl IoProbe {
@@ -78,6 +81,12 @@ impl IoProbe {
             .iter()
             .find(|(id, _)| *id == input)
             .map(|(_, stats)| stats.snapshot())
+    }
+
+    /// What the recording of the Master into the replay session did since it started
+    /// (`None`: not recorded now).
+    pub fn master_recording(&self) -> Option<crate::master_record::MasterRecordActivity> {
+        self.master.load().as_ref().as_ref().map(|s| s.snapshot())
     }
 }
 
@@ -312,7 +321,10 @@ impl IoRuntime {
             )?),
             _ => None,
         };
+        let moment = port.moment.take();
         let worker = Worker {
+            moment,
+            master: None,
             port,
             outputs,
             gstreamer: gstreamer.clone(),
@@ -472,6 +484,10 @@ struct Worker {
     finishing: Vec<std::thread::JoinHandle<()>>,
     /// One player per replay input (ADR 0016).
     players: Vec<(InputId, crate::replay_player::ReplayPlayer)>,
+    /// The Master dated by the moment on air, while it is not being recorded.
+    moment: Option<vma_audio::RingReader>,
+    /// The Master recorded into the replay session (« Master de l'instant »).
+    master: Option<crate::master_record::MasterRecorder>,
     /// Their counters and the recorders', for the statistics.
     probe: IoProbe,
 }
@@ -545,6 +561,9 @@ impl Worker {
         self.audio_monitor = None;
         self.ndi_monitor = None;
         // Recordings running at exit are finished, as the outputs are.
+        if let Some(master) = self.master.take() {
+            master.finish();
+        }
         for (_, recorder) in self.recorders.drain(..) {
             recorder.finish();
         }
@@ -600,6 +619,7 @@ impl Worker {
                 self.html.page(input, action);
             }
             IoRequest::Record { input, plan } => self.record(input, plan),
+            IoRequest::RecordMaster { plan } => self.record_master(plan),
             IoRequest::ReplayPlayer { input, plan } => {
                 match self.players.iter().find(|(id, _)| *id == input) {
                     Some((_, player)) => player.plan(plan),
@@ -621,6 +641,32 @@ impl Worker {
 
     /// Replaces the recorder of `input` (`None`: stops it). A recorder finishes its files on
     /// a thread of its own: `vma-io` never waits for an encoder.
+    /// The Master into the replay session from now on (`None`: no more).
+    fn record_master(&mut self, plan: Option<vma_engine::MasterRecordPlan>) {
+        if let Some(recorder) = self.master.take() {
+            self.moment = recorder.finish();
+            self.probe.master.store(Arc::new(None));
+        }
+        let Some(plan) = plan else {
+            return;
+        };
+        let Some(ring) = self.moment.take() else {
+            tracing::warn!("no Master to record for the replay");
+            return;
+        };
+        let keep_ns = u64::from(plan.keep_minutes) * 60_000_000_000;
+        match crate::master_record::MasterRecorder::start(ring, plan.folder, keep_ns) {
+            Ok(recorder) => {
+                self.probe.master.store(Arc::new(Some(recorder.stats())));
+                self.master = Some(recorder);
+            }
+            Err((ring, e)) => {
+                tracing::error!(error = %e, "the Master is not recorded for the replay");
+                self.moment = ring;
+            }
+        }
+    }
+
     fn record(&mut self, input: InputId, plan: Option<vma_engine::RecordPlan>) {
         self.set_recorder(input, None);
         if let Some(pos) = self.recorders.iter().position(|(id, _)| *id == input) {
