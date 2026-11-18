@@ -49,10 +49,17 @@ titres HTML + natifs, multi-cadence dès la Phase 1, macOS plus tard).
 - Perte du GPU : pas de recréation à chaud du device (choix Q4 de la Phase 2 : noir puis
   finalisation et sortie en erreur ; recréation dans une phase ultérieure, ADR dédié).
 - Soak hostile sous Wayland : déplacement et dé-minimisation automatiques sans effet (faits à la main).
-- *(Phase 1, étape 9)* Rééchantillonnage « dernière image publiée » : une source de cadence
+- ~~*(Phase 1, étape 9)* Rééchantillonnage « dernière image publiée » : une source de cadence
   égale ou très proche du maître, en phase avec lui, alterne parfois image sautée / image
   répétée (A6 : 107 + 107 sur 6 000 ticks pour 50 → 50 ; 29 + 26 pour 30 → 29,97, contre ≈ 4
-  attendues). Évolution prévue par `io-gst.md` : sélection par PTS avec une image de latence.
+  attendues).~~ **Levée** autrement que par la sélection par PTS prévue : chaque image est
+  relâchée juste avant le tick que donne son temps de flux (`Pacer`, tampon calé sur les
+  ticks, ≈ une demi-période de latence en plus, synchro inchangée). Inputs live (SRT, NDI®,
+  capture, synthétiques, source synchro) depuis le 2026-11-07 (Phase 3, étapes 6 et 9 : le premier
+  soak C14 en avait 447 sautées et 429 répétées en 1 h, pour 18 attendues), **fichiers vidéo le 2026-11-18** : un fichier 1080p50 dans un maître
+  50p saccadait à 14 phases sur 40 (jusqu'à 33 + 33 images en 3 s), à aucune depuis ; son lu
+  calé sur ses images (−0,04 ms) — [`io-gst.md`](docs/specs/io-gst.md), « Fichiers calés sur
+  les ticks ». A6 (`tests/soak/a6-rates.sh`, fenêtre réelle) n'a pas été repassé.
 - *(Phase 1, étape 10)* **Contention du thread de rendu sur la `Queue` wgpu** avec des inputs
   uploadés. Mesuré par histogramme (rapport de soak, temps CPU par tick et par phase), 1080p50 :
   tick complet p50 0,09 ms sans input, mais **p50 7,9 ms, p99 10,5 ms avec 4 × 1080p50**
@@ -109,6 +116,10 @@ défaut des 4 boutons et le sens de « forcer le fade à cut » (questions de su
 | A13 : soak hostile Windows (`tests/soak/phase1-windows.ps1 -Only A13`) | ❌ Passé le 2026-11-11 : voir la Phase 0 (8 images manquées, erreurs de surface pendant les redimensionnements) 2ᵉ passage le 2026-11-13 : 1 image manquée, au démarrage seulement (voir la Phase 0) |
 | Corrections pour le deuxième passage (2026-11-11) | Sous Windows, adaptateur **DirectX 12** préféré (la carte dédiée d'abord ; `WGPU_BACKEND` reste prioritaire), au lieu de Vulkan ; fenêtre principale redessinée à **60 Hz au plus** (144 Hz sur l'écran de la partenaire, sur le GPU que partage le rendu) ; le plein écran garde chaque image. Ajouté le 2026-11-13, après relecture des journaux : l'horloge du moteur créée en dernier, juste avant le thread de rendu (la compilation des pipelines la précédait : jusqu'à 80 ms, premiers créneaux manqués) et le moteur démarré après la première image de la fenêtre (les deux soaks manquaient le créneau 4) ; les erreurs GPU de la fenêtre (thread principal) comptées à part de celles du Program (« Erreurs GPU des fenêtres » ; les 42 du soak hostile étaient toutes de la fenêtre). À surveiller aussi : sous Windows, 36 à 82 paires d'images répétées puis sautées par input en 30 min (0 sous Linux), copies de 10 ms vers le GPU ou réveils tardifs (jusqu'à 15 ms) des threads de cadence. Nouveau paquet à repasser chez la partenaire. La reconfiguration de la surface pendant un redimensionnement (attente du GPU) reste à voir avec DirectX 12 |
 | Checklist [`phase1-inputs.md`](docs/manual-tests/phase1-inputs.md) (vidéos, images, capture, sélecteur ; partie manuelle d'A8 : débrancher la webcam) | Pas encore passée ; pas de webcam sur la machine de dev (capture couverte en CI par une fausse caméra) |
+
+| Test ignoré | Raison |
+|---|---|
+| `vma-io-gst::file_cadence::a_file_at_the_master_rate_neither_skips_nor_repeats_at_any_phase` | Mesure sur la machine de dev (GPU réel, copies 1080p ; sur les runners, la copie est trop courte pour que la phase compte) : un fichier 1080p50 sur un maître 50p, 40 phases balayées, aucune image sautée ni répétée (14 phases sur 40 avant les fichiers calés sur les ticks, 2026-11-18). `cargo test --release -p vma-io-gst --test file_cadence -- --ignored --nocapture` |
 
 **Revue de fin de Phase 1 (2026-10-29)** : le mainteneur passe à la Phase 2 sans pouvoir tester
 sous Windows. La Phase 1 est close sur la base des critères vérifiés sous Linux et de la CI

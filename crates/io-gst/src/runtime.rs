@@ -859,7 +859,7 @@ impl Worker {
                 tracing::info!(%input, path = %path.display(), "opening video file");
                 self.pipelines.push(PipelineSlot::new(
                     input,
-                    Recipe::file(path.clone()),
+                    Recipe::file(path.clone(), self.port.ticks),
                     self.port.feeds.clone(),
                     Instant::now(),
                 ));

@@ -51,7 +51,10 @@ démarre avec une transition si l'auto-lecture est active, ou par `Play`).
 source plus lente est répétée, une plus rapide voit des images sautées. Stats par input :
 images reçues / s, répétées, sautées (écrasées avant d'être vues), latence arrivée → tick
 (histogramme, p50 / p99 / max). Le rééchantillonnage par PTS avec une image de latence (moins
-de saccades sur une source irrégulière) est une évolution possible, hors Phase 1.
+de saccades sur une source irrégulière) est une évolution possible, hors Phase 1 : **fait**
+autrement, par un tampon calé sur les ticks (`Pacer`), pour SRT (Phase 3, étape 6), NDI® et
+les inputs live locaux (étape 9), puis les fichiers (2026-11-18, « Fichiers calés sur les
+ticks »).
 Exception (Phase 3, étape 6) : l'entrée SRT relâche chaque image juste avant le tick que
 donne son temps de flux (« Entrée SRT », tampon de gigue calé sur les ticks).
 
@@ -614,7 +617,8 @@ NDI® est une marque déposée de Vizrt NDI AB. ADR 0008.
   les plus tardives + une demi-période du maître + 2 ms (13 ms mesurés pour une source
   synchro 50p). Chaque image est montrée sur le tick que donne son temps de flux ; une source
   qui dérive saute ou répète une image par période de dérive, nette. Les fichiers restent
-  cadencés par l'horloge (`appsink sync=true`).
+  cadencés par l'horloge (`appsink sync=true`) ; ils passent par le `Pacer` depuis le
+  2026-11-18 (« Fichiers calés sur les ticks », ci-dessous).
 - **Coût** : environ une demi-période du maître de latence en plus pour ces inputs (latence
   publication → tick fixe, comme SRT).
 - **Son** : il saute avec l'image sur ce glissement (ADR 0007, « Précision … étape 9 »).
@@ -649,6 +653,32 @@ NDI® est une marque déposée de Vizrt NDI AB. ADR 0008.
 | Source locale 50p à ± 100 ppm, arrivées à 1–1,8 ms de son temps de flux (en phase avec les ticks) : chaque image sur le tick de son temps de flux, délai fixe, 2 images sautées (ou répétées) en 400 s, pas plus | `pipeline::tests::a_drifting_local_source_skips_one_picture_per_period_of_drift` | CI (temps simulé) |
 | Le son saute avec chaque glissement (un saut de latence par glissement), à 0,2 ms de l'image montrée à chaque tick, l'image répétée comprise ; une image déplacée seule : aller et retour ; étalement 24p dans 50p : aucun saut | `engine` `audio::tests::the_sound_jumps_with_the_slips_of_a_drifting_source`, `audio::tests::one_picture_out_of_place_and_a_wide_spread_are_not_slips` | CI |
 | **C14** : soak 1 h (6 sources synchro 1080p50 avec son, dont 2 à ± 100 ppm, mélangeur, enregistrement + stream + NDI®) | `tests/soak/phase3-c14.sh` | manuel (Linux) |
+
+### Fichiers calés sur les ticks (2026-11-18)
+- **Pourquoi** : les fichiers vidéo restaient sur la « dernière image arrivée », cadencés par
+  l'horloge (`appsink sync=true`). Un fichier 50p dans un maître 50p n'a pas de dérive (même
+  horloge), mais sa phase avec les ticks est quelconque à chaque lecture, et l'image est
+  publiée après sa copie dans le tampon de transfert (1 à 3 ms en 1080p, variable) : quand
+  cette publication tombe sur le tick, les ticks voisins répètent et sautent tour à tour.
+  Mesuré (RTX 5090, fichier 1080p50, phase balayée par des pauses) : **9 phases sur 80**, de
+  1 à 30 images sautées et autant de répétées en 3 s, soit jusqu'à une image sur cinq.
+- **Quoi** : les fichiers passent par le même `Pacer` que les inputs live locaux
+  (`Pace::local`), toujours cadencés par l'horloge ; l'image d'aperçu (fichier en pause,
+  position changée en pause) n'a pas de temps de flux et part à l'instant, comme avant.
+  Pause, lecture, position, boucle : les temps de flux d'un fichier continuent l'heure du
+  pipeline (son `base_time` suit), le délai ne change pas.
+- **Coût** : comme pour les inputs live, environ une demi-période du maître de latence en plus
+  (images publiées ≈ 10 ms avant leur tick à 50p). Le son suit l'image montrée (ADR 0007 § 3) :
+  la synchro ne change pas.
+- **Restent hors du `Pacer`** : les images fixes (une image), le lecteur de replay (une image
+  remise par tick, datée), les pages HTML (peintes à la demande du tick et montrées au tick
+  suivant, ADR 0009 § 4).
+
+| Critère | Test | Statut |
+|---|---|---|
+| Fichier 1080p50 sur maître 50p, 40 phases : aucune image sautée ni répétée (14 phases sur 40 sans le `Pacer`) | `tests/file_cadence.rs` : `a_file_at_the_master_rate_neither_skips_nor_repeats_at_any_phase` | manuel (machine de dev, GPU réel : `cargo test --release -p vma-io-gst --test file_cadence -- --ignored --nocapture`) |
+| Le son d'un fichier lu reste sur ses images : source synchro enregistrée, fichier lu au Program d'un autre moteur et réenregistré, chaque bip sur son flash à une image près et à 5 ms de sa place dans le fichier (mesuré : 0,12 ms → −0,04 ms) | `outputs::tests::a_played_file_keeps_its_sound_with_its_pictures` | CI Linux ; ignoré sous Windows (comme les autres mesures de synchro) |
+| Gestes sur un fichier calé : boucle sans trou (A9), pause, position, retour au début, fin (A20), son daté, alpha | `pipeline::tests` : `looping_file_has_no_gap`, `file_playback_controls`, `file_sound_reaches_its_ring_on_the_time_of_the_pictures`, `video_files_with_alpha_keep_it` (désormais avec le `Pacer`) | CI |
 
 ## Phase 4 — Sources avec alpha (ADR 0010, étape 2, 2026-11-09)
 - **Négociation** : une sonde sur les caps qui arrivent à `videoconvert` regarde si le format

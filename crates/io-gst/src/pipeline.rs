@@ -210,14 +210,16 @@ pub(crate) struct Pace {
 }
 
 impl Recipe {
-    /// A video file, played at its own pace, paused or ended without being lost.
-    pub(crate) fn file(path: PathBuf) -> Self {
+    /// A video file, played at its own pace (by the clock), paused or ended without being
+    /// lost; its pictures paced on the ticks like a live source's (a picture handed out by the
+    /// clock just at a tick would make the ticks around it repeat and skip).
+    pub(crate) fn file(path: PathBuf, ticks: TickGrid) -> Self {
         Self {
             media: Media::File(path),
             sync: true,
             watchdog: false,
             patient: false,
-            pace: None,
+            pace: Some(Pace::local(ticks)),
         }
     }
 
@@ -1768,8 +1770,12 @@ pub(crate) mod tests {
                 continue;
             }
             let feeds = FakeFeeds::default();
-            let mut input =
-                GstInput::start(InputId(1), &Recipe::file(data(file)), feeds.clone()).unwrap();
+            let mut input = GstInput::start(
+                InputId(1),
+                &Recipe::file(data(file), ticks(FrameRate::FPS_50)),
+                feeds.clone(),
+            )
+            .unwrap();
             assert!(
                 drive_until(&mut input, Duration::from_secs(5), |_| feeds.count() == 1
                     && !feeds.last().lock().unwrap().frames.is_empty()),
@@ -1965,8 +1971,12 @@ pub(crate) mod tests {
         const FRAMES: u64 = 25;
         let path = clip("loop", 25);
         let feeds = FakeFeeds::default();
-        let mut input =
-            GstInput::start(InputId(1), &Recipe::file(path.clone()), feeds.clone()).unwrap();
+        let mut input = GstInput::start(
+            InputId(1),
+            &Recipe::file(path.clone(), ticks(FrameRate::FPS_50)),
+            feeds.clone(),
+        )
+        .unwrap();
         input.set_looping(true);
         assert!(drive_until(&mut input, Duration::from_secs(5), |_| feeds
             .count()
@@ -2022,8 +2032,12 @@ pub(crate) mod tests {
     fn file_sound_reaches_its_ring_on_the_time_of_the_pictures() {
         let path = clip("sound", 75);
         let feeds = FakeFeeds::with_audio();
-        let mut input =
-            GstInput::start(InputId(1), &Recipe::file(path.clone()), feeds.clone()).unwrap();
+        let mut input = GstInput::start(
+            InputId(1),
+            &Recipe::file(path.clone(), ticks(FrameRate::FPS_50)),
+            feeds.clone(),
+        )
+        .unwrap();
         assert!(drive_until(&mut input, Duration::from_secs(5), |_| feeds
             .count()
             == 1));
@@ -2074,8 +2088,12 @@ pub(crate) mod tests {
     fn file_playback_controls() {
         let path = clip("controls", 50);
         let feeds = FakeFeeds::default();
-        let mut input =
-            GstInput::start(InputId(1), &Recipe::file(path.clone()), feeds.clone()).unwrap();
+        let mut input = GstInput::start(
+            InputId(1),
+            &Recipe::file(path.clone(), ticks(FrameRate::FPS_50)),
+            feeds.clone(),
+        )
+        .unwrap();
         assert!(drive_until(&mut input, Duration::from_secs(5), |i| i
             .timeline()
             .is_some_and(|t| t.duration_ms.is_some())));
@@ -2145,7 +2163,10 @@ pub(crate) mod tests {
         assert!(matches!(
             GstInput::start(
                 InputId(1),
-                &Recipe::file("/nonexistent/vma-missing.mkv".into()),
+                &Recipe::file(
+                    "/nonexistent/vma-missing.mkv".into(),
+                    ticks(FrameRate::FPS_50)
+                ),
                 FakeFeeds::default(),
             ),
             Err(IoError::Pipeline(_))
@@ -2154,7 +2175,7 @@ pub(crate) mod tests {
         std::fs::write(&junk, b"not a video at all").unwrap();
         let mut input = GstInput::start(
             InputId(1),
-            &Recipe::file(junk.clone()),
+            &Recipe::file(junk.clone(), ticks(FrameRate::FPS_50)),
             FakeFeeds::default(),
         )
         .unwrap();

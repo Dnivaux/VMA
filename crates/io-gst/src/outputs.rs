@@ -1498,6 +1498,20 @@ mod tests {
         setup: &dyn Fn(vma_core::InputId) -> Vec<Command>,
         midway: &dyn Fn(vma_core::InputId) -> Vec<Command>,
     ) -> crate::SyncSnapshot {
+        let (sync, dir, _) = program_recording(name, master, spec, seconds, setup, midway);
+        let _ = std::fs::remove_dir_all(dir);
+        sync
+    }
+
+    /// [`sync_source_recording_with`], keeping the recording: its folder and its file.
+    fn program_recording(
+        name: &str,
+        master: FrameRate,
+        spec: vma_engine::InputSpec,
+        seconds: u64,
+        setup: &dyn Fn(vma_core::InputId) -> Vec<Command>,
+        midway: &dyn Fn(vma_core::InputId) -> Vec<Command>,
+    ) -> (crate::SyncSnapshot, PathBuf, PathBuf) {
         let (mut engine, _device) = spawn_engine_with(EngineConfig {
             rate: master,
             stream_clock: Some(crate::stream_clock()),
@@ -1560,11 +1574,11 @@ mod tests {
         // A repeated tick leaves a gap in the recording: the measure would be meaningless.
         assert_eq!(render.gpu_dropped, 0, "{render:?}");
 
-        let sync = read_sync(&target.unwrap(), master, seconds);
-        let _ = std::fs::remove_dir_all(dir);
+        let target = target.unwrap();
+        let sync = read_sync(&target, master, seconds);
         assert_eq!(sync.unpaired_beeps, 0, "{sync:?}");
         assert_eq!(sync.offsets_ns.len() as u64, sync.flashes, "{sync:?}");
-        sync
+        (sync, dir, PathBuf::from(target))
     }
 
     /// Reads the recording `target` (of about `seconds`) back with the sync analyser.
@@ -1717,6 +1731,49 @@ mod tests {
             assert!(offset.abs() < video_pts_ns(master, 1) as i64, "{sync:?}");
         }
         assert!((shift - 80.0).abs() <= 1.0, "shift {shift:.2} ms");
+    }
+
+    /// A video file is paced on the ticks like a live source (`io-gst.md`, « Fichiers calés
+    /// sur les ticks »): its sound stays with its pictures. A sync source recorded (first
+    /// pass), then that file played on the Program of another engine and recorded again: each
+    /// beep on its flash to a frame, and where it was in the file, to 5 ms (two recordings
+    /// differ by up to 2 ms on CI).
+    #[test]
+    #[cfg_attr(
+        windows,
+        ignore = "Windows CI (WARP, 2 cores) repeats every other tick with an input feed: gaps in the recording"
+    )]
+    fn a_played_file_keeps_its_sound_with_its_pictures() {
+        let master = FrameRate::FPS_50;
+        let (first, first_dir, file) = program_recording(
+            "file-sync-source",
+            master,
+            sync_source(FrameRate::FPS_50, 0, 0),
+            8,
+            &|_| Vec::new(),
+            &|_| Vec::new(),
+        );
+        let (second, second_dir, _) = program_recording(
+            "file-sync-played",
+            master,
+            vma_engine::InputSpec::File { path: file },
+            5,
+            &|input| vec![Command::Play { input }],
+            &|_| Vec::new(),
+        );
+        let _ = std::fs::remove_dir_all(first_dir);
+        let _ = std::fs::remove_dir_all(second_dir);
+        eprintln!("source: {first:?}\nplayed: {second:?}");
+        let frame = video_pts_ns(master, 1) as i64;
+        assert!(second.flashes >= 4, "{second:?}");
+        assert!(second.worst_ns().unwrap() < frame, "{second:?}");
+        let mean = |p: &[i64]| p.iter().sum::<i64>() as f64 / p.len() as f64 / 1e6;
+        let (source, played) = (mean(&first.offsets_ns), mean(&second.offsets_ns));
+        eprintln!("source {source:.2} ms, played {played:.2} ms");
+        assert!(
+            (played - source).abs() < 5.0,
+            "source {source:.2} ms, played {played:.2} ms"
+        );
     }
 
     /// An output carries the bus it was given: an input sent to bus A only is heard, in
