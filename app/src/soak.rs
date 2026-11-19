@@ -391,6 +391,15 @@ fn run(
     } else {
         None
     };
+    // 7A, G11: a simulated PTZ camera and its virtual inputs for the whole run.
+    let ptz_load = if options.ptz_load {
+        Some(crate::ptz_load::PtzLoad::start(
+            soak.commands.clone(),
+            soak.state.clone(),
+        )?)
+    } else {
+        None
+    };
     // F7: the replay at work for the whole run.
     let replay_load = match &options.replay_load {
         Some(folder) => Some(crate::replay_load::ReplayLoad::start(
@@ -648,6 +657,7 @@ fn run(
 
     let api_load = api_load.map(crate::api_load::ApiLoad::finish);
     let replay_load = replay_load.map(crate::replay_load::ReplayLoad::finish);
+    let ptz_load = ptz_load.map(crate::ptz_load::PtzLoad::finish);
     if options.hostile {
         // Leave the window in a sane state.
         ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
@@ -671,6 +681,7 @@ fn run(
         data_sent,
         api_load: api_load.as_ref(),
         replay_load: replay_load.as_ref(),
+        ptz_load: ptz_load.as_ref(),
     };
     let (report, passed) = report(options, soak, &run);
     if let Some(dir) = options
@@ -719,6 +730,8 @@ struct Run<'a> {
     data_sent: u64,
     /// `--api-load`: what the client of the compat API saw (E13).
     api_load: Option<&'a crate::api_load::ApiLoadReport>,
+    /// `--ptz-load`: what the simulated PTZ camera received (7A, G11).
+    ptz_load: Option<&'a crate::ptz_load::PtzLoadReport>,
     /// `--replay-load`: what the replay did (F7).
     replay_load: Option<&'a crate::replay_load::ReplayLoadReport>,
 }
@@ -1122,7 +1135,10 @@ fn report(options: &SoakOptions, soak: &SoakContext, run: &Run<'_>) -> (String, 
             .is_none_or(crate::api_load::ApiLoadReport::passed)
         && run
             .replay_load
-            .is_none_or(crate::replay_load::ReplayLoadReport::passed);
+            .is_none_or(crate::replay_load::ReplayLoadReport::passed)
+        && run
+            .ptz_load
+            .is_none_or(crate::ptz_load::PtzLoadReport::passed);
     let mode = if options.hostile { "hostile" } else { "calme" };
     let ms = |d: Duration| format!("{:.3} ms", d.as_secs_f64() * 1000.0);
 
@@ -1462,6 +1478,9 @@ fn report(options: &SoakOptions, soak: &SoakContext, run: &Run<'_>) -> (String, 
     }
     if let Some(replay) = run.replay_load {
         crate::replay_load::write_report(&mut s, replay);
+    }
+    if let Some(ptz) = run.ptz_load {
+        crate::ptz_load::write_report(&mut s, ptz);
     }
     if let Some(api) = run.api_load {
         let _ = writeln!(

@@ -52,4 +52,8 @@ CameraError, MoveKind, MAX_MESSAGE}`, `ip::{encode, decode, PayloadType, Datagra
 | G1 : fins de commande tardives sans confusion | `late_completions_do_not_stand_for_an_accuse` | CI |
 | G1 : mouvements en attente remplacés par le dernier | `moves_waiting_are_replaced_by_the_latest` | CI |
 | G2 : caméra muette → injoignable, gestes écartés, reprise | `a_silent_camera_is_unreachable_then_found_again`, `nothing_listening_is_unreachable`, `an_idle_camera_is_probed` | CI |
-| G2 : le Program n'en souffre pas | étape 7A.3 (moteur) | — |
+| G2 : de bout en bout, caméra muette signalée puis retrouvée, le Program sans image manquée | `io-gst` `tests/ptz.rs` : `a_ptz_camera_through_the_engine` | CI (groupe temps réel) |
+| G3 : input virtuel mis en Preview → un seul rappel ; à l'antenne, rien sans confirmation | `engine` `ptz::tests::a_view_in_preview_recalls_its_preset_once`, et de bout en bout `a_ptz_camera_through_the_engine` | CI |
+| Moteur : commandes, refus, cascade, plan de rendu, projet ([`commands.md`](commands.md), Phase 7A) | `engine` `ptz::tests::*` | CI |
+| G4 : UI PTZ (adresse, pavé maintenu, vitesse, zoom, mise au point, préréglages, enregistrement, input virtuel, confirmation à l'antenne) : chaque geste émet sa commande ([`ui.md`](ui.md)) | `ui` `switcher::{a_camera_becomes_ptz_in_its_settings, the_ptz_controls_send_their_commands, a_camera_on_air_moves_only_once_confirmed}` | CI |
+| G5 : API native (JSON des commandes PTZ, refus à l'antenne) et compat (22 fonctions PTZ de la référence) ([`api-native.md`](api-native.md), [`api-compat.md`](api-compat.md) § 4) | `api` `native::ptz_commands`, `compat::functions::ptz::tests::*` | CI ; Companion : checklist à la fin |

@@ -73,4 +73,11 @@ caméra simulée qui suit la documentation publique pour tout tester sans matér
 - Un rappel de préréglage n'est pas suivi jusqu'à son terme : l'UI ne sait pas quand la
   caméra est arrivée. Suffisant pour préparer un plan en Preview ; à revoir si l'automatisation
   (7C) en a besoin.
+- **Écart connu avec la référence** : son aide (« PTZ control virtual inputs ») dit qu'un
+  input virtuel ni en Preview ni au Program montre une image fixe, prise à sa création. Chez
+  VMA, il montre toujours l'image vivante de sa caméra (aucune image à garder, rien de plus à
+  rendre). À revoir à la revue de 7A si la partenaire préfère l'image fixe.
+- Les fonctions PTZ de l'API compat sont celles de la référence (`api-compat.md` § 4) ;
+  `PTZMoveToVirtualInputPosition` est une demande explicite : elle déplace la caméra même à
+  l'antenne, sans confirmation.
 - Pas de contrôle PTZ par NDI® ni par des protocoles propriétaires (hors Phase 7).

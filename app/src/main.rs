@@ -2,6 +2,7 @@
 
 mod api_load;
 mod cli;
+mod ptz_load;
 mod replay_load;
 mod screens;
 mod soak;
@@ -506,8 +507,10 @@ impl<'a> App<'a> {
             .map(|s| s.key.clone())
             .unwrap_or_default();
         let soak_context = soak_options.map(|options| {
-            // Not with the replay at work: « Rejouer » takes the Program and gives it back.
-            let transitions = inputs.len() >= 2 && options.replay_load.is_none();
+            // Not with the replay at work: « Rejouer » takes the Program and gives it back; nor
+            // with the PTZ load, which drives the Preview and the Program itself.
+            let transitions =
+                inputs.len() >= 2 && options.replay_load.is_none() && !options.ptz_load;
             (
                 options,
                 soak::SoakContext {

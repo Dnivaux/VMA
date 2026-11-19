@@ -61,6 +61,9 @@ Options :
                          (code 0 = réussi, 2 = images manquées ou répétées)
   --api-load             pendant le soak, un client de l'API compat TCP (127.0.0.1:8099) :
                          une commande toutes les 100 ms, l'état XML toutes les 250 ms (E13)
+  --ptz-load             pendant le soak, une caméra PTZ simulée (VISCA over IP, 127.0.0.1) sur
+                         le premier input caméra / synthétique : un input virtuel en Preview,
+                         puis à l'antenne, puis l'autre en Preview, toutes les 10 s (7A, G11)
   --replay-load <dossier>
                          pendant le soak, le replay au travail (F7) : les inputs enregistrés
                          pour le replay et en ISO dans ce dossier (un SSD de préférence),
@@ -157,6 +160,8 @@ pub struct SoakOptions {
     pub api_load: bool,
     /// The replay at work during the soak, recording in that folder (F7).
     pub replay_load: Option<PathBuf>,
+    /// A simulated PTZ camera and its virtual inputs at work during the soak (7A, G11).
+    pub ptz_load: bool,
 }
 
 /// Environment variable holding the stream key, to keep it out of the command line.
@@ -209,6 +214,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> anyhow::Result<Options> 
     let mut hostile = false;
     let mut api_load = false;
     let mut replay_load = None;
+    let mut ptz_load = false;
     let mut fullscreen_source = vma_engine::ViewSource::Program;
     let mut report = None;
     let mut help = false;
@@ -282,6 +288,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> anyhow::Result<Options> 
                 }
             }
             "--api-load" => api_load = true,
+            "--ptz-load" => ptz_load = true,
             "--replay-load" => {
                 replay_load = Some(PathBuf::from(value::<String>(&mut args, &arg)?));
             }
@@ -315,14 +322,19 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> anyhow::Result<Options> 
             stinger: stinger.is_some(),
             api_load,
             replay_load: replay_load.clone(),
+            ptz_load,
         }),
         None if hostile
             || report.is_some()
             || sync_check.is_some()
             || api_load
+            || ptz_load
             || replay_load.is_some() =>
         {
-            bail!("--hostile, --report, --sync-check, --api-load et --replay-load exigent --soak")
+            bail!(
+                "--hostile, --report, --sync-check, --api-load, --ptz-load et --replay-load \
+                 exigent --soak"
+            )
         }
         None => None,
     };
@@ -594,8 +606,17 @@ mod tests {
                 stinger: false,
                 api_load: false,
                 replay_load: None,
+                ptz_load: false,
             })
         );
+        assert!(
+            parse_str("--soak 60 --ptz-load")
+                .unwrap()
+                .soak
+                .unwrap()
+                .ptz_load
+        );
+        assert!(parse_str("--ptz-load").is_err());
         let o = parse_str("--soak 60 --replay-load /ssd/f7").unwrap();
         assert_eq!(o.soak.unwrap().replay_load, Some(PathBuf::from("/ssd/f7")));
         assert!(parse_str("--replay-load /ssd/f7").is_err());
