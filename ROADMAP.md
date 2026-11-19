@@ -363,6 +363,10 @@ de caméra PTZ chez la partenaire pour l'instant), et m'a laissé trancher les a
 la spec).
 
 ### 7A — Caméras PTZ
+CI verte Ubuntu + Windows sur 7A.1–7A.5 ([run 44615219234](https://github.com/Dnivaux/VMA/actions/runs/44615219234), `7ef57c8`).
+Écart connu avec la référence : hors Preview et Program, son input virtuel montre une image
+fixe, celui de VMA l'image vivante de la caméra (ADR 0018, à trancher à la revue).
+
 | Étape | Contenu | Statut |
 |---|---|---|
 | 7A.1 | Décisions Q1–Q5, [ADR 0018](docs/adr/0018-cameras-ptz.md) (accepté : choix délégués) | ✅ |
