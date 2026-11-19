@@ -60,7 +60,17 @@ titres HTML + natifs, multi-cadence dès la Phase 1, macOS plus tard).
   50p saccadait à 14 phases sur 40 (jusqu'à 33 + 33 images en 3 s), à aucune depuis ; son lu
   calé sur ses images (−0,04 ms) — [`io-gst.md`](docs/specs/io-gst.md), « Fichiers calés sur
   les ticks ». CI verte Ubuntu + Windows, sans reprise ([run 44402337984](https://github.com/Dnivaux/VMA/actions/runs/44402337984), `b7e9c66`).
-  A6 (`tests/soak/a6-rates.sh`, fenêtre réelle) n'a pas été repassé.
+  **A6 repassé le 2026-11-19** (`tests/soak/a6-rates.sh`, fenêtre réelle, RTX 5090, 6 × 2 min,
+  4 sources synthétiques 1080p) : ✅ aux 6 cadences, 0 image manquée ni répétée au Program ;
+  une source à la cadence du maître n'a plus **aucune** image sautée ni répétée (50 → 50 : 0 + 0,
+  contre 107 + 107 le 2026-10-27 ; 25, 29,97, 30 : 0 + 0 ; 59,94 et 60 : 1 sautée, au
+  démarrage). Les autres comptes sont ceux qu'on attend des écarts de cadence (30 → 29,97 :
+  4 sautées en 2 min, attendu 3,6 ; 60 → 59,94 : 8, attendu 7,2 ; 50 → 60 : 1 199 répétées sur
+  1 200). La latence (publication → tick) a baissé : p99 14,5 ms à 50p au lieu de 18,9 ms. À
+  50p, 59,94p et 60p, une alerte « publiée près de son tick » toutes les 10 s par input :
+  copie de 8 à 9 ms par image 1080p, publiée encore 3,3 à 4,1 ms avant son tick, aucune image
+  perdue (copie lente du lien du GPU en économie d'énergie, déjà décrite dans `io-gst.md` ; voir
+  la dette ReBAR plus bas). Rapports : `tests/soak/reports/2026-11-19-phase1-a6-*.md`.
 - *(Phase 1, étape 10)* **Contention du thread de rendu sur la `Queue` wgpu** avec des inputs
   uploadés. Mesuré par histogramme (rapport de soak, temps CPU par tick et par phase), 1080p50 :
   tick complet p50 0,09 ms sans input, mais **p50 7,9 ms, p99 10,5 ms avec 4 × 1080p50**
