@@ -1,6 +1,7 @@
 # ADR 0017 — Priorité des threads de temps réel
 
-- **Statut** : **proposé** le 2026-11-19 (dette de l'ADR 0001, « Priorité du thread de rendu »)
+- **Statut** : **accepté** le 2026-11-19 (choix interne délégué par le mainteneur ; dette de
+  l'ADR 0001, « Priorité du thread de rendu »)
 - **Date** : 2026-11-19
 - **Contexte** : ADR 0001 (limites connues : priorité OS par défaut, élévation « si les soaks
   montrent des retards »), soaks Windows de la partenaire (2026-11-11 et 2026-11-13)

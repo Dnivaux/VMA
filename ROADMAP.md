@@ -45,7 +45,7 @@ titres HTML + natifs, multi-cadence dès la Phase 1, macOS plus tard).
 ### Dette connue (voir ADR 0001)
 - Allocations et verrous **internes à wgpu** dans la boucle de rendu (pas d'allocation applicative).
 - ~~Thread de rendu en priorité OS normale.~~ **Élevée le 2026-11-19** ([ADR 0017](docs/adr/0017-priorite-des-threads.md),
-  *proposé*), parce que les soaks Windows montrent des réveils en retard (jusqu'à 19 ms) :
+  accepté), parce que les soaks Windows montrent des réveils en retard (jusqu'à 19 ms) :
   rendu en `TIME_CRITICAL`, threads de cadence (son, inputs calés sur les ticks, lecteurs du
   replay, relais des ticks des pages, casque) en `HIGHEST`, sans bridage d'énergie (EcoQoS)
   sous Windows ; `SCHED_FIFO` sous Linux seulement si l'utilisateur en a le droit
@@ -354,8 +354,20 @@ Spec et plan **validés le 2026-11-11** : [`phase-6.md`](docs/specs/phase-6.md) 
 | `io-gst` `outputs::tests::a_delayed_input_is_back_in_sync` instable en local | Vu le 2026-11-13 : 1 échec sur 6 passages, avec et sans les changements de l'étape 8 (antérieur). **Non reproduit** ensuite : 16 passages sur 16 réussis, le test lancé seul ; l'échec venait sans doute de la charge des autres tests (c'est un test de temps réel, relancé jusqu'à 2 fois en CI). « `repeated` 379 sur 380 » n'était pas un indice : une source 25p dans un maître 50p montre chaque image deux fois. Cause de l'échec isolé non trouvée |
 | ~~`cargo test -p vma-io-gst --lib record` se bloque~~ **expliqué et levé le 2026-11-13** | Vu le 2026-11-12 (20 h à 100 % d'un cœur), antérieur à la Phase 6, propre à `cargo test`, qui fait tourner les tests d'un binaire dans **un seul processus**. Piles relevées au débogueur : un test crée son moteur (Vulkan : le pilote NVIDIA s'initialise sous son verrou, puis demande celui du chargeur dynamique) pendant qu'un autre charge pour la première fois le plugin NVENC (`dlopen` tient le verrou du chargeur et lance l'initialisation du même pilote, qui attend en boucle le verrou du pilote) : **interblocage dans le pilote, pas dans VMA**, et tous les autres threads attendent derrière le chargeur. Les tests font maintenant ces deux initialisations une fois, l'une après l'autre, avant de continuer (`pipeline::tests::init` ; rien à faire sous nextest, un processus par test) : les 14 tests « record » finissent en 10 s dans un processus (3 passages), 14 / 14 en séquentiel (`--test-threads=1`). En parallèle dans un même processus, `sync_test_recording_has_its_beeps_on_its_flashes` perd des images sous la charge des 13 autres : c'est un test de temps réel, fait pour tourner seul (groupe nextest). **L'application n'est pas exposée** : elle crée son device GPU avant de démarrer `vma-io`, qui seul charge des plugins (ordre noté dans `app/src/main.rs`). Les tests d'intégration d'`io-gst` ne se bloquaient pas (`--test runtime`, 3 passages). nextest reste l'outil du projet et de la CI |
 
-## Phase 7 — Caméras PTZ, invités à distance, automatisation · *spec proposée (2026-11-19), en attente de validation*
+## Phase 7 — Caméras PTZ, invités à distance, automatisation · *spec validée (2026-11-19), 7A en cours*
 Demandée par le mainteneur le 2026-11-19 (hors MVP au BRIEF). Spec et plan :
-[`phase-7.md`](docs/specs/phase-7.md) : trois sous-phases revues séparément (recommandé :
-7A PTZ par VISCA over IP → 7B invités WebRTC par WHIP / WHEP → 7C automatisation par plugins),
-critères G1–G11, questions Q1–Q10. Rien n'est implémenté avant la validation.
+[`phase-7.md`](docs/specs/phase-7.md) : trois sous-phases revues séparément, **7A PTZ par
+VISCA over IP → 7B invités WebRTC par WHIP / WHEP → 7C automatisation par plugins**,
+critères G1–G11. Validée le 2026-11-19 : le mainteneur a répondu à Q1 (cet ordre) et Q2 (pas
+de caméra PTZ chez la partenaire pour l'instant), et m'a laissé trancher les autres (§ 7 de
+la spec).
+
+### 7A — Caméras PTZ
+| Étape | Contenu | Statut |
+|---|---|---|
+| 7A.1 | Décisions Q1–Q5, [ADR 0018](docs/adr/0018-cameras-ptz.md) (accepté : choix délégués) | ✅ |
+| 7A.2 | `vma-ptz` : codage VISCA, client UDP / TCP, caméra simulée (G1, G2) | en cours |
+| 7A.3 | Commandes, état, projet ; inputs virtuels (G3) | — |
+| 7A.4 | UI PTZ (G4) | — |
+| 7A.5 | API compat et native (G5) | — |
+| 7A.6 | Soak 20 min (G11) ; checklist sur vraie caméra à la fin, avec la partenaire ; **revue** | — |

@@ -1,12 +1,14 @@
 # Phase 7 — Caméras PTZ, invités à distance, automatisation : spec d'ensemble et plan
 
-- **Statut** : **proposé** le 2026-11-19, à valider (questions du § 7)
+- **Statut** : **validé** le 2026-11-19. Le mainteneur a répondu à Q1 (oui) et Q2 (pas de
+  caméra PTZ pour l'instant), et m'a laissé trancher le reste : décisions au § 7
 - **Date** : 2026-11-19
 - **Références** : BRIEF §4 (« Phase 7 et au-delà », hors MVP, sur demande : demandée par le
   mainteneur le 2026-11-19) et §1 (régie automatisée par IA pour le sport, le handball
   d'abord) ; ADR 0003 (couche de commandes), ADR 0004 (inputs GStreamer), ADR 0007 (audio),
   ADR 0012 (API) ; [`api-native.md`](api-native.md), [`api-compat.md`](api-compat.md) ; guide
-  public de la référence (PTZ, appels à distance), lu pour les gestes seulement
+  public de la référence (PTZ, appels à distance), lu pour les gestes seulement ; ADR 0018
+  (PTZ)
 - **Entrée en phase** : restent ouverts la Phase 5 (E9 : Companion réel ; raccourcis : liste
   de la partenaire) et la revue de la Phase 6. Les essais avec de vraies caméras se feront à
   la fin (décision du mainteneur, 2026-11-19).
@@ -20,13 +22,14 @@ différente. **Recommandé : trois sous-phases, chacune avec sa revue**, dans ce
 | Sous-phase | Sujet | Pourquoi à cette place |
 |---|---|---|
 | **7A** | **Caméras PTZ** (VISCA over IP) | Le plus petit et le mieux défini (protocole public, aucune dépendance) ; utile au sport ; il donne à l'automatisation le cadrage qu'elle pilotera |
-| **7B** | **Invités à distance** (WebRTC) | Gros morceau : réseau, NAT, chiffrement, navigateur ; il faut d'abord trancher l'accès depuis Internet (Q8) |
+| **7B** | **Invités à distance** (WebRTC) | Gros morceau : réseau, NAT, chiffrement, navigateur ; l'accès depuis Internet est tranché (Q8, § 7) |
 | **7C** | **Automatisation** (plugins) | La couche de commandes existe déjà ; il manque aux plugins des images et des niveaux à analyser, et un garde-fou pour l'opérateur |
 
 ### 7A — Caméras PTZ
 - **Protocole** : VISCA over IP (UDP 52381, en-tête de 8 octets, numéros de séquence, accusé
   de réception puis fin de commande), d'après sa documentation publique. Variante « VISCA
-  brut » sur TCP (port 5678 ou réglable) pour les caméras qui ne parlent que celle-là (Q3).
+  brut » sur TCP (port 5678 ou réglable) pour les caméras qui ne parlent que celle-là, dès
+  7A (Q3).
 - **Gestes** (ceux de la référence, dessin propre à VMA) :
   - Une caméra PTZ est un input de capture, NDI® ou réseau auquel on associe une adresse
     PTZ (réglages de l'input, onglet « PTZ »).
@@ -120,7 +123,7 @@ détection d'actions.
 ## 4. Plan (une étape = un commit testé ; arrêt pour revue après chaque sous-phase)
 | Étape | Contenu | Critères |
 |---|---|---|
-| 7A.1 | Questions Q1–Q5, ADR 0018 (PTZ : protocole, threads, état), **validation** | — |
+| 7A.1 | Questions Q1–Q5 (tranchées), ADR 0018 (PTZ : protocole, threads, état) | — |
 | 7A.2 | `vma-ptz` : codage VISCA, client UDP / TCP, caméra simulée | G1, G2 |
 | 7A.3 | Commandes, état, projet ; inputs virtuels | G3 |
 | 7A.4 | UI PTZ | G4 |
@@ -151,7 +154,24 @@ détection d'actions.
 - **Automatisation** : un automate qui coupe trop souvent gêne plus qu'il n'aide. D'où les
   durées de plan, le garde-fou, et un critère mesuré (G10).
 
-## 7. Questions au mainteneur (recommandation en premier)
+## 7. Décisions (2026-11-19)
+Le mainteneur a répondu à Q1 et Q2, et m'a demandé de faire les autres choix (« choisis le
+mieux »). Les questions d'origine suivent, pour mémoire.
+
+| # | Décision |
+|---|---|
+| Q1 | **7A PTZ → 7B invités → 7C automatisation**, chacune revue à part (mainteneur) |
+| Q2 | **Aucune caméra PTZ** chez la partenaire pour l'instant (mainteneur) : tout est testé contre une caméra simulée qui suit la documentation publique ; la checklist sur vraie caméra se fera à la fin |
+| Q3 | **UDP 52381 et TCP brut dès 7A** : sans caméra connue, c'est la seule façon de ne pas fermer la porte à la première achetée ; seul le transport diffère (ADR 0018) |
+| Q4 | **16 préréglages** par caméra |
+| Q5 | **Confirmation** demandée avant de bouger une caméra à l'antenne |
+| Q6 | Page web servie par VMA, et tout client WHIP accepté |
+| Q7 | **4 invités** |
+| Q8 | **Réseau local d'abord.** Pour Internet : un tunnel HTTPS ou un certificat fourni par l'utilisateur (documenté), un TURN fourni par l'utilisateur s'il en faut. Aucun service hébergé par le projet (coût, vie privée, exploitation) |
+| Q9 | Vignettes 320×180 en mémoire partagée, 10 images/s au plus par défaut |
+| Q10 | Un geste de l'opérateur coupe l'automate pour **30 s** (réglable) ; le bouton « Automate » toujours visible |
+
+## 8. Questions posées au mainteneur (recommandation en premier)
 - **Q1 — Découpage et ordre.** **Recommandé** : trois sous-phases revues séparément,
   **7A PTZ → 7B invités → 7C automatisation**. Alternative : commencer par 7C si la régie
   automatique du handball presse plus que les caméras.
