@@ -50,7 +50,9 @@ titres HTML + natifs, multi-cadence dès la Phase 1, macOS plus tard).
   replay, relais des ticks des pages, casque) en `HIGHEST`, sans bridage d'énergie (EcoQoS)
   sous Windows ; `SCHED_FIFO` sous Linux seulement si l'utilisateur en a le droit
   (`RLIMIT_RTPRIO` ; pas le cas de la machine de dev : priorité normale, comme avant). La
-  priorité obtenue est dans le panneau Statistiques et le rapport de soak. **Effet à mesurer
+  priorité obtenue est dans le panneau Statistiques et le rapport de soak. CI verte Ubuntu +
+  Windows, sans reprise ([run 44582681611](https://github.com/Dnivaux/VMA/actions/runs/44582681611), `4376a44` ;
+  sous Windows, le test exige `TIME_CRITICAL`, `HIGHEST` et le bridage levé). **Effet à mesurer
   au 3ᵉ passage Windows** (paquet à reconstruire).
 - ~~Temps GPU et utilisation GPU non mesurés (seul le temps CPU de rendu l'est).~~ **Temps GPU
   de chaque tick mesuré le 2026-11-19** par horodatages GPU au début et à la fin des commandes
@@ -59,7 +61,7 @@ titres HTML + natifs, multi-cadence dès la Phase 1, macOS plus tard).
   320×180 : 0,028 ms par tick sur RTX 5090, 0,44 ms sur l'iGPU Intel ARL
   (`render_loop::runs_one_second`, qui exige aussi 0 erreur GPU : une première version, avec
   des emplacements à 16 octets d'écart au lieu de 256, faisait refuser 3 relectures sur 4 par
-  wgpu). **Reste** : l'utilisation globale du GPU (fenêtre, encodeurs, autres programmes ;
+  wgpu ; CI verte, même run). **Reste** : l'utilisation globale du GPU (fenêtre, encodeurs, autres programmes ;
   NVML ou équivalent), non mesurée.
 - Perte du GPU : pas de recréation à chaud du device (choix Q4 de la Phase 2 : noir puis
   finalisation et sortie en erreur ; recréation dans une phase ultérieure, ADR dédié).
@@ -351,3 +353,9 @@ Spec et plan **validés le 2026-11-11** : [`phase-6.md`](docs/specs/phase-6.md) 
 | Checklist [`phase6-replay.md`](docs/manual-tests/phase6-replay.md) non passée | Vraies caméras (dont une sans son), arrêt brutal pendant l'ISO, disque plein, Companion : pas de caméra sur la machine de dev ; à passer par le mainteneur ou la partenaire |
 | `io-gst` `outputs::tests::a_delayed_input_is_back_in_sync` instable en local | Vu le 2026-11-13 : 1 échec sur 6 passages, avec et sans les changements de l'étape 8 (antérieur). **Non reproduit** ensuite : 16 passages sur 16 réussis, le test lancé seul ; l'échec venait sans doute de la charge des autres tests (c'est un test de temps réel, relancé jusqu'à 2 fois en CI). « `repeated` 379 sur 380 » n'était pas un indice : une source 25p dans un maître 50p montre chaque image deux fois. Cause de l'échec isolé non trouvée |
 | ~~`cargo test -p vma-io-gst --lib record` se bloque~~ **expliqué et levé le 2026-11-13** | Vu le 2026-11-12 (20 h à 100 % d'un cœur), antérieur à la Phase 6, propre à `cargo test`, qui fait tourner les tests d'un binaire dans **un seul processus**. Piles relevées au débogueur : un test crée son moteur (Vulkan : le pilote NVIDIA s'initialise sous son verrou, puis demande celui du chargeur dynamique) pendant qu'un autre charge pour la première fois le plugin NVENC (`dlopen` tient le verrou du chargeur et lance l'initialisation du même pilote, qui attend en boucle le verrou du pilote) : **interblocage dans le pilote, pas dans VMA**, et tous les autres threads attendent derrière le chargeur. Les tests font maintenant ces deux initialisations une fois, l'une après l'autre, avant de continuer (`pipeline::tests::init` ; rien à faire sous nextest, un processus par test) : les 14 tests « record » finissent en 10 s dans un processus (3 passages), 14 / 14 en séquentiel (`--test-threads=1`). En parallèle dans un même processus, `sync_test_recording_has_its_beeps_on_its_flashes` perd des images sous la charge des 13 autres : c'est un test de temps réel, fait pour tourner seul (groupe nextest). **L'application n'est pas exposée** : elle crée son device GPU avant de démarrer `vma-io`, qui seul charge des plugins (ordre noté dans `app/src/main.rs`). Les tests d'intégration d'`io-gst` ne se bloquaient pas (`--test runtime`, 3 passages). nextest reste l'outil du projet et de la CI |
+
+## Phase 7 — Caméras PTZ, invités à distance, automatisation · *spec proposée (2026-11-19), en attente de validation*
+Demandée par le mainteneur le 2026-11-19 (hors MVP au BRIEF). Spec et plan :
+[`phase-7.md`](docs/specs/phase-7.md) : trois sous-phases revues séparément (recommandé :
+7A PTZ par VISCA over IP → 7B invités WebRTC par WHIP / WHEP → 7C automatisation par plugins),
+critères G1–G11, questions Q1–Q10. Rien n'est implémenté avant la validation.
