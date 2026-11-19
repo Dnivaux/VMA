@@ -1177,6 +1177,16 @@ fn report(options: &SoakOptions, soak: &SoakContext, run: &Run<'_>) -> (String, 
         "| Marge d'attente active | {} |",
         ms(soak.config.spin_margin)
     );
+    let priority = vma_clock::priority::summary();
+    let _ = writeln!(
+        s,
+        "| Priorité du rendu · des threads de cadence | {} · {} |",
+        priority.render_text(),
+        priority.timing_text()
+    );
+    if let Some(throttling) = priority.process_text() {
+        let _ = writeln!(s, "| Bridage d'énergie du processus | {throttling} |");
+    }
     let _ = writeln!(
         s,
         "| Durée demandée · réelle | {} s · {:.1} s |\n",

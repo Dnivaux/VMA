@@ -1363,6 +1363,7 @@ fn spawn_release<F: Feeds>(
     std::thread::Builder::new()
         .name(format!("vma-pace-{input}"))
         .spawn(move || {
+            vma_clock::priority::raise_current_thread(vma_clock::priority::ThreadRole::Timing);
             while let Ok(picture) = released.recv() {
                 let wait = picture.at_ns.saturating_sub(clock.time().nseconds());
                 if wait > 0 {

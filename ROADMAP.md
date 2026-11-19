@@ -44,7 +44,14 @@ titres HTML + natifs, multi-cadence dès la Phase 1, macOS plus tard).
 
 ### Dette connue (voir ADR 0001)
 - Allocations et verrous **internes à wgpu** dans la boucle de rendu (pas d'allocation applicative).
-- Thread de rendu en priorité OS normale.
+- ~~Thread de rendu en priorité OS normale.~~ **Élevée le 2026-11-19** ([ADR 0017](docs/adr/0017-priorite-des-threads.md),
+  *proposé*), parce que les soaks Windows montrent des réveils en retard (jusqu'à 19 ms) :
+  rendu en `TIME_CRITICAL`, threads de cadence (son, inputs calés sur les ticks, lecteurs du
+  replay, relais des ticks des pages, casque) en `HIGHEST`, sans bridage d'énergie (EcoQoS)
+  sous Windows ; `SCHED_FIFO` sous Linux seulement si l'utilisateur en a le droit
+  (`RLIMIT_RTPRIO` ; pas le cas de la machine de dev : priorité normale, comme avant). La
+  priorité obtenue est dans le panneau Statistiques et le rapport de soak. **Effet à mesurer
+  au 3ᵉ passage Windows** (paquet à reconstruire).
 - Temps GPU et utilisation GPU non mesurés (seul le temps CPU de rendu l'est).
 - Perte du GPU : pas de recréation à chaud du device (choix Q4 de la Phase 2 : noir puis
   finalisation et sortie en erreur ; recréation dans une phase ultérieure, ADR dédié).

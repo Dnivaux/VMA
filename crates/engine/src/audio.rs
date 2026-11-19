@@ -840,7 +840,10 @@ pub(crate) fn spawn(rate: FrameRate, plan: AudioPlanReader) -> std::io::Result<A
     let (sounds_tx, sounds) = crossbeam_channel::bounded(STINGER_SOUNDS);
     let thread = std::thread::Builder::new()
         .name("vma-audio".into())
-        .spawn(move || run(&mut mix, &ticks, &attach, &sounds))?;
+        .spawn(move || {
+            vma_clock::priority::raise_current_thread(vma_clock::priority::ThreadRole::Timing);
+            run(&mut mix, &ticks, &attach, &sounds)
+        })?;
     Ok(AudioThread {
         ticks: TickSender {
             tx,

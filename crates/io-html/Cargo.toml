@@ -22,6 +22,7 @@ required-features = ["cef"]
 
 [dependencies]
 vma-core.workspace = true
+vma-clock.workspace = true
 cef = { workspace = true, optional = true }
 cef-dll-sys = { workspace = true, optional = true }
 crossbeam-channel.workspace = true

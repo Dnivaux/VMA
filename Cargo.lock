@@ -5182,8 +5182,10 @@ dependencies = [
 name = "vma-clock"
 version = "0.0.1"
 dependencies = [
+ "libc",
  "tracing",
  "vma-core",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5269,6 +5271,7 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.21",
  "tracing",
+ "vma-clock",
  "vma-core",
 ]
 

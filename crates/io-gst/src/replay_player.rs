@@ -155,7 +155,10 @@ impl ReplayPlayer {
         };
         let thread = std::thread::Builder::new()
             .name(format!("vma-replay-{input}"))
-            .spawn(move || worker.run())?;
+            .spawn(move || {
+                vma_clock::priority::raise_current_thread(vma_clock::priority::ThreadRole::Timing);
+                worker.run()
+            })?;
         Ok(Self {
             tx,
             stop,

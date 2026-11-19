@@ -25,6 +25,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
+use vma_clock::priority::{self, ThreadRole};
 use vma_clock::{ClockStats, FrameClock, StreamClock, SystemTime, TickGrid};
 use vma_compositor::multiview::{
     CellPicture, CellTally, MAX_CELLS, MultiviewCell, MultiviewPainter, MultiviewScene,
@@ -391,10 +392,13 @@ impl RenderEngine {
             stats: Arc::clone(&render_stats),
             stop: Arc::clone(&stop),
         };
-        let render_thread = match std::thread::Builder::new()
+        let spawned = std::thread::Builder::new()
             .name("vma-render".into())
-            .spawn(move || worker.run())
-        {
+            .spawn(move || {
+                priority::raise_current_thread(ThreadRole::Render);
+                worker.run()
+            });
+        let render_thread = match spawned {
             Ok(thread) => thread,
             Err(error) => {
                 stop.store(true, Ordering::Release);

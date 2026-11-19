@@ -88,7 +88,12 @@ impl Headphones {
             let stop = Arc::clone(&stop);
             std::thread::Builder::new()
                 .name("vma-phones".into())
-                .spawn(move || feed(&ring, &target, &stop))?
+                .spawn(move || {
+                    vma_clock::priority::raise_current_thread(
+                        vma_clock::priority::ThreadRole::Timing,
+                    );
+                    feed(&ring, &target, &stop)
+                })?
         };
         Ok(Self {
             list,

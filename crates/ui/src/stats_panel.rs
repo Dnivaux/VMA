@@ -57,6 +57,16 @@ pub(crate) fn show(
                 "Marge d'attente active",
                 ms(engine.config().spin_margin),
             );
+            let priority = vma_clock::priority::summary();
+            row(ui, "Priorité du rendu", priority.render_text());
+            row(
+                ui,
+                "Priorité des threads de cadence",
+                priority.timing_text(),
+            );
+            if let Some(throttling) = priority.process_text() {
+                row(ui, "Bridage d'énergie du processus", throttling.into());
+            }
             row(ui, "Images GPU en vol", render.gpu_in_flight.to_string());
             row(
                 ui,

@@ -1042,7 +1042,10 @@ impl TickRelay {
         let (t, s) = (Arc::clone(&target), Arc::clone(&stop));
         let thread = std::thread::Builder::new()
             .name("vma-html-ticks".into())
-            .spawn(move || relay(&ticks, &t, &s))
+            .spawn(move || {
+                vma_clock::priority::raise_current_thread(vma_clock::priority::ThreadRole::Timing);
+                relay(&ticks, &t, &s)
+            })
             .map_err(|e| tracing::error!(error = %e, "no tick relay: HTML pages will not paint"))
             .ok();
         Self {

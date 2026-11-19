@@ -105,7 +105,8 @@ Test : `render_loop::device_lost_stops_rendering_not_the_clock` (perte forcée p
   les soaks calme et hostile la couvrent.
 - **Priorité du thread de rendu** : priorité OS par défaut. Une élévation (SCHED_FIFO /
   `THREAD_PRIORITY_TIME_CRITICAL`) demandera de l'`unsafe` ou une dépendance → ADR dédié si
-  les soaks montrent des retards (l'histogramme du réveil sert à le décider).
+  les soaks montrent des retards (l'histogramme du réveil sert à le décider). **Suite** : les
+  soaks Windows en montrent ; [ADR 0017](0017-priorite-des-threads.md) (2026-11-19).
 - **Attente active** : ≈ la marge par image (1 ms ≈ 5 % d'un cœur à 50 fps), pour la précision
   du réveil.
 - **Temps GPU** : seul le temps CPU de rendu est mesuré ; le temps GPU (timestamp queries) et

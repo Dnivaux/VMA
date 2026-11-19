@@ -12,6 +12,7 @@
 //! that the UI reads with [`ClockStats::snapshot`].
 
 mod histogram;
+pub mod priority;
 mod stats;
 mod stream;
 mod time;

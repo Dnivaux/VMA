@@ -54,6 +54,9 @@ winit = { version = "0.30", default-features = false }       # Apache-2.0
 egui_kittest = { version = "0.37", features = ["wgpu", "snapshot"] } # MIT OR Apache-2.0 (tests only; wgpu + snapshot: headless screenshots, dify MIT, image MIT OR Apache-2.0, open MIT, tempfile MIT OR Apache-2.0)
 crossbeam-channel = "0.5"                                    # MIT OR Apache-2.0
 arc-swap = "1.9"                                             # MIT OR Apache-2.0
+# System calls of vma-clock::priority (ADR 0017); both already in the tree under std users.
+libc = "0.2"                                                 # MIT OR Apache-2.0
+windows-sys = { version = "0.61", features = ["Win32_System_Threading"] } # MIT OR Apache-2.0
 thiserror = "2.0"                                            # MIT OR Apache-2.0
 anyhow = "1"                                                 # MIT OR Apache-2.0
 tracing = "0.1"                                              # MIT
