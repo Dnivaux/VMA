@@ -13,6 +13,7 @@ mod audio_plan;
 mod command;
 mod control;
 mod feed;
+mod gpu_time;
 mod journal;
 mod multiview;
 mod output_spec;

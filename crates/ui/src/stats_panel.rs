@@ -77,7 +77,16 @@ pub(crate) fn show(
                     "—".into()
                 },
             );
-            row(ui, "Utilisation GPU", "non mesurée (à venir)".into());
+            let gpu = engine.render_stats().gpu_summary();
+            row(
+                ui,
+                "Temps GPU du rendu p50 / p99",
+                if gpu.count > 0 {
+                    format!("{} / {}", ms(gpu.p50), ms(gpu.p99))
+                } else {
+                    "non mesuré (pas d'horodatage GPU)".into()
+                },
+            );
             let control = engine.control_stats();
             let journal = engine.journal_stats();
             row(ui, "Commandes acceptées", control.accepted().to_string());

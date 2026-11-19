@@ -58,6 +58,12 @@ ce fichier couvre le thread de rendu.
   répétée, `gpu_dropped += 1`, `warn!`). L'horloge n'est jamais bloquée par le GPU.
 - `RenderStats` (atomiques) : images rendues, `gpu_dropped`, images en vol, temps CPU
   (dernier / moyenne glissante / max), cadence mesurée sur ~1 s.
+- **Temps GPU par tick** (2026-11-19, `gpu_time`) : si le device a `TIMESTAMP_QUERY` et
+  `TIMESTAMP_QUERY_INSIDE_ENCODERS` (demandées à l'ouverture quand l'adaptateur les a), un
+  horodatage au début et à la fin des commandes de chaque tick, résolu dans un tampon (pas de
+  256 octets) puis copié dans l'un de 4 petits tampons relus après le `device.poll` d'un tick
+  suivant : le rendu n'attend jamais ; un tick sans emplacement libre n'est pas mesuré.
+  `RenderStats::gpu_summary()` (p50 / p99 / p99,9 / max ; `count` 0 sans horodatages).
 - `ProgramReader::update()` prend la dernière image publiée sans attendre ;
   `current_slot()` / `current_frame_index()`.
 - **Invariant du triple buffer** (ADR 0001) : le consommateur n'appelle `update()` qu'entre
@@ -95,7 +101,8 @@ ce fichier couvre le thread de rendu.
 | Le producteur n'écrit jamais dans le slot détenu, même longtemps (20 000 détentions aléatoires) | `triple::tests::producer_never_writes_the_held_slot` | CI |
 | Invariant sur GPU : chaque lecture GPU du slot détenu contient l'image annoncée (moteur à 240 fps, ≥ 300 frames UI simulées) | `render_loop::triple_buffer_gpu_stress` | CI |
 | Perte du device : pas de panique, rendu arrêté, horloge qui continue, raison exposée, arrêt propre | `render_loop::device_lost_stops_rendering_not_the_clock` | CI |
-| 1 s réelle : ≥ 40 ticks, images publiées dans l'ordre | `render_loop::runs_one_second` | CI |
+| 1 s réelle : ≥ 40 ticks, images publiées dans l'ordre ; temps GPU mesuré à presque chaque tick (aucun nul) quand l'adaptateur a les horodatages, 0 erreur GPU | `render_loop::runs_one_second` | CI |
+| Temps GPU : intervalle de deux horodatages, compteur remis à zéro ignoré | `gpu_time::tests::two_timestamps_give_their_interval` | CI |
 | **10 min à 50 fps 1080p : 0 manquée, 0 répétée** (acceptation Phase 0) | `render_loop::soak_render_loop` | `#[ignore]`, manuel — voir `tests/soak/reports/` |
 | Pixels du Program : couleur à l'antenne, Cut, Fade à mi-course (somme des codes = 255 en gamma), retour à la couleur ; Preview = input en Preview ; vignettes = couleur de chaque input | `render_loop::program_pixels_follow_cut_and_fade` | CI |
 | Commande → contrôle → plan → rendu avec les vrais threads ; Fade minuté qui bascule seul ; journal écrit, sans perte, et rejouable | `render_loop::commands_reach_the_render_thread_and_the_journal` | CI |

@@ -117,6 +117,7 @@ fn runs_one_second() {
         mut engine,
         mut reader,
         adapter,
+        device,
         ..
     } = spawn(FrameRate::FPS_50, Resolution::new(320, 180).unwrap());
     eprintln!("adapter: {adapter}");
@@ -145,6 +146,24 @@ fn runs_one_second() {
         render.gpu_dropped
     );
     assert!(updates >= 20, "reader saw only {updates} new frames");
+    // GPU time of the ticks, when the adapter has timestamps (not every software one).
+    let gpu = engine.render_stats().gpu_summary();
+    eprintln!("GPU time per tick: {gpu:?}");
+    // The measure itself must be valid commands (a refused resolve is a validation error).
+    assert_eq!(render.gpu_errors, 0, "{render:?}");
+    let timestamps =
+        wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS;
+    if device.features().contains(timestamps) {
+        assert!(
+            gpu.count + 4 >= render.frames_rendered.min(40),
+            "{gpu:?} for {render:?}"
+        );
+        assert!(gpu.max < Duration::from_millis(500), "{gpu:?}");
+        // Every tick draws something: none takes no GPU time at all.
+        assert!(gpu.p50 > Duration::ZERO, "{gpu:?}");
+    } else {
+        assert_eq!(gpu.count, 0, "{gpu:?}");
+    }
 }
 
 /// Simulates the UI: each "UI frame" takes the newest Program frame (`update`), holds it while

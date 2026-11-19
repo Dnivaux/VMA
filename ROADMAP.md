@@ -52,7 +52,15 @@ titres HTML + natifs, multi-cadence dès la Phase 1, macOS plus tard).
   (`RLIMIT_RTPRIO` ; pas le cas de la machine de dev : priorité normale, comme avant). La
   priorité obtenue est dans le panneau Statistiques et le rapport de soak. **Effet à mesurer
   au 3ᵉ passage Windows** (paquet à reconstruire).
-- Temps GPU et utilisation GPU non mesurés (seul le temps CPU de rendu l'est).
+- ~~Temps GPU et utilisation GPU non mesurés (seul le temps CPU de rendu l'est).~~ **Temps GPU
+  de chaque tick mesuré le 2026-11-19** par horodatages GPU au début et à la fin des commandes
+  du tick (quand l'adaptateur les a ; 4 emplacements relus quelques ticks plus tard, sans
+  attente) : panneau Statistiques (p50 / p99) et rapport de soak (p50 / p99 / p99,9 / max).
+  320×180 : 0,028 ms par tick sur RTX 5090, 0,44 ms sur l'iGPU Intel ARL
+  (`render_loop::runs_one_second`, qui exige aussi 0 erreur GPU : une première version, avec
+  des emplacements à 16 octets d'écart au lieu de 256, faisait refuser 3 relectures sur 4 par
+  wgpu). **Reste** : l'utilisation globale du GPU (fenêtre, encodeurs, autres programmes ;
+  NVML ou équivalent), non mesurée.
 - Perte du GPU : pas de recréation à chaud du device (choix Q4 de la Phase 2 : noir puis
   finalisation et sortie en erreur ; recréation dans une phase ultérieure, ADR dédié).
 - Soak hostile sous Wayland : déplacement et dé-minimisation automatiques sans effet (faits à la main).

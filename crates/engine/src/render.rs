@@ -8,6 +8,7 @@ use crate::control::{
     IoRequests, StateReader, command_channel, io_channels,
 };
 use crate::feed::{ATTACH_CAPACITY, FeedRegistry};
+use crate::gpu_time::GpuTimer;
 use crate::journal::{self, Journal, JournalStats};
 use crate::multiview::{MultiviewShared, MultiviewWriter};
 use crate::output_spec::{MAX_FULLSCREENS, ViewSource};
@@ -363,6 +364,7 @@ impl RenderEngine {
             rate: config.rate,
         };
         let clock_stats = clock.stats();
+        let gpu_timer = GpuTimer::new(&device, &queue);
         let worker = RenderWorker {
             device,
             queue,
@@ -379,6 +381,7 @@ impl RenderEngine {
             meters: audio_meters.clone(),
             stage,
             ring: RingWriter::new(ring),
+            gpu_timer,
             ready_tx,
             active_outputs,
             sync: config.sync_test.then(|| SyncTest::for_rate(config.rate)),
@@ -653,6 +656,8 @@ struct RenderWorker {
     /// FTB, flash and NV12 conversion of the Program for the outputs.
     stage: OutputStage,
     ring: RingWriter,
+    /// GPU time of the ticks (`None`: the device has no timestamps).
+    gpu_timer: Option<GpuTimer>,
     /// Mapped readback buffers, to `vma-output`.
     ready_tx: crossbeam_channel::Sender<Delivery>,
     active_outputs: ActiveOutputs,
@@ -722,6 +727,9 @@ impl RenderWorker {
             let ready_tx = &self.ready_tx;
             self.ring
                 .collect(|ready| ready_tx.try_send(Delivery::Read(ready)).is_ok());
+            if let Some(timer) = &self.gpu_timer {
+                timer.collect(&self.stats);
+            }
             // Every feed takes its latest picture once per tick, rendered or not, so the
             // per-input statistics count master ticks.
             self.sources.advance(started);
@@ -901,6 +909,10 @@ impl RenderWorker {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("tick"),
             });
+        let timed = self
+            .gpu_timer
+            .as_mut()
+            .and_then(|timer| timer.begin(&mut encoder));
         // Pictures taken since the last rendered tick, before the passes that draw them.
         self.sources.encode_uploads(&mut encoder);
         self.stingers.encode_uploads(&mut encoder);
@@ -1016,6 +1028,9 @@ impl RenderWorker {
             self.encode_multiview(&mut encoder, composition);
         }
 
+        if let (Some(timer), Some(index)) = (&self.gpu_timer, timed) {
+            timer.end(&mut encoder, index);
+        }
         let painted = Instant::now();
         let commands = encoder.finish();
         let submitting = Instant::now();

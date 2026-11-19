@@ -109,7 +109,8 @@ Test : `render_loop::device_lost_stops_rendering_not_the_clock` (perte forcée p
   soaks Windows en montrent ; [ADR 0017](0017-priorite-des-threads.md) (2026-11-19).
 - **Attente active** : ≈ la marge par image (1 ms ≈ 5 % d'un cœur à 50 fps), pour la précision
   du réveil.
-- **Temps GPU** : seul le temps CPU de rendu est mesuré ; le temps GPU (timestamp queries) et
+- **Temps GPU** (*levé en partie le 2026-11-19 : temps GPU de chaque tick par horodatages,
+  `vma-engine::gpu_time`*) : seul le temps CPU de rendu est mesuré ; le temps GPU (timestamp queries) et
   l'utilisation GPU (NVML) viendront plus tard.
 - **Soak hostile sous Wayland** : un client ne peut ni se positionner ni se dé-minimiser ;
   ces agressions automatiques sont sans effet sous Hyprland et sont faites à la main

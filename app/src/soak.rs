@@ -1254,6 +1254,23 @@ fn report(options: &SoakOptions, soak: &SoakContext, run: &Run<'_>) -> (String, 
     }
     let _ = writeln!(s, "\nSur {} ticks rendus.\n", cpu.total.count);
 
+    let gpu = soak.render.gpu_summary();
+    let _ = writeln!(s, "### Temps GPU de rendu par tick");
+    if gpu.count > 0 {
+        let _ = writeln!(
+            s,
+            "Horodatages GPU au début et à la fin des commandes du tick (transferts des inputs, mélangeurs, étage de sortie, vignettes, MultiView ; ni la fenêtre ni les encodeurs). Budget d'un tick : {}.\n\n| p50 | p99 | p99,9 | max | Ticks mesurés |\n|---|---|---|---|---|\n| {} | {} | {} | {} | {} |\n",
+            ms(soak.config.rate.frame_duration()),
+            ms(gpu.p50),
+            ms(gpu.p99),
+            ms(gpu.p999),
+            ms(gpu.max),
+            gpu.count
+        );
+    } else {
+        let _ = writeln!(s, "Non mesuré : l'adaptateur n'a pas d'horodatages GPU.\n");
+    }
+
     if !inputs.is_empty() {
         let period_ms = soak.config.rate.frame_duration().as_secs_f64() * 1000.0;
         let every = TRANSITION_STEPS * STEP.as_millis() as u64 / 1000;

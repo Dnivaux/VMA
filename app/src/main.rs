@@ -74,6 +74,13 @@ fn wgpu_options() -> egui_wgpu::WgpuConfiguration {
                 .ok_or_else(|| "no GPU adapter can show the window".to_owned())
         }));
     }
+    // GPU timestamps when the adapter has them: the GPU time of each tick (statistics).
+    let base = std::sync::Arc::clone(&setup.device_descriptor);
+    setup.device_descriptor = std::sync::Arc::new(move |adapter| {
+        let mut descriptor = base(adapter);
+        descriptor.required_features |= vma_compositor::headless::timing_features(adapter);
+        descriptor
+    });
     egui_wgpu::WgpuConfiguration {
         wgpu_setup: setup.into(),
         ..Default::default()

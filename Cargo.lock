@@ -5145,6 +5145,7 @@ dependencies = [
  "tracing-subscriber",
  "vma-api",
  "vma-clock",
+ "vma-compositor",
  "vma-core",
  "vma-engine",
  "vma-io-gst",

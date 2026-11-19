@@ -13,6 +13,8 @@ pub struct RenderStats {
     max_cpu_ns: AtomicU64,
     avg_cpu_ns: AtomicU64,
     cpu: PhaseHistograms,
+    /// GPU time of the measured ticks (timestamps; empty without them).
+    gpu: LatencyHistogram,
     measured_fps_bits: AtomicU64,
     gpu_errors: AtomicU64,
     window_gpu_errors: AtomicU64,
@@ -175,6 +177,17 @@ impl RenderStats {
     /// Why the device was lost, once it is.
     pub fn device_lost_reason(&self) -> Option<&str> {
         self.device_lost_reason.get().map(String::as_str)
+    }
+
+    pub(crate) fn record_gpu_time(&self, time: Duration) {
+        self.gpu.record(time);
+    }
+
+    /// Percentiles of the GPU time per tick, from the start to the end of the tick's commands
+    /// (uploads, mixers, output stage, thumbnails, MultiView; not the window nor the encoders).
+    /// `count` 0: not measured (no timestamps on this device). Walks every histogram bucket.
+    pub fn gpu_summary(&self) -> LatencySummary {
+        self.gpu.snapshot()
     }
 
     /// Percentiles of the CPU time per tick and per phase. Walks every histogram bucket:

@@ -2,6 +2,17 @@
 
 use crate::CompositorError;
 
+/// The optional features VMA asks for when the adapter has them: GPU timestamps inside
+/// command encoders, for the GPU time of each tick (`vma-engine` statistics). Both or none.
+pub fn timing_features(adapter: &wgpu::Adapter) -> wgpu::Features {
+    let wanted = wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS;
+    if adapter.features().contains(wanted) {
+        wanted
+    } else {
+        wgpu::Features::empty()
+    }
+}
+
 /// A device opened without any window.
 #[derive(Debug)]
 pub struct HeadlessGpu {
@@ -21,6 +32,7 @@ pub async fn request_gpu() -> Result<HeadlessGpu, CompositorError> {
     let (device, queue) = adapter
         .request_device(&wgpu::DeviceDescriptor {
             label: Some("vma.headless"),
+            required_features: timing_features(&adapter),
             ..Default::default()
         })
         .await?;
