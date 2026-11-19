@@ -76,7 +76,7 @@ caméra simulée qui suit la documentation publique pour tout tester sans matér
 - **Écart connu avec la référence** : son aide (« PTZ control virtual inputs ») dit qu'un
   input virtuel ni en Preview ni au Program montre une image fixe, prise à sa création. Chez
   VMA, il montre toujours l'image vivante de sa caméra (aucune image à garder, rien de plus à
-  rendre). À revoir à la revue de 7A si la partenaire préfère l'image fixe.
+  rendre). **Gardé** par le mainteneur le 2026-11-19.
 - Les fonctions PTZ de l'API compat sont celles de la référence (`api-compat.md` § 4) ;
   `PTZMoveToVirtualInputPosition` est une demande explicite : elle déplace la caméra même à
   l'antenne, sans confirmation.

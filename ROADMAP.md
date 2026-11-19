@@ -365,7 +365,8 @@ la spec).
 ### 7A — Caméras PTZ
 CI verte Ubuntu + Windows sur 7A.1–7A.5 ([run 44615219234](https://github.com/Dnivaux/VMA/actions/runs/44615219234), `7ef57c8`).
 Écart connu avec la référence : hors Preview et Program, son input virtuel montre une image
-fixe, celui de VMA l'image vivante de la caméra (ADR 0018, à trancher à la revue).
+fixe, celui de VMA l'image vivante de la caméra (ADR 0018) : gardé par le mainteneur le
+2026-11-19. Soak 7A.6 : demain (fenêtre réelle, accord du mainteneur).
 
 | Étape | Contenu | Statut |
 |---|---|---|
