@@ -2708,3 +2708,217 @@ fn screenshot_of_the_replay() {
     let picture = h.render().unwrap();
     picture.save(dir.join("replay-windows.png")).unwrap();
 }
+
+/// Opens the settings of input `n` by a double click on its thumbnail; forgets the Preview
+/// the clicks sent.
+fn open_settings(h: &mut Harness<'_, Rig>, n: u32) {
+    for _ in 0..2 {
+        h.get_by_label(&format!("Vignette {n}")).click();
+        h.run();
+    }
+    assert!(
+        h.query_by_label(&format!("Réglages de l'input {n}"))
+            .is_some()
+    );
+    h.state().sent();
+}
+
+/// Holds the button `name` down, then releases it; the commands sent at each step.
+fn hold(h: &mut Harness<'_, Rig>, name: &str) -> (Vec<Command>, Vec<Command>) {
+    let at = h.get_by_label(name).rect().center();
+    h.hover_at(at);
+    h.drag_at(at);
+    // Held down, egui keeps repainting (the window could be dragged): a few frames.
+    h.run_steps(3);
+    let pressed = h.state().sent();
+    h.drop_at(at);
+    h.run();
+    (pressed, h.state().sent())
+}
+
+/// The test pattern (input 4) as a PTZ camera at 10.0.0.9.
+fn ptz_state() -> State {
+    let mut state = state();
+    state
+        .apply(&Command::SetPtzCamera {
+            input: id(4),
+            address: Some(vma_engine::CameraAddress::new(
+                vma_engine::Transport::Udp,
+                "10.0.0.9",
+            )),
+        })
+        .unwrap();
+    state
+}
+
+/// G4 of `phase-7.md`: the address of a PTZ camera is set in the settings of its input.
+#[test]
+fn a_camera_becomes_ptz_in_its_settings() {
+    let mut h = harness(state());
+    open_settings(&mut h, 4);
+    assert!(
+        h.get_by_label("Connecter").accesskit_node().is_disabled(),
+        "no address yet"
+    );
+    h.get_by_label("Adresse de la caméra").click();
+    h.run();
+    h.get_by_label("Adresse de la caméra").type_text("10.0.0.9");
+    h.run();
+    h.get_by_label("Connecter").click();
+    h.run();
+    assert_eq!(
+        h.state().sent(),
+        [Command::SetPtzCamera {
+            input: id(4),
+            address: Some(vma_engine::CameraAddress::new(
+                vma_engine::Transport::Udp,
+                "10.0.0.9"
+            )),
+        }]
+    );
+    // A colour cannot be one.
+    let mut h = harness(state());
+    open_settings(&mut h, 1);
+    assert!(h.query_by_label("Adresse de la caméra").is_none());
+}
+
+/// G4: each gesture of the PTZ controls sends its command; a held move stops on release.
+#[test]
+fn the_ptz_controls_send_their_commands() {
+    use vma_engine::{Direction, FocusMode, LensMove, Preset, PtzAction, Speed};
+    let mut h = harness(ptz_state());
+    open_settings(&mut h, 4);
+    let ptz = |action| Command::Ptz {
+        input: id(4),
+        action,
+    };
+    let speed = Speed::DEFAULT;
+    assert_eq!(
+        hold(&mut h, "Haut"),
+        (
+            vec![ptz(PtzAction::Move {
+                direction: Direction::Up,
+                speed
+            })],
+            vec![ptz(PtzAction::Move {
+                direction: Direction::Stop,
+                speed
+            })]
+        )
+    );
+    assert_eq!(
+        hold(&mut h, "Zoom avant"),
+        (
+            vec![ptz(PtzAction::Zoom(LensMove::In(speed)))],
+            vec![ptz(PtzAction::Zoom(LensMove::Stop))]
+        )
+    );
+    assert_eq!(
+        hold(&mut h, "Plus près"),
+        (
+            vec![ptz(PtzAction::Focus(LensMove::Out(speed)))],
+            vec![ptz(PtzAction::Focus(LensMove::Stop))]
+        )
+    );
+    for (button, action) in [
+        ("Origine", PtzAction::Home),
+        ("Auto", PtzAction::FocusMode(FocusMode::Auto)),
+        ("Manuelle", PtzAction::FocusMode(FocusMode::Manual)),
+        ("Une fois", PtzAction::FocusOnce),
+        (
+            "Préréglage 3",
+            PtzAction::Recall {
+                preset: Preset::new(3).unwrap(),
+                confirmed: false,
+            },
+        ),
+    ] {
+        h.get_by_label(button).click();
+        h.run();
+        assert_eq!(h.state().sent(), [ptz(action)], "{button}");
+    }
+    // « Enregistrer la position », then a preset: saved there (once).
+    h.get_by_label("Enregistrer la position").click();
+    h.run();
+    h.get_by_label("Préréglage 5").click();
+    h.run();
+    assert_eq!(
+        h.state().sent(),
+        [ptz(PtzAction::Save(Preset::new(5).unwrap()))]
+    );
+    // A new virtual input: the position saved on the first free preset, the input added.
+    h.get_by_label("Nouvel input virtuel").click();
+    h.run();
+    let key = h.state().state.input(id(4)).unwrap().key;
+    let one = Preset::new(1).unwrap();
+    assert_eq!(
+        h.state().sent(),
+        [
+            ptz(PtzAction::Save(one)),
+            Command::AddInput {
+                spec: InputSpec::PtzView {
+                    camera: key,
+                    preset: one
+                },
+                name: Some("Mire 1".into()),
+            }
+        ]
+    );
+}
+
+/// G4 and Q5: a camera on air moves only once confirmed — from its presets, and from a
+/// virtual input put in Preview (the row under the Preview).
+#[test]
+fn a_camera_on_air_moves_only_once_confirmed() {
+    use vma_engine::{Preset, PtzAction};
+    let mut state = ptz_state();
+    state.apply(&Command::CutDirect { input: id(4) }).unwrap();
+    let mut h = harness(state);
+    open_settings(&mut h, 4);
+    let two = Preset::new(2).unwrap();
+    h.get_by_label("Préréglage 2").click();
+    h.run();
+    assert!(h.state().sent().is_empty(), "on air: asked first");
+    h.get_by_label("Déplacer quand même").click();
+    h.run();
+    assert_eq!(
+        h.state().sent(),
+        [Command::Ptz {
+            input: id(4),
+            action: PtzAction::Recall {
+                preset: two,
+                confirmed: true
+            }
+        }]
+    );
+
+    // A virtual input put in Preview while its camera is on air.
+    let mut state = ptz_state();
+    let key = state.input(id(4)).unwrap().key;
+    state
+        .apply(&Command::AddInput {
+            spec: InputSpec::PtzView {
+                camera: key,
+                preset: two,
+            },
+            name: Some("Large".into()),
+        })
+        .unwrap();
+    let view = state.inputs.last().unwrap().id;
+    state.apply(&Command::CutDirect { input: id(4) }).unwrap();
+    state.apply(&Command::SetPreview { input: view }).unwrap();
+    assert_eq!(state.ptz_held, Some(view));
+    let mut h = harness(state);
+    h.get_by_label("Déplacer la caméra").click();
+    h.run();
+    assert_eq!(
+        h.state().sent(),
+        [Command::Ptz {
+            input: view,
+            action: PtzAction::Recall {
+                preset: two,
+                confirmed: true
+            }
+        }]
+    );
+}

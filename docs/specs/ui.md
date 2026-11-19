@@ -380,3 +380,33 @@ Réglages d'un input de capture : « Son de la caméra », liste déroulante « 
 périphériques audio vus par `vma-io` ; un périphérique choisi qui n'est plus branché est
 montré par son identifiant suivi de « (absent) ». Un choix envoie `SetCaptureAudio`. Test :
 `switcher::a_camera_takes_the_sound_of_an_audio_device`.
+
+## Caméras PTZ (Phase 7A, ADR 0018)
+Dans les réglages d'un input caméra, SRT ou NDI® (ou d'un input virtuel), section
+« Caméra PTZ » :
+- **Adresse** : protocole (« VISCA over IP (UDP) », port 52381 par défaut ; « VISCA (TCP) »,
+  5678), adresse, port ; « Connecter » (puis « Appliquer » quand l'adresse change) envoie
+  `SetPtzCamera` ; « Retirer la PTZ » l'envoie avec `None` (les inputs virtuels partent avec
+  elle). L'état : « Connexion… », « Connectée », « Injoignable : raison », et la dernière
+  commande refusée ou écartée.
+- **Pavé** de 8 flèches **maintenues** : `Ptz Move` à l'appui, `Move Stop` au relâchement ;
+  « Origine » au centre. « Zoom avant / arrière » et mise au point « Plus loin / Plus près »
+  de même (arrêt au relâchement) ; « Auto », « Manuelle », « Une fois ». Curseur
+  « Vitesse » 1–100 (50 par défaut), pour les mouvements suivants. Un mouvement encore
+  maintenu quand la fenêtre se ferme est arrêté.
+- **Préréglages 1–16** (en gras : ceux enregistrés depuis VMA) : un clic rappelle ; si la
+  caméra est à l'antenne, « Caméra à l'antenne : aller au préréglage n ? » avec « Déplacer
+  quand même » (rappel confirmé) ou « Annuler ». « Enregistrer la position » : le prochain
+  préréglage cliqué prend la position actuelle.
+- **« Nouvel input virtuel »** : enregistre la position dans le premier préréglage qu'aucun
+  input virtuel de la caméra n'utilise, et ajoute l'input `PtzView` nommé « *caméra* *n* ».
+  Dans les réglages d'un input virtuel : sa caméra, son préréglage, « Mettre à jour la
+  position », et les mêmes commandes.
+- **Sous la Preview**, quand un input virtuel y attend parce que sa caméra est à l'antenne
+  (`State::ptz_held`) : « Caméra à l'antenne » et « Déplacer la caméra » (rappel confirmé).
+- **Tranche de l'input** : « PTZ » en vert (connectée), orange (injoignable, raison au
+  survol), gris (connexion).
+- Vignettes, MultiView, Preview et Program montrent pour un input virtuel l'image de sa
+  caméra.
+- Tests : `switcher::{a_camera_becomes_ptz_in_its_settings,
+  the_ptz_controls_send_their_commands, a_camera_on_air_moves_only_once_confirmed}`.

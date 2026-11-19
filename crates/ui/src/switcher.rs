@@ -28,6 +28,7 @@ mod multiview_settings;
 mod ndi_input;
 mod outputs;
 mod project_bar;
+mod ptz;
 mod replay;
 mod srt_input;
 mod stinger;
@@ -263,6 +264,7 @@ pub struct Switcher {
     project: project_bar::ProjectUi,
     api: api_settings::ApiUi,
     replay: replay::ReplayUi,
+    ptz: ptz::PtzUi,
 }
 
 /// Size of the input thumbnails, as the reference lets the operator choose it.
@@ -319,6 +321,7 @@ impl Default for Switcher {
             project: project_bar::ProjectUi::default(),
             api: api_settings::ApiUi::default(),
             replay: replay::ReplayUi::default(),
+            ptz: ptz::PtzUi::default(),
         }
     }
 }
@@ -528,7 +531,11 @@ impl Switcher {
         );
         let mut body = Rect::from_min_max(area.min + Vec2::new(0.0, 24.0), area.max).shrink(6.0);
         let video = input.and_then(|id| state.input(id)?.playback.map(|p| (id, p)));
-        if video.is_some() {
+        // A PTZ virtual input whose recall waits for a confirmation (ADR 0018 § 7).
+        let held = state
+            .ptz_held
+            .filter(|h| output == Output::Preview && input == Some(*h));
+        if video.is_some() || held.is_some() {
             body.max.y -= CONTROLS_HEIGHT;
         }
         let aspect = state.format.resolution.aspect_ratio();
@@ -552,6 +559,14 @@ impl Switcher {
                 ui.push_id(output.name(), |ui| {
                     self.video_controls(ui, view, id, playback)
                 });
+            });
+        } else if let Some(held) = held {
+            let controls = Rect::from_min_size(
+                egui::pos2(rect.left(), rect.bottom() + 4.0),
+                Vec2::new(rect.width(), CONTROLS_HEIGHT - 4.0),
+            );
+            ui.scope_builder(egui::UiBuilder::new().max_rect(controls), |ui| {
+                self.ptz_held_row(ui, view, held);
             });
         }
     }
@@ -1033,6 +1048,7 @@ impl Switcher {
 
                 // Close, Quick Play, Cut, Loop, then 1–4 and the sound: the reference's order.
                 ui.horizontal(|ui| {
+                    ptz::link_badge(ui, input);
                     let close = ui
                         .add(icons::only(Icon::X).small())
                         .on_hover_text("Fermer l'input");
@@ -1133,9 +1149,11 @@ impl Switcher {
 
     fn input_settings_window(&mut self, ui: &egui::Ui, view: &View<'_>) {
         let Some((id, mut name)) = self.input_settings.take() else {
+            self.ptz_release(ui, view);
             return;
         };
         let Some(input) = view.state.input(id) else {
+            self.ptz_release(ui, view);
             return; // Removed meanwhile.
         };
         let mut open = true;
@@ -1184,6 +1202,7 @@ impl Switcher {
             if let InputSpec::Capture { audio, .. } = &input.spec {
                 self.capture_audio_setting(ui, view, id, audio.as_ref());
             }
+            self.ptz_settings(ui, view, input);
             if let Some(playback) = input.playback {
                 let mut looping = playback.looping;
                 if ui
@@ -1374,7 +1393,7 @@ impl Switcher {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Output {
     Preview,
     Program,
