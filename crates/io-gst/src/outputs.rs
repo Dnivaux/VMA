@@ -1577,7 +1577,20 @@ mod tests {
         let target = target.unwrap();
         let sync = read_sync(&target, master, seconds);
         assert_eq!(sync.unpaired_beeps, 0, "{sync:?}");
-        assert_eq!(sync.offsets_ns.len() as u64, sync.flashes, "{sync:?}");
+        // Early sound: the analyser counts no beep before its cut (AAC priming + half a frame,
+        // 50 ms at 50p, `sync.rs`), so a flash within |offset| of that cut has lost its beep
+        // (seen: flashes at 0.06 and 0.12 s, sound 80 ms early). Only that first one may go
+        // unpaired.
+        let earliest = sync.offsets_ns.iter().map(|o| -o).max().unwrap_or(0);
+        let cut_at_start = sync.flash_pts_ns.first().is_some_and(|&first| {
+            let before = first as i64 - 1_000_000_000;
+            (0..earliest + 100_000_000).contains(&before)
+        });
+        assert_eq!(
+            sync.offsets_ns.len() as u64,
+            sync.flashes - u64::from(cut_at_start && sync.unpaired_flashes == 1),
+            "{sync:?}"
+        );
         (sync, dir, PathBuf::from(target))
     }
 
