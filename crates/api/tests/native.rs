@@ -243,3 +243,56 @@ fn replay_commands() {
     assert_eq!(replay["player"]["speed"], 50);
     assert_eq!(replay["player"]["playing"], true);
 }
+
+/// G5 of `phase-7.md`: the PTZ commands through the native API, as JSON.
+#[test]
+fn ptz_commands() {
+    let (_api, address, state) = api();
+    let post = |body: &str| http(address, "POST", "/commands", body);
+    let ok = |body: &str| {
+        let (status, answer) = post(body);
+        assert_eq!(status, 200, "{body}: {answer}");
+    };
+    ok(r#"{"AddInput":{"spec":{"Capture":{"device":"cam"}},"name":"PTZ"}}"#);
+    let camera = state.load().inputs[0].id.0;
+    ok(&format!(
+        r#"{{"SetPtzCamera":{{"input":{camera},"address":{{"transport":"Tcp","host":"10.0.0.7","port":5678}}}}}}"#
+    ));
+    ok(&format!(
+        r#"{{"Ptz":{{"input":{camera},"action":{{"Move":{{"direction":"UpLeft","speed":80}}}}}}}}"#
+    ));
+    ok(&format!(
+        r#"{{"Ptz":{{"input":{camera},"action":{{"Zoom":{{"In":30}}}}}}}}"#
+    ));
+    ok(&format!(
+        r#"{{"Ptz":{{"input":{camera},"action":"Home"}}}}"#
+    ));
+    ok(&format!(
+        r#"{{"Ptz":{{"input":{camera},"action":{{"Save":4}}}}}}"#
+    ));
+    let key = state.load().inputs[0].key;
+    ok(&format!(
+        r#"{{"AddInput":{{"spec":{{"PtzView":{{"camera":"{key}","preset":4}}}},"name":"Large"}}}}"#
+    ));
+    // On air: a recall needs its confirmation.
+    ok(&format!(r#"{{"CutDirect":{{"input":{camera}}}}}"#));
+    let (status, body) = post(&format!(
+        r#"{{"Ptz":{{"input":{camera},"action":{{"Recall":{{"preset":4}}}}}}}}"#
+    ));
+    assert_eq!(status, 422, "{body}");
+    assert!(body.contains("on air"), "{body}");
+    ok(&format!(
+        r#"{{"Ptz":{{"input":{camera},"action":{{"Recall":{{"preset":4,"confirmed":true}}}}}}}}"#
+    ));
+    let (status, body) = post(&format!(
+        r#"{{"Ptz":{{"input":{camera},"action":{{"Save":17}}}}}}"#
+    ));
+    assert_eq!(status, 400, "preset 17: {body}");
+
+    let (_, body) = http(address, "GET", "/state", "");
+    let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let ptz = &json["inputs"][0]["ptz"];
+    assert_eq!(ptz["settings"]["address"]["host"], "10.0.0.7", "{ptz}");
+    assert_eq!(ptz["settings"]["saved"], serde_json::json!([4]), "{ptz}");
+    assert_eq!(json["inputs"][1]["spec"]["PtzView"]["preset"], 4);
+}

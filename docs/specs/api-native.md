@@ -29,6 +29,15 @@ Son d'une caméra : `{"SetCaptureAudio":{"input":2,"device":"alsa:alsa_input.usb
 (`"device":null` : aucun) ; les périphériques audio ne sont pas listés par l'API (réglages de
 l'input dans l'interface).
 
+Caméras PTZ (Phase 7A, ADR 0018) : `{"SetPtzCamera":{"input":2,"address":{"transport":"Udp","host":"192.168.1.90","port":52381}}}`
+(`"address":null` : plus PTZ), `{"Ptz":{"input":2,"action":{"Move":{"direction":"UpLeft","speed":80}}}}`
+(`"Stop"`), `{"Ptz":{"input":2,"action":{"Zoom":{"In":30}}}}` (`"Stop"`, `{"Out":…}` ; de
+même `Focus`), `{"FocusMode":"Auto"}`, `"FocusOnce"`, `"Home"`, `{"Save":4}`,
+`{"Recall":{"preset":4,"confirmed":true}}` (sans `confirmed`, refusé si la caméra est à
+l'antenne) ; un input virtuel : `{"AddInput":{"spec":{"PtzView":{"camera":"<clé>","preset":4}},"name":"Large"}}`.
+L'état (adresse, préréglages enregistrés, liaison) est dans `inputs[n].ptz` de `GET /state`,
+le rappel en attente dans `ptz_held`. Test : `native::ptz_commands`.
+
 | Code | Corps | Quand |
 |---|---|---|
 | 200 | `{"id": 17, "result": "ok"}` | appliquée |

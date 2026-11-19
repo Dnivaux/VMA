@@ -205,6 +205,31 @@ le canal A, `B` est refusé. Les vitesses vont de 0 à 1 (0,5 = 50 %, D). Camér
 | `ReplayLastEventCameraOn` / `Off`, `ReplayToggle…Camera…`, `Replay…TextCamera` | | — | non : un angle par événement | D, M |
 | `ReplayPlayAllEvents…`, `ReplayPlayEventsByID…`, `ReplayPlayNext` / `Previous`, `ReplayStopEvents`, `ReplayDuplicate…`, `ReplayExportLastEvent`, `ReplayFastForward` / `Backward`, `ReplayJumpFramesFast…`, `ReplaySetAudioSource`, `ReplayShowHide`, `ReplayQuadMode…` | | — | non (plus tard pour certaines : export, Q11 ; son, Q12) | D, M |
 
+### PTZ (Phase 7A, étape 5)
+Source : « Shortcut Function Reference » (édition 29), catégorie PTZ, et la page « PTZ
+control using shortcuts and joysticks » (édition 27), lues le 2026-11-19 (**d** : la liste de
+la catégorie vient d'une lecture partielle de la page, à relire mot à mot avant la revue ;
+aucune fonction PTZ n'est envoyée par le module Companion v5.0.6 lu le 2026-11-13). `Input` :
+la caméra PTZ ou l'un de ses inputs virtuels (sa caméra est pilotée). Vitesses : `Value` de
+0 à 1 (D) ; absente, VMA prend la vitesse moyenne (la référence prend celle des curseurs de
+l'onglet PTZ de l'input, réglage de l'UI chez VMA). Un mouvement dure jusqu'à son arrêt (D).
+
+| Fonction | Paramètres (doc) | Effet dans VMA | État | Vu |
+|---|---|---|---|---|
+| `PTZMoveUp`, `…Down`, `…Left`, `…Right`, `…UpLeft`, `…UpRight`, `…DownLeft`, `…DownRight` | Value = vitesse 0–1 ; Input | mouvement pan / tilt | oui | d |
+| `PTZMoveStop` | Input | « arrête tout mouvement PTZ » : pan / tilt, zoom et mise au point | oui | d |
+| `PTZZoomIn` / `PTZZoomOut` / `PTZZoomStop` | Value (sauf Stop) ; Input | zoom | oui | d |
+| `PTZFocusFar` / `PTZFocusNear` / `PTZFocusStop` | Value (sauf Stop) ; Input | mise au point | oui | d |
+| `PTZFocusAuto` / `PTZFocusManual` | Input | mode de mise au point | oui | d |
+| `PTZHome` | Input | retour à l'origine | oui | d |
+| `PTZMoveToVirtualInputPosition` | Input = input virtuel | rappelle son préréglage **sans le mettre en Preview** ; demande explicite, donc confirmée même à l'antenne | oui | d |
+| `PTZMoveToVirtualInputPositionByIndex` | Value = index depuis 0 ; Input | rappelle le préréglage du *n*-ième input virtuel de la caméra (ordre d'affichage) | oui | d |
+| `PTZCreateVirtualInput` | Input | enregistre la position dans le premier préréglage libre et ajoute l'input virtuel « *caméra* *n* » | partiel : la référence garde la position, VMA un préréglage de la caméra (16 au plus) | d |
+| `PTZUpdateVirtualInput` | Input = input virtuel | la position actuelle devient celle de son préréglage | oui | d |
+
+Tests : `compat::functions::ptz::tests::{moves_take_their_speed_from_value, virtual_inputs}`.
+Type des inputs virtuels dans le XML : `Capture` (à observer, Q3).
+
 ### Général
 | Fonction | Paramètres | Effet dans VMA | État | Vu |
 |---|---|---|---|---|

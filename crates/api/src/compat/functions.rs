@@ -6,6 +6,7 @@ use vma_engine::{Command, Db, Effect, InputSpec, OutputSpec, State, StingerSlot}
 
 use super::call::Call;
 
+mod ptz;
 mod replay;
 
 /// Why a call is not turned into commands. Written as is in `ER` lines and HTTP 500 bodies.
@@ -496,6 +497,9 @@ pub fn resolve(call: &Call, state: &State) -> Result<Vec<Command>, CompatError> 
             return one(Command::AddInput { spec, name: None });
         }
         _ => {}
+    }
+    if let Some(commands) = ptz::resolve(&cx, &name) {
+        return commands;
     }
     if let Some(commands) = replay::resolve(&cx, &name) {
         return commands;
