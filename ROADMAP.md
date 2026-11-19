@@ -59,7 +59,8 @@ titres HTML + natifs, multi-cadence dès la Phase 1, macOS plus tard).
   soak C14 en avait 447 sautées et 429 répétées en 1 h, pour 18 attendues), **fichiers vidéo le 2026-11-18** : un fichier 1080p50 dans un maître
   50p saccadait à 14 phases sur 40 (jusqu'à 33 + 33 images en 3 s), à aucune depuis ; son lu
   calé sur ses images (−0,04 ms) — [`io-gst.md`](docs/specs/io-gst.md), « Fichiers calés sur
-  les ticks ». A6 (`tests/soak/a6-rates.sh`, fenêtre réelle) n'a pas été repassé.
+  les ticks ». CI verte Ubuntu + Windows, sans reprise ([run 44402337984](https://github.com/Dnivaux/VMA/actions/runs/44402337984), `b7e9c66`).
+  A6 (`tests/soak/a6-rates.sh`, fenêtre réelle) n'a pas été repassé.
 - *(Phase 1, étape 10)* **Contention du thread de rendu sur la `Queue` wgpu** avec des inputs
   uploadés. Mesuré par histogramme (rapport de soak, temps CPU par tick et par phase), 1080p50 :
   tick complet p50 0,09 ms sans input, mais **p50 7,9 ms, p99 10,5 ms avec 4 × 1080p50**
