@@ -25,6 +25,9 @@ pub enum InputKind {
     Html,
     /// A replay channel: plays the recorded cameras (ADR 0016).
     Replay,
+    /// A virtual input of a PTZ camera: its picture, sent to a preset when put in Preview
+    /// (ADR 0018).
+    PtzView,
 }
 
 impl InputKind {

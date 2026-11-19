@@ -335,7 +335,7 @@ impl ViscaCommand {
 }
 
 /// An error reported by a camera (`y0 6z ee FF`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum CameraError {
     /// `01`: message length error.
     MessageLength,

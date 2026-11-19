@@ -101,6 +101,9 @@ pub struct ProjectInput {
     /// project file, ignored here.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub relative: Option<PathBuf>,
+    /// A PTZ camera's address and saved presets (Phase 7A); not whether it answers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ptz: Option<crate::ptz::PtzSettings>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -146,6 +149,7 @@ impl State {
                     looping: i.playback.is_some_and(|p| p.looping),
                     audio: i.audio,
                     relative: None,
+                    ptz: i.ptz.as_ref().map(|p| p.settings.clone()),
                 })
                 .collect(),
             preview: position(self.preview),

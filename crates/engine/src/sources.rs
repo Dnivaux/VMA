@@ -61,7 +61,9 @@ fn generated_source(spec: &InputSpec) -> Option<SourceKey> {
         | InputSpec::Srt(_)
         | InputSpec::Ndi { .. }
         | InputSpec::Html { .. }
-        | InputSpec::Replay { .. } => None,
+        | InputSpec::Replay { .. }
+        // Shown through its camera's entry (`State::plan`), no entry of its own.
+        | InputSpec::PtzView { .. } => None,
     }
 }
 

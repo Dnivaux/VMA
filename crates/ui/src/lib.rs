@@ -246,8 +246,10 @@ impl MainUi {
 
         let pick = |set: &[TextureId; 3], slot: usize| set.get(slot).copied().unwrap_or_default();
         let thumbs = &self.thumbnails;
+        let state = self.engine.state().load();
         let thumbnail_uv = |input| {
-            let cell = thumbs.cell_of(input)?;
+            // A PTZ virtual input shows its camera's thumbnail (ADR 0018 § 7).
+            let cell = thumbs.cell_of(state.picture_of(input))?;
             let (x, y, w, h) = thumbnails::cell_rect(cell)?;
             let (aw, ah) = ((ATLAS_COLUMNS * w) as f32, (ATLAS_ROWS * h) as f32);
             Some(Rect::from_min_max(
@@ -255,7 +257,6 @@ impl MainUi {
                 egui::pos2((x + w) as f32 / aw, (y + h) as f32 / ah),
             ))
         };
-        let state = self.engine.state().load();
         let screens = self.screens.list();
         let stats = self.engine.control_stats();
         let rejection = stats.last_rejection();

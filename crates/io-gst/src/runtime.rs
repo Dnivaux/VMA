@@ -349,6 +349,7 @@ impl IoRuntime {
             finishing: Vec::new(),
             players: Vec::new(),
             probe: probe.clone(),
+            ptz: Vec::new(),
         };
         let thread_stop = Arc::clone(&stop);
         let thread = std::thread::Builder::new()
@@ -490,6 +491,8 @@ struct Worker {
     master: Option<crate::master_record::MasterRecorder>,
     /// Their counters and the recorders', for the statistics.
     probe: IoProbe,
+    /// One client per PTZ camera (ADR 0018 § 5), each on its own thread.
+    ptz: Vec<(InputId, vma_ptz::PtzClient)>,
 }
 
 impl Worker {
@@ -554,6 +557,7 @@ impl Worker {
         }
         // Pipelines and the monitor stop here, on `vma-io`; recordings are finalised first.
         self.outputs.shutdown();
+        self.ptz.clear();
         self.pipelines.clear();
         self.audio_inputs.clear();
         self.headphones = None;
@@ -585,7 +589,19 @@ impl Worker {
                 self.html.close(input);
                 self.pipelines.retain(|p| p.input != input);
                 self.audio_inputs.retain(|p| p.input != input);
+                self.ptz.retain(|(id, _)| *id != input);
                 self.publish_timelines();
+            }
+            IoRequest::PtzCamera { input, address } => self.ptz_camera(input, address),
+            IoRequest::Ptz { input, command } => {
+                match self.ptz.iter().find(|(id, _)| *id == input) {
+                    Some((_, client)) => {
+                        if let Err(e) = client.send(command) {
+                            tracing::warn!(%input, ?command, error = %e, "PTZ command not queued");
+                        }
+                    }
+                    None => tracing::debug!(%input, "PTZ command for an input without a client"),
+                }
             }
             IoRequest::Play { input } => self.with(input, |s| s.set_playing(true)),
             IoRequest::Pause { input } => self.with(input, |s| s.set_playing(false)),
@@ -636,6 +652,32 @@ impl Worker {
                 Some(headphones) => headphones.set_device(device),
                 None => tracing::debug!("headphones off: device not played"),
             },
+        }
+    }
+
+    /// Replaces the PTZ client of `input` (`None`: stops it). A client dropped ends its
+    /// thread on its own, after its current exchange: `vma-io` never waits for a camera.
+    fn ptz_camera(&mut self, input: InputId, address: Option<vma_engine::CameraAddress>) {
+        self.ptz.retain(|(id, _)| *id != input);
+        let Some(address) = address else {
+            return;
+        };
+        let events = self.port.events.clone();
+        let spawned = vma_ptz::PtzClient::spawn(
+            format!("vma-ptz-{}", input.0),
+            address,
+            vma_ptz::Timing::default(),
+            move |event| send(&events, IoEvent::Ptz { input, event }),
+        );
+        match spawned {
+            Ok(client) => self.ptz.push((input, client)),
+            Err(e) => {
+                tracing::error!(%input, error = %e, "PTZ client not started");
+                let event = vma_ptz::LinkEvent::Unreachable {
+                    reason: format!("client impossible à démarrer : {e}"),
+                };
+                send(&self.port.events, IoEvent::Ptz { input, event });
+            }
         }
     }
 
@@ -968,7 +1010,7 @@ impl Worker {
                         send(events, html_event(e))
                     });
             }
-            InputSpec::Color { .. } | InputSpec::TestSource { .. } => {}
+            InputSpec::Color { .. } | InputSpec::TestSource { .. } | InputSpec::PtzView { .. } => {}
         }
     }
 }

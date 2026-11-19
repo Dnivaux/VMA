@@ -282,6 +282,11 @@ pub enum IoEvent {
     RecordFailed { input: InputId, reason: String },
     /// The player of replay input `input` reached the end of the event of cue `cue`.
     ReplayEnded { input: InputId, cue: u64 },
+    /// A report of the client of PTZ camera `input` (ADR 0018 § 4).
+    Ptz {
+        input: InputId,
+        event: crate::ptz::LinkEvent,
+    },
 }
 
 /// Requests from `vma-control` to `vma-io`, in order.
@@ -585,6 +590,23 @@ impl Controller {
             IoEvent::ReplayEnded { input, cue } => {
                 tracing::info!(%input, cue, "replay event played");
                 self.event(Event::ReplayEnded { input, cue });
+            }
+            IoEvent::Ptz { input, event } => {
+                match &event {
+                    crate::ptz::LinkEvent::Reachable => {
+                        tracing::info!(%input, "PTZ camera reachable");
+                    }
+                    crate::ptz::LinkEvent::Unreachable { reason } => {
+                        tracing::warn!(%input, %reason, "PTZ camera unreachable");
+                    }
+                    crate::ptz::LinkEvent::Refused { command, error } => {
+                        tracing::warn!(%input, ?command, %error, "PTZ command refused");
+                    }
+                    crate::ptz::LinkEvent::Dropped { command } => {
+                        tracing::warn!(%input, ?command, "PTZ command dropped: camera unreachable");
+                    }
+                }
+                self.event(Event::Ptz { input, event });
             }
         }
     }

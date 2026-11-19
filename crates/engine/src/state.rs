@@ -85,6 +85,9 @@ pub struct InputState {
     /// `Some` for inputs that may carry sound ([`InputSpec::has_audio`]).
     #[serde(default)]
     pub audio: Option<InputAudio>,
+    /// `Some` for a PTZ camera (Phase 7A, ADR 0018).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ptz: Option<crate::ptz::InputPtz>,
 }
 
 /// Audio settings of an input (`phase-3.md` § 5–6).
@@ -456,6 +459,16 @@ pub enum Rejection {
     NoReplayInput(crate::replay::ReplayChannel),
     #[error("there is already a replay input for channel {0}")]
     ReplayChannelTaken(crate::replay::ReplayChannel),
+    #[error("{0} cannot be a PTZ camera (a camera, a stream, NDI®)")]
+    NotPtzCapable(InputId),
+    #[error("{0} is not a PTZ camera")]
+    NotPtz(InputId),
+    #[error("{0} is on air: confirm to move it")]
+    PtzOnAir(InputId),
+    #[error("the PTZ camera needs a host and a port")]
+    PtzAddress,
+    #[error("no PTZ camera has the key {0}")]
+    UnknownPtzCamera(InputKey),
 }
 
 /// What [`State::load_project`] gathers while it applies its commands.
@@ -491,6 +504,17 @@ impl Load {
 /// Work for `io-gst` that follows from an accepted command.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IoRequest {
+    /// Run a client for PTZ camera `input` at `address` (replacing its earlier one), or stop
+    /// it (`None`) (ADR 0018 § 5).
+    PtzCamera {
+        input: InputId,
+        address: Option<crate::ptz::CameraAddress>,
+    },
+    /// Send `command` to PTZ camera `input`.
+    Ptz {
+        input: InputId,
+        command: crate::ptz::ViscaCommand,
+    },
     /// Start producing pictures for a new input (its feed is created when the format is
     /// known, see `FeedRegistry`).
     Open {
@@ -587,6 +611,11 @@ pub enum HtmlAction {
 /// Something that happened outside `vma-control` and changes the state.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Event {
+    /// A report of the client of PTZ camera `input`.
+    Ptz {
+        input: InputId,
+        event: crate::ptz::LinkEvent,
+    },
     /// The render thread showed the first frame of a timed transition.
     TransitionStarted { id: u64, frame: u64 },
     /// The render thread showed the last frame of a timed transition.
@@ -783,6 +812,10 @@ pub struct State {
     /// Replay and ISO recordings, events (Phase 6).
     #[serde(default)]
     pub replay: crate::replay::ReplayState,
+    /// A PTZ virtual input in Preview whose camera is on air: its recall waits for the
+    /// operator's confirmation (ADR 0018 § 7).
+    #[serde(default)]
+    pub ptz_held: Option<InputId>,
     next_input: u32,
     next_transition: u64,
     next_output: u32,
@@ -854,6 +887,7 @@ impl State {
             project_loads: 0,
             key_seed: 0,
             replay: crate::replay::ReplayState::default(),
+            ptz_held: None,
             next_input: 1,
             next_transition: 1,
             next_output: Self::DEFAULT_RECORDING.0 + 1,
@@ -911,6 +945,8 @@ impl State {
 
     /// What the render thread needs from this state.
     pub fn plan(&self) -> RenderPlan {
+        // A PTZ virtual input shows its camera's picture (ADR 0018 § 7).
+        let picture = |input: InputId| self.picture_of(input);
         let transition = self.transition.map(|t| match t {
             TransitionState::Timed {
                 id,
@@ -921,8 +957,8 @@ impl State {
                 ..
             } => PlanTransition {
                 id,
-                from,
-                to,
+                from: from.map(picture),
+                to: picture(to),
                 effect,
                 progress: PlanProgress::Timed { frames },
                 cut: self.stinger_cut(effect),
@@ -935,8 +971,8 @@ impl State {
                 value,
             } => PlanTransition {
                 id,
-                from,
-                to,
+                from: from.map(picture),
+                to: picture(to),
                 effect,
                 progress: PlanProgress::Manual { value },
                 cut: 0,
@@ -944,8 +980,8 @@ impl State {
         });
         RenderPlan {
             version: self.version,
-            program: self.program,
-            preview: self.preview,
+            program: self.program.map(picture),
+            preview: self.preview.map(picture),
             transition,
             domain: self.mix_domain,
             fullscreens: self.fullscreen_sources(),
@@ -956,7 +992,7 @@ impl State {
                     .unwrap_or(0),
             },
             overlays: self.overlays.map(|o| PlanOverlay {
-                input: o.input,
+                input: o.input.map(picture),
                 on: o.on,
                 frames: if o.immediate {
                     0
@@ -1047,7 +1083,11 @@ impl State {
     /// Applies one command. On success returns the requests for `io-gst`; on refusal the
     /// state is untouched.
     pub fn apply(&mut self, command: &Command) -> Result<Vec<IoRequest>, Rejection> {
-        let change = self.apply_inner(command)?;
+        let preview = self.preview;
+        let mut change = self.apply_inner(command)?;
+        if self.ptz_follow_preview(preview, &mut change.io) {
+            change.changed = true;
+        }
         if change.changed {
             self.version += 1;
         }
@@ -1058,7 +1098,9 @@ impl State {
     /// Stale events (a transition that already ended, an input that is gone) are ignored.
     pub fn apply_event(&mut self, event: &Event) -> Vec<IoRequest> {
         let mut io = Vec::new();
+        let preview = self.preview;
         let changed = match event {
+            Event::Ptz { input, event } => self.ptz_event(*input, event),
             Event::StingerReady {
                 slot,
                 file,
@@ -1223,6 +1265,7 @@ impl State {
             }
             Event::DeviceLostGraceOver => false,
         };
+        let changed = self.ptz_follow_preview(preview, &mut io) || changed;
         if changed {
             self.version += 1;
         }
@@ -1232,6 +1275,10 @@ impl State {
     fn apply_inner(&mut self, command: &Command) -> Result<Change, Rejection> {
         match command {
             Command::AddInput { spec, name } => self.add_input(spec, name.as_deref()),
+            Command::SetPtzCamera { input, address } => {
+                self.set_ptz_camera(*input, address.as_ref())
+            }
+            Command::Ptz { input, action } => self.ptz_action(*input, *action),
             Command::RemoveInput { input } => self.remove_input(*input),
             Command::SetPreview { input } => {
                 self.require(*input)?;
@@ -1835,6 +1882,7 @@ impl State {
             return Err(Rejection::TooManyInputs);
         }
         spec.validate().map_err(Rejection::InvalidInput)?;
+        self.check_ptz_view(spec)?;
         if let InputSpec::Replay { channel } = spec
             && self.replay_input(*channel).is_some()
         {
@@ -1860,6 +1908,7 @@ impl State {
             },
             playback: spec.kind().has_playback().then(Playback::default),
             audio: spec.has_audio().then(|| InputAudio::for_spec(spec)),
+            ptz: None,
         });
         // A sound-only input has no picture to show.
         if self.transition.is_none() && spec.kind().has_video() {
@@ -1880,9 +1929,24 @@ impl State {
         Ok(Change { changed: true, io })
     }
 
-    fn remove_input(&mut self, input: InputId) -> Result<Change, Rejection> {
+    pub(crate) fn remove_input(&mut self, input: InputId) -> Result<Change, Rejection> {
         self.require(input)?;
         let mut io = Vec::new();
+        // A PTZ camera takes its virtual inputs and its client along (ADR 0018 § 7).
+        if self.input(input).is_some_and(|i| i.ptz.is_some()) {
+            for view in self.ptz_views(input) {
+                if let Ok(removed) = self.remove_input(view) {
+                    io.extend(removed.io);
+                }
+            }
+            io.push(IoRequest::PtzCamera {
+                input,
+                address: None,
+            });
+        }
+        if self.ptz_held == Some(input) {
+            self.ptz_held = None;
+        }
         if self.transition.is_some_and(|t| t.involves(input)) {
             self.finish_transition(&mut io);
         }
@@ -2180,6 +2244,16 @@ impl State {
                 },
                 name,
             );
+            // Before the virtual inputs that follow it (ADR 0018 § 7).
+            if let Some(ptz) = &input.ptz {
+                let camera = Command::SetPtzCamera {
+                    input: id,
+                    address: Some(ptz.address.clone()),
+                };
+                if load.step(self, &camera, name) {
+                    self.restore_ptz_saved(id, &ptz.saved);
+                }
+            }
             if input.spec.kind().has_playback() {
                 let looping = Command::SetLoop {
                     input: id,

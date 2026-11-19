@@ -162,7 +162,8 @@ impl MultiviewWriter {
         let plan = MultiviewPlan {
             layout: layout(state.multiview.layout),
             titles_below: state.multiview.titles_below,
-            inputs,
+            // A PTZ virtual input shows its camera's picture (ADR 0018 § 7).
+            inputs: inputs.map(|i| i.map(|i| state.picture_of(i))),
         };
         if current.layout != plan.layout
             || current.titles_below != plan.titles_below

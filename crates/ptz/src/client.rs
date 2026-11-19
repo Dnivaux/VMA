@@ -76,7 +76,7 @@ impl Default for Timing {
 }
 
 /// What a client reports.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LinkEvent {
     /// The camera answers (first answer, or back after a silence).
     Reachable,

@@ -349,6 +349,17 @@ pub enum Command {
     SetMultiview {
         settings: MultiviewSettings,
     },
+    /// Input `input` becomes a PTZ camera at `address` (Phase 7A, ADR 0018), or is no longer
+    /// one (`None`; its virtual inputs go with it).
+    SetPtzCamera {
+        input: InputId,
+        address: Option<crate::ptz::CameraAddress>,
+    },
+    /// `action` for the PTZ camera of `input` (the camera, or one of its virtual inputs).
+    Ptz {
+        input: InputId,
+        action: crate::ptz::PtzAction,
+    },
     /// Replaces the show by a project's (ADR 0013), as the commands that build it would: each
     /// part checked as such, the parts refused listed in [`State::load_problems`](crate::State).
     /// Refused as a whole while a transition runs or an output is active.
@@ -643,6 +654,13 @@ pub enum InputSpec {
     Replay {
         channel: crate::replay::ReplayChannel,
     },
+    /// A virtual input of a PTZ camera (Phase 7A, ADR 0018 § 7): shows the picture of the
+    /// camera of key `camera` (no pipeline of its own) and sends it to `preset` when put in
+    /// Preview.
+    PtzView {
+        camera: InputKey,
+        preset: crate::ptz::Preset,
+    },
 }
 
 /// Longest JSON, script or style sheet sent to an HTML input, in bytes.
@@ -763,6 +781,7 @@ impl InputSpec {
             Self::Ndi { .. } => InputKind::Ndi,
             Self::Html { .. } => InputKind::Html,
             Self::Replay { .. } => InputKind::Replay,
+            Self::PtzView { .. } => InputKind::PtzView,
         }
     }
 
@@ -812,9 +831,13 @@ impl InputSpec {
         }
     }
 
-    /// True for inputs the engine draws itself (no `io-gst` pipeline): colour, test pattern.
+    /// True for inputs without an `io-gst` pipeline: drawn by the engine (colour, test
+    /// pattern), or showing another input's picture (a PTZ virtual input).
     pub fn is_generated(&self) -> bool {
-        matches!(self, Self::Color { .. } | Self::TestSource { .. })
+        matches!(
+            self,
+            Self::Color { .. } | Self::TestSource { .. } | Self::PtzView { .. }
+        )
     }
 
     /// Name given to a new input when the command does not provide one.
@@ -843,6 +866,7 @@ impl InputSpec {
                 .to_owned(),
             Self::Html { url, .. } => html_name(url.expose()),
             Self::Replay { channel } => format!("Replay {channel}"),
+            Self::PtzView { preset, .. } => format!("Préréglage {preset}"),
         }
     }
 }

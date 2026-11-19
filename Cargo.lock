@@ -5150,6 +5150,7 @@ dependencies = [
  "vma-engine",
  "vma-io-gst",
  "vma-project",
+ "vma-ptz",
  "vma-ui",
  "wgpu",
  "winit",
@@ -5230,6 +5231,7 @@ dependencies = [
  "vma-clock",
  "vma-compositor",
  "vma-core",
+ "vma-ptz",
  "vma-replay",
  "wgpu",
 ]
@@ -5256,6 +5258,7 @@ dependencies = [
  "vma-engine",
  "vma-io-html",
  "vma-io-ndi",
+ "vma-ptz",
  "vma-replay",
  "wgpu",
 ]

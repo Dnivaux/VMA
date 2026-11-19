@@ -311,6 +311,32 @@ apportées en codant (à relire) :
   changement, rien si c'est déjà le périphérique ; `NotCapture` pour un autre input.
 - Test : `state::a_capture_input_takes_the_sound_of_an_audio_device`.
 
+## Phase 7A — Caméras PTZ (ADR 0018, 2026-11-19)
+- `SetPtzCamera { input, address: Option<CameraAddress> }` : l'input (caméra, SRT, NDI®, ou
+  source synthétique des tests) devient une caméra PTZ (`InputState::ptz`), ou ne l'est plus
+  (`None` : ses inputs virtuels partent avec elle). Une requête `IoRequest::PtzCamera` par
+  changement, rien si l'adresse est la même. Refus : `NotPtzCapable` (autre type d'input),
+  `PtzAddress` (hôte vide, port 0).
+- `Ptz { input, action: PtzAction }`, `input` étant la caméra ou l'un de ses inputs virtuels :
+  `Move { direction, speed }`, `Zoom(LensMove)`, `Focus(LensMove)`, `FocusMode`, `FocusOnce`,
+  `Home`, `Save(Preset)` (retenu dans `saved`), `Recall { preset, confirmed }`. Une requête
+  `IoRequest::Ptz { input: caméra, command }`. Refus : `NotPtz` ; `PtzOnAir` pour un rappel
+  non confirmé d'une caméra à l'antenne (Q5).
+- **Input virtuel** : `InputSpec::PtzView { camera: InputKey, preset }` (type `PtzView`), sans
+  pipeline ; `UnknownPtzCamera` si aucune caméra PTZ n'a cette clé. Le plan de rendu, la
+  MultiView et les vignettes montrent l'image de sa caméra (`State::picture_of`).
+- **Mis en Preview** (après toute commande ou tout événement), il envoie le rappel de son
+  préréglage une fois. Si sa caméra est à l'antenne (Program, transition, overlay affiché,
+  par elle-même ou par un autre de ses inputs virtuels : `State::ptz_on_air`), rien n'est
+  envoyé et `State::ptz_held` le désigne, jusqu'au rappel confirmé ou jusqu'à ce qu'il
+  quitte la Preview.
+- **Événements** du client (`Event::Ptz`) : `PtzLink` (`Connecting`, `Reachable`,
+  `Unreachable { reason }`), `problem` (dernière commande refusée ou écartée).
+- **Projet** : `ProjectInput::ptz` (adresse, préréglages enregistrés), appliqué juste après
+  la clé de l'input, avant ses inputs virtuels ; l'état de la liaison n'est pas gardé.
+- Tests : `ptz::tests` (9), et de bout en bout `io-gst` `tests/ptz.rs`
+  (`a_ptz_camera_through_the_engine`).
+
 ## Critères d'acceptation
 | Critère | Test |
 |---|---|

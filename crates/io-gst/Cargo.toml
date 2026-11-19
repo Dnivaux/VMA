@@ -16,6 +16,7 @@ vma-compositor.workspace = true
 vma-io-ndi.workspace = true
 vma-io-html.workspace = true
 vma-replay.workspace = true
+vma-ptz.workspace = true
 arc-swap.workspace = true
 image.workspace = true
 thiserror.workspace = true

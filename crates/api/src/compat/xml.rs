@@ -49,6 +49,8 @@ fn kind(spec: &InputSpec) -> &'static str {
         InputSpec::Ndi { .. } => "NDI",
         InputSpec::Html { .. } => "Browser",
         InputSpec::Replay { .. } => "Replay",
+        // The picture of a camera.
+        InputSpec::PtzView { .. } => "Capture",
     }
 }
 

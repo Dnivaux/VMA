@@ -20,6 +20,7 @@ mod output_spec;
 mod outputs;
 mod plan;
 mod project;
+mod ptz;
 mod readback;
 mod render;
 mod replay;
@@ -62,6 +63,10 @@ pub use outputs::{
 pub use plan::{PlanFtb, PlanOverlay, PlanProgress, PlanReader, PlanTransition, RenderPlan};
 pub use project::{
     LoadProblem, ProjectInput, ProjectOutput, ProjectReplay, ProjectSnapshot, ProjectStinger,
+};
+pub use ptz::{
+    CameraAddress, Direction, FocusMode, InputPtz, LensMove, LinkEvent, MoveKind, PRESETS, Preset,
+    PtzAction, PtzLink, PtzSettings, Speed, Transport, ViscaCommand, may_be_ptz,
 };
 pub use render::{EngineConfig, EngineError, FrameReader, IoPort, Readers, RenderEngine};
 pub use replay::{

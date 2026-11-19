@@ -13,6 +13,7 @@ vma-clock.workspace = true
 vma-compositor.workspace = true
 vma-audio.workspace = true
 vma-replay.workspace = true
+vma-ptz.workspace = true
 wgpu.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
