@@ -366,8 +366,8 @@ la spec).
 | Étape | Contenu | Statut |
 |---|---|---|
 | 7A.1 | Décisions Q1–Q5, [ADR 0018](docs/adr/0018-cameras-ptz.md) (accepté : choix délégués) | ✅ |
-| 7A.2 | `vma-ptz` : codage VISCA, client UDP / TCP, caméra simulée (G1, G2) | en cours |
-| 7A.3 | Commandes, état, projet ; inputs virtuels (G3) | — |
+| 7A.2 | `vma-ptz` : codage VISCA, client UDP / TCP, caméra simulée (G1, G2 côté client ; [`ptz.md`](docs/specs/ptz.md)) | ✅ |
+| 7A.3 | Commandes, état, projet ; inputs virtuels (G3) | en cours |
 | 7A.4 | UI PTZ (G4) | — |
 | 7A.5 | API compat et native (G5) | — |
 | 7A.6 | Soak 20 min (G11) ; checklist sur vraie caméra à la fin, avec la partenaire ; **revue** | — |

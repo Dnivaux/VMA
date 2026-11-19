@@ -5299,6 +5299,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "vma-ptz"
+version = "0.0.1"
+dependencies = [
+ "crossbeam-channel",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tracing",
+]
+
+[[package]]
 name = "vma-replay"
 version = "0.0.1"
 dependencies = [

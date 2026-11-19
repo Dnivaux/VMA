@@ -11,6 +11,7 @@ members = [
     "crates/io-html",
     "crates/audio",
     "crates/replay",
+    "crates/ptz",
     "crates/api",
     "crates/project",
     "crates/ui",
@@ -39,6 +40,7 @@ vma-io-html = { path = "crates/io-html" }
 vma-project = { path = "crates/project" }
 vma-api = { path = "crates/api" }
 vma-replay = { path = "crates/replay" }
+vma-ptz = { path = "crates/ptz" }
 
 # External crates — licence noted for each (rule 2.6). Enforced by deny.toml.
 wgpu = "30.0"                                                # MIT OR Apache-2.0

@@ -1,0 +1,20 @@
+[package]
+name = "vma-ptz"
+description = "PTZ cameras (Phase 7A, ADR 0018): VISCA messages, VISCA over IP and raw TCP clients, a simulated camera."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+crossbeam-channel.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[lints]
+workspace = true
